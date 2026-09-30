@@ -78,7 +78,6 @@ describe("simplified Human/Agent room wiring (#305)", () => {
       liveTranscript: { active: false },
       liveTranscriptSegments: [],
       runtimeHosts: {},
-      runtimeHostProviders: {},
       liveTranscriptMediaAvailable: false,
       startLiveTranscript: vi.fn(),
       stopLiveTranscript: vi.fn(),

@@ -82,7 +82,7 @@ func (c *testRuntimeCapabilityController) HandleCapabilityRequest(_ context.Cont
 	return map[string]any{"value": "fixture-state"}, nil
 }
 
-func TestResidentCapabilityControlUsesLocalCallbackWithoutHarnessTurn(t *testing.T) {
+func TestRuntimeCapabilityRPCUsesLocalCallbackWithoutHarnessTurn(t *testing.T) {
 	stream := newResidentTestStream()
 	controller := &testRuntimeCapabilityController{calls: make(chan types.ResidentCapabilityRequest, 1)}
 	rt := &ResidentRuntime{options: Options{CapabilityHandler: controller}}

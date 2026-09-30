@@ -101,10 +101,9 @@ Human authorizes one STT-ready Runtime Host
 A configured provider does not grant media access. Any Human in the Room can
 open **Live Transcript**, select a connected STT-ready Runtime Host when there
 is more than one, and click **Start**. That click authorizes the bounded Room
-action, and any Human may stop it. An already-connected Runtime needs no
-provider-claim or Terminal pairing step. STT credentials remain local to the
-Runtime; the panel asks for local configuration only when readiness is
-missing.
+action, and any Human may stop it. No Runtime pairing step is needed. STT
+credentials remain local to the Runtime; the panel asks for local
+configuration only when readiness is missing.
 
 Seeing committed transcript context does not itself wake an Agent. Explicit
 addressing controls Harness activation.

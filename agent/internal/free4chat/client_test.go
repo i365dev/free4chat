@@ -22,7 +22,7 @@ func TestRoomInfoParsesLiveTranscriptStrictly(t *testing.T) {
 			"exists": true,
 			"liveTranscript": map[string]any{
 				"active": true, "producerRuntimeHostId": "host-live-a",
-				"startedByHumanParticipantId": "human-1", "epoch": float64(4), "startedAt": float64(9),
+				"epoch": float64(4), "startedAt": float64(9),
 			},
 			"liveTranscriptSegments": []any{map[string]any{
 				"segmentId": "lt_alpha", "epoch": float64(4), "sequence": float64(3),
@@ -522,97 +522,6 @@ func TestJoinRoomAndLifecycleCalls(t *testing.T) {
 	sent, err := client.SendText("h", "hi", nil)
 	if err != nil || sent.Sequence != 7 {
 		t.Fatalf("send mismatch: %+v %v", sent, err)
-	}
-}
-
-func TestRuntimeProviderCredentialsStayOnPrivateMCPWire(t *testing.T) {
-	const claimHash = "KPvm-f4hBdYhSjdaYF_67xqPZx7BiiAXvMo1U_8l44w"
-	const providerHandle = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
-	var captured []map[string]any
-	client, _ := newTestClient(t, func(w http.ResponseWriter, body map[string]any) {
-		switch toolNameOf(body) {
-		case "":
-			respondToolsList(w)
-		case "join_room":
-			captured = append(captured, toolArgs(body))
-			writeJSON(w, callResult(map[string]any{
-				"participantHandle":     "participant-handle",
-				"participant":           map[string]any{"id": "agent"},
-				"cursor":                float64(0),
-				"expiresAt":             float64(99),
-				"runtimeProviderHandle": providerHandle,
-			}))
-		case "update_runtime_host":
-			captured = append(captured, toolArgs(body))
-			writeJSON(w, callResult(map[string]any{"ok": true}))
-		default:
-			writeJSON(w, callResult(map[string]any{}))
-		}
-	})
-	host := types.RuntimeHostProjection{RuntimeHostID: "host-176-provider", Speech: types.HostSpeechReadiness{STT: true}}
-	joined, err := client.JoinRoomWithRuntimeProvider("room-176", "Pi", nil, &host, nil, claimHash, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if joined.RuntimeProviderHandle != providerHandle {
-		t.Fatal("provider handle was not parsed privately")
-	}
-	if err := client.UpdateRuntimeHostWithRuntimeProvider(joined.ParticipantHandle, host, providerHandle); err != nil {
-		t.Fatal(err)
-	}
-	if len(captured) != 2 || captured[0]["providerClaimHash"] != claimHash {
-		t.Fatalf("claim hash missing from private join wire: %#v", captured)
-	}
-	if _, present := captured[0]["runtimeProviderHandle"]; present {
-		t.Fatal("claim redemption must not send an existing provider handle")
-	}
-	if captured[1]["runtimeProviderHandle"] != providerHandle {
-		t.Fatal("provider proof missing from update wire")
-	}
-}
-
-func TestConnectRuntimeProviderUsesPrivateRuntimeControlAndReturnsHandle(t *testing.T) {
-	const claimHash = "KPvm-f4hBdYhSjdaYF_67xqPZx7BiiAXvMo1U_8l44w"
-	const providerHandle = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
-	var seenPath string
-	var seenHeaders http.Header
-	var captured map[string]any
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seenPath = r.URL.Path
-		seenHeaders = r.Header.Clone()
-		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
-			t.Fatal(err)
-		}
-		writeJSON(w, map[string]any{"runtimeProviderHandle": providerHandle})
-	}))
-	t.Cleanup(server.Close)
-	host := types.RuntimeHostProjection{RuntimeHostID: "host-176-provider", Speech: types.HostSpeechReadiness{STT: true}}
-	handleBytes, _ := json.Marshal(map[string]string{
-		"room": "room-176", "participantId": "agent-176", "participantToken": "private-token",
-	})
-	participantHandle := base64.RawURLEncoding.EncodeToString(handleBytes)
-	client := New(server.URL + "/mcp")
-	got, err := client.ConnectRuntimeProvider(participantHandle, host, claimHash)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != providerHandle {
-		t.Fatalf("provider handle mismatch: %q", got)
-	}
-	if seenPath != "/api/room/runtime-provider/connect" ||
-		seenHeaders.Get("X-Room-Id") != "room-176" ||
-		seenHeaders.Get("X-Room-Participant-Id") != "agent-176" ||
-		seenHeaders.Get("X-Room-Participant-Token") != "private-token" {
-		t.Fatalf("wrong private runtime control wire: path=%q headers=%v", seenPath, seenHeaders)
-	}
-	if seenHeaders.Get("Mcp-Method") != "" || seenHeaders.Get("Mcp-Name") != "" {
-		t.Fatalf("provider connection must not use the public MCP tool surface: %v", seenHeaders)
-	}
-	if captured["providerClaimHash"] != claimHash || captured["runtimeHost"] == nil {
-		t.Fatalf("provider control payload mismatch: %#v", captured)
-	}
-	if _, present := captured["runtimeProviderHandle"]; present {
-		t.Fatal("connect must not send an existing provider handle")
 	}
 }
 

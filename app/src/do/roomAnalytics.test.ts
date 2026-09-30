@@ -373,7 +373,6 @@ describe("privacy / cardinality contract (#346)", () => {
     "generated:11111111-1111-4111-8111-111111111111", // app instance id
     "<html>app source</html>", // generated App source
     "session-token-abc", // Runtime/Harness session token
-    "provider-claim-xyz",
   ]
 
   function representativeEvents(): RoomAnalyticsEvent[] {

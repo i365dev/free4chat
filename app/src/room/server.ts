@@ -5,7 +5,6 @@ import {
   serializedRoomAppBytes,
   validateRoomAppPayload,
 } from "../common/roomApp"
-import { isRuntimeProviderClaimHash } from "../common/runtimeProviderCredential"
 import {
   encodeTaskAttachmentWake,
   parseTaskAttachmentPending,
@@ -14,7 +13,6 @@ import {
   TASK_ATTACHMENT_WAKE_HEADER,
 } from "../common/taskAttachmentWake"
 import type { RoomSession } from "../do/RoomSession"
-import { validateRuntimeHost } from "../do/runtimeHost"
 
 const MAX_ROOM_LENGTH = 64
 const MAX_AGENT_ATTACHMENT_BYTES = 768 * 1024
@@ -36,7 +34,6 @@ const ROOM_REQUEST_PATHS = new Set([
   AGENT_TASK_EXECUTION_PATH,
   GENERATED_APP_PATH,
   "/api/room/permissions/request",
-  "/api/room/runtime-provider/connect",
   "/api/room/surfaces/read",
   "/api/room/attachments/read",
 ])
@@ -363,41 +360,6 @@ export async function handleRoomRequest(
   }
 
   // Runtime-only provider connection transport. Unlike ordinary MCP tools,
-  // this narrow control route is called solely by the resident Runtime: the
-  // participant capability stays in private request headers and the returned
-  // provider handle never enters a Harness/MCP tool result. A browser cannot
-  // use a public runtimeHostId to substitute for that capability.
-  if (pathname === "/api/room/runtime-provider/connect") {
-    if (request.method !== "POST")
-      return json({ error: "method_not_allowed" }, 405)
-    const room = request.headers.get("X-Room-Id")?.trim() ?? ""
-    const participantId = request.headers.get("X-Room-Participant-Id") ?? ""
-    const token = request.headers.get("X-Room-Participant-Token") ?? ""
-    if (!room || room.length > MAX_ROOM_LENGTH || !participantId || !token)
-      return json({ error: "missing_room_capability" }, 400)
-    let body: { runtimeHost?: unknown; providerClaimHash?: unknown }
-    try {
-      body = (await request.json()) as typeof body
-    } catch {
-      return json({ error: "invalid_request" }, 400)
-    }
-    const runtimeHost = validateRuntimeHost(body.runtimeHost)
-    if (!runtimeHost.ok || !isRuntimeProviderClaimHash(body.providerClaimHash))
-      return json({ error: "invalid_request" }, 400)
-    const stub = env.SFU_ROOM.get(env.SFU_ROOM.idFromName(room))
-    return stub.fetch("https://room/control", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        action: "agent-connect-runtime-provider",
-        participantId,
-        token,
-        runtimeHost: runtimeHost.runtimeHost,
-        providerClaimHash: body.providerClaimHash,
-      }),
-    })
-  }
-
   if (pathname === "/api/room/surfaces/read") {
     if (request.method !== "POST")
       return json({ error: "method_not_allowed" }, 405)

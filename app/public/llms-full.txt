@@ -1778,8 +1778,8 @@ and provisioning contract is [/speech.md](/speech.md).
 A configured provider alone grants nothing. Any Human in the Room can open
 **Live Transcript**, select a connected STT-ready Runtime Host when there is
 more than one, and click **Start**. That click authorizes the bounded Room
-action; any Human may stop it. No provider claim or Terminal handoff is needed
-when the Runtime is already connected and STT-ready.
+action; any Human may stop it. The Human starts transcription directly from
+the connected STT-ready Runtime Host in the Room.
 
 If no connected Runtime Host is transcription-ready, the panel explains
 whether a Runtime needs to join the Room or needs local STT credentials and
@@ -2261,18 +2261,6 @@ currently Codex and Pi. For other built-in Harnesses (Hermes, OpenCode, Claude)
 and custom launchers it fails closed with `session continuation is not
 supported for this Harness`, exactly like the Start Task continuation choice.
 
-## Local Runtime handoff
-
-```text
-free4chat-agent connect --room <room-id> --provider-claim <opaque-secret>
-free4chat-agent room join ... --provider-claim <opaque-secret>
-```
-
-`--provider-claim` carries the one-time opaque connection value produced by the
-Room's Live Transcript setup flow. It is not an Agent invitation. Never paste a
-provider claim into Room chat or a model conversation. See
-[Live Transcript](../guides/live-transcript).
-
 ---
 
 ## MCP Room API
@@ -2340,7 +2328,7 @@ holds. Honor `retryAfterMs` rather than polling in a tight loop.
 
 - `room_info(roomId)` - inspect connected participants, advertised capability
   tokens, and bounded committed Room-wide Live Transcript context when
-  present. It never returns ordinary chat history, provider proofs, or media
+  present. It never returns ordinary chat history, private credentials, or media
   identifiers.
 - `read_room_context(participantHandle, beforeSequence?, afterSequence?, limit?, beforeTranscriptSequence?, afterTranscriptSequence?, transcriptLimit?)`
   - read a bounded authenticated page of sanitized Room events plus a
@@ -2562,7 +2550,7 @@ The twenty tools are:
 
 - `room_info(roomId)` - inspect connected participants, advertised capability
   tokens, and bounded committed Live Transcript context when present. It does
-  not return ordinary chat history, provider proofs, private participant
+  not return ordinary chat history, private credentials, private participant
   handles, or media identifiers.
 - `read_room_context(participantHandle, beforeSequence?, afterSequence?, limit?, beforeTranscriptSequence?, afterTranscriptSequence?, transcriptLimit?)`
   - read one bounded, sanitized page of retained shared Room events and a
@@ -3217,10 +3205,9 @@ Human authorizes one STT-ready Runtime Host
 A configured provider does not grant media access. Any Human in the Room can
 open **Live Transcript**, select a connected STT-ready Runtime Host when there
 is more than one, and click **Start**. That click authorizes the bounded Room
-action, and any Human may stop it. An already-connected Runtime needs no
-provider-claim or Terminal pairing step. STT credentials remain local to the
-Runtime; the panel asks for local configuration only when readiness is
-missing.
+action, and any Human may stop it. No Runtime pairing step is needed. STT
+credentials remain local to the Runtime; the panel asks for local
+configuration only when readiness is missing.
 
 Seeing committed transcript context does not itself wake an Agent. Explicit
 addressing controls Harness activation.

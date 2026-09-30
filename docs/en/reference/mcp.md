@@ -58,7 +58,7 @@ holds. Honor `retryAfterMs` rather than polling in a tight loop.
 
 - `room_info(roomId)` - inspect connected participants, advertised capability
   tokens, and bounded committed Room-wide Live Transcript context when
-  present. It never returns ordinary chat history, provider proofs, or media
+  present. It never returns ordinary chat history, private credentials, or media
   identifiers.
 - `read_room_context(participantHandle, beforeSequence?, afterSequence?, limit?, beforeTranscriptSequence?, afterTranscriptSequence?, transcriptLimit?)`
   - read a bounded authenticated page of sanitized Room events plus a

@@ -17,7 +17,6 @@ const HOST = "host-live-transcript"
 const ACTIVE = {
   active: true as const,
   producerRuntimeHostId: HOST,
-  startedByHumanParticipantId: "human",
   epoch: 7,
   startedAt: 100,
 }
@@ -71,7 +70,6 @@ describe("Live Transcript domain", () => {
     const started = startLiveTranscript({
       liveTranscript: { active: false },
       nextLiveTranscriptEpoch: 3,
-      humanParticipantId: "human",
       runtimeHostId: HOST,
       now: 100,
     })
@@ -84,7 +82,6 @@ describe("Live Transcript domain", () => {
     const replay = startLiveTranscript({
       liveTranscript: started.liveTranscript,
       nextLiveTranscriptEpoch: started.nextLiveTranscriptEpoch,
-      humanParticipantId: "other-human",
       runtimeHostId: "other-host",
       now: 200,
     })
@@ -97,7 +94,6 @@ describe("Live Transcript domain", () => {
     const restarted = startLiveTranscript({
       liveTranscript: stopLiveTranscript(started.liveTranscript),
       nextLiveTranscriptEpoch: replay.nextLiveTranscriptEpoch,
-      humanParticipantId: "human",
       runtimeHostId: HOST,
       now: 300,
     })

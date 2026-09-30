@@ -76,7 +76,6 @@ function hookReturn(overrides: Record<string, unknown> = {}) {
     liveTranscript: { active: false },
     liveTranscriptSegments: [],
     runtimeHosts: {},
-    runtimeHostProviders: {},
     liveTranscriptMediaAvailable: false,
     startLiveTranscript: vi.fn(),
     stopLiveTranscript: vi.fn(),

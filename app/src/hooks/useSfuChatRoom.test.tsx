@@ -623,7 +623,6 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
             agentVoiceMediaAvailable: false,
             meetingNotesMediaAvailable: false,
             runtimeHosts: {},
-            runtimeHostProviders: {},
             roomAppsEnabled: true,
           },
         }),
@@ -996,14 +995,10 @@ describe("useSfuChatRoom Live Transcript RoomState wiring (#177 PR3)", () => {
                 speech: { stt: true, tts: true },
               },
             },
-            runtimeHostProviders: {
-              "host-a": { humanParticipantId: "human-a", claimedAt: 1 },
-            },
             messages: [],
             liveTranscript: {
               active: true,
               producerRuntimeHostId: "host-a",
-              startedByHumanParticipantId: "human-a",
               epoch: 7,
               startedAt: 1,
             },
@@ -1164,48 +1159,6 @@ describe("useSfuChatRoom Live Transcript RoomState wiring (#177 PR3)", () => {
       result.current.sendTaskInterruptAndSend("task-0001", 1.5, "text")
     ).toBe(false)
     expect(socket.sent.length).toBe(sentBefore)
-    unmount()
-  })
-
-  it("reuses one pending local Runtime connection claim across repeated clicks", async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined)
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText },
-    })
-    const { result, unmount } = renderHook(() =>
-      useSfuChatRoom("claim-room", "Alice", "audio")
-    )
-    await waitFor(() => expect(RecordingWebSocket.instances).toHaveLength(1))
-    const socket = RecordingWebSocket.instances[0]
-    act(() => socket.onopen?.())
-
-    const first = result.current.connectLocalRuntime()
-    const second = result.current.connectLocalRuntime()
-    await waitFor(() => {
-      const claimMessages = socket.sent
-        .map((message) => JSON.parse(message))
-        .filter((message) => message.type === "runtime-provider-claim-create")
-      expect(claimMessages).toHaveLength(1)
-    })
-    const claimMessage = socket.sent
-      .map((message) => JSON.parse(message))
-      .find((message) => message.type === "runtime-provider-claim-create")
-    act(() =>
-      socket.onmessage?.({
-        data: JSON.stringify({
-          type: "runtime-provider-claim-created",
-          requestId: claimMessage.requestId,
-          expiresAt: Date.now() + 5 * 60 * 1000,
-        }),
-      })
-    )
-    await expect(Promise.all([first, second])).resolves.toHaveLength(2)
-    expect(writeText).toHaveBeenCalledTimes(2)
-    expect(writeText.mock.calls[0][0]).toBe(writeText.mock.calls[1][0])
-    expect(writeText.mock.calls[0][0]).toContain(
-      "free4chat-agent connect --room"
-    )
     unmount()
   })
 

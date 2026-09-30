@@ -18,7 +18,6 @@ describe("projectResidentMediaState", () => {
       liveTranscript: {
         active: true,
         producerRuntimeHostId: "host-a",
-        startedByHumanParticipantId: "human-a",
         epoch: 7,
         startedAt: 8,
       },

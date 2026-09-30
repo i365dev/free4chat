@@ -10,7 +10,6 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -18,8 +17,6 @@ import (
 	"regexp"
 	"strings"
 )
-
-const runtimeProviderClaimDomain = "free4chat-runtime-provider-v1"
 
 // MaxLogicalTaskScopes bounds the resident-local non-Room cognition
 // conversations retained by one Agent process. It is a safety limit for this
@@ -35,28 +32,6 @@ const MaxLogicalScopeLength = 128
 // logical scope. Current producers are a small fixed set; this keeps an
 // accidental arbitrary source label from becoming another unbounded map.
 const MaxLogicalSourceCursors = 8
-
-// ValidRuntimeProviderCredential accepts an opaque 256-bit base64url value.
-// It is deliberately distinct from the public Runtime Host id grammar.
-func ValidRuntimeProviderCredential(value string) bool {
-	if len(value) != 43 {
-		return false
-	}
-	decoded, err := base64.RawURLEncoding.DecodeString(value)
-	return err == nil && len(decoded) == sha256.Size
-}
-
-// DeriveRuntimeProviderClaimHash is the cross-language Phase-B claim
-// derivation. The raw secret is used only in the local Runtime, never in
-// Room state, status, diagnostics, or a Harness prompt.
-func DeriveRuntimeProviderClaimHash(roomID, secret string) (string, error) {
-	if roomID == "" || len(roomID) > 64 || !ValidRuntimeProviderCredential(secret) {
-		return "", errors.New("runtime provider claim is malformed")
-	}
-	material := runtimeProviderClaimDomain + "\x00" + roomID + "\x00" + secret
-	digest := sha256.Sum256([]byte(material))
-	return base64.RawURLEncoding.EncodeToString(digest[:]), nil
-}
 
 // LauncherMaturity mirrors the Node launcher maturity classification.
 type LauncherMaturity string
@@ -906,11 +881,10 @@ type HarnessMeetingTranscript struct {
 // LiveTranscriptInfo is the Room-wide Live Transcript control-plane state.
 // It is room-visible metadata only; it never carries media credentials.
 type LiveTranscriptInfo struct {
-	Active                      bool   `json:"active"`
-	ProducerRuntimeHostID       string `json:"producerRuntimeHostId,omitempty"`
-	StartedByHumanParticipantID string `json:"startedByHumanParticipantId,omitempty"`
-	Epoch                       int64  `json:"epoch,omitempty"`
-	StartedAt                   int64  `json:"startedAt,omitempty"`
+	Active                bool   `json:"active"`
+	ProducerRuntimeHostID string `json:"producerRuntimeHostId,omitempty"`
+	Epoch                 int64  `json:"epoch,omitempty"`
+	StartedAt             int64  `json:"startedAt,omitempty"`
 }
 
 // ResidentMediaState is the self-targeted media projection delivered on the
@@ -1218,11 +1192,8 @@ type ScopedTurnOwnership interface {
 type JoinResult struct {
 	ParticipantID     string
 	ParticipantHandle string // secret; never logged, prompted, or surfaced
-	// RuntimeProviderHandle is a second private bearer returned only when a
-	// one-time Human provider claim was redeemed. It stays daemon-memory only.
-	RuntimeProviderHandle string
-	Cursor                int64
-	ExpiresAt             int64
+	Cursor            int64
+	ExpiresAt         int64
 	// AgentLeaseMs is the server's current Agent lease. The resident Runtime
 	// derives a sparse WebSocket heartbeat interval from it instead of
 	// duplicating a product timing constant locally.
@@ -1861,22 +1832,6 @@ type ResidentCapabilityController interface {
 // resident Runtime never falls back to an endless MCP long-poll loop.
 type ResidentEventClient interface {
 	OpenResidentEventStream(context.Context, string, int64) (ResidentEventStream, error)
-}
-
-// RuntimeHostProviderClient is an optional extension so existing test and
-// adapter clients retain the small Phase-A interface. The production MCP
-// client implements it; both values are private bearer material.
-type RuntimeHostProviderClient interface {
-	JoinRoomWithRuntimeProvider(roomID, name string, capabilities []string, host *RuntimeHostProjection, features *RuntimeFeatureProjection, providerClaimHash, runtimeProviderHandle string) (JoinResult, error)
-	UpdateRuntimeHostWithRuntimeProvider(participantHandle string, host RuntimeHostProjection, runtimeProviderHandle string) error
-}
-
-// RuntimeProviderConnector is the optional control-plane extension used by
-// the Human-facing local Runtime connection flow. It is deliberately kept
-// separate from RuntimeHostProviderClient so older adapters and test doubles
-// that only support join/update proofing continue to retain their behavior.
-type RuntimeProviderConnector interface {
-	ConnectRuntimeProvider(participantHandle string, host RuntimeHostProjection, providerClaimHash string) (string, error)
 }
 
 // LiveTranscriptAppendClient is an optional direct Room-control extension.

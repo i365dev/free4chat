@@ -1,7 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 
-import { LOCAL_PEER_ID } from "@common/consts"
-
 import type {
   LiveTranscriptSegment,
   LiveTranscriptState,
@@ -64,33 +62,11 @@ function runtimeHostName(
   return member ? `${member.name} Runtime` : "Runtime"
 }
 
-function providerName({
-  liveTranscript,
-  participants,
-  localParticipantId,
-}: Pick<
-  LiveTranscriptControlProps,
-  "liveTranscript" | "participants" | "localParticipantId"
->): string {
-  if (!liveTranscript.active) return ""
-  const provider = participants.find(
-    (participant) =>
-      participant.peerId === liveTranscript.startedByHumanParticipantId ||
-      (participant.peerId === LOCAL_PEER_ID &&
-        localParticipantId === liveTranscript.startedByHumanParticipantId)
-  )
-  return provider?.name ?? "a Room participant"
-}
-
-// #236: the Room header exposes exactly ONE Live Transcript control. All
-// setup/readiness/provider detail lives inside the anchored feature popover
-// so the toolbar never turns into a Runtime diagnostics strip. The
-// interaction, authorization, claim security, epoch/start/stop semantics and
-// #206 refresh recovery are unchanged — this is presentation only.
+// The Room header exposes one Live Transcript control. Start routes the
+// Human-authorized operation to an exact connected STT-ready Runtime Host.
 export function LiveTranscriptControl({
   liveTranscript = { active: false },
   runtimeHosts,
-  localParticipantId,
   participants = [],
   mediaAvailable = false,
   onStart,
@@ -182,12 +158,11 @@ export function LiveTranscriptControl({
                 Live Transcript is on
               </p>
               <p className="mt-1 text-gray-400">
-                Provided by{" "}
-                {providerName({
-                  liveTranscript,
-                  participants,
-                  localParticipantId,
-                })}
+                Using{" "}
+                {runtimeHostName(
+                  liveTranscript.producerRuntimeHostId,
+                  participants
+                )}
               </p>
               <button
                 type="button"

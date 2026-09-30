@@ -116,11 +116,9 @@ const baseHookReturn = {
   liveTranscript: { active: false } as { active: boolean },
   liveTranscriptSegments: [],
   runtimeHosts: {},
-  runtimeHostProviders: {},
   liveTranscriptMediaAvailable: false,
   startLiveTranscript: vi.fn(),
   stopLiveTranscript: vi.fn(),
-  connectLocalRuntime: vi.fn(),
   runtimeConnectionStatus: "idle" as const,
   leaveRoom: vi.fn(),
   roomAppsEnabled: false,
@@ -2259,7 +2257,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     expect(screen.queryByLabelText("Task unavailable")).toBeNull()
   })
 
-  it("copies the ordinary Agent invite only through the popover action, without a provider claim", async () => {
+  it("copies the Agent invite only through the popover action", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.assign(navigator, { clipboard: { writeText } })
     vi.mocked(trackAnalyticsEvent).mockClear()
@@ -2283,9 +2281,6 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     fireEvent.click(screen.getByRole("button", { name: "Copy invite prompt" }))
     expect(writeText).toHaveBeenCalledWith(
       expect.stringContaining("Join my temporary")
-    )
-    expect(writeText).not.toHaveBeenCalledWith(
-      expect.stringContaining("--provider-claim")
     )
     await waitFor(() =>
       expect(trackAnalyticsEvent).toHaveBeenCalledWith("AgentInviteCopied", {
@@ -2340,9 +2335,6 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
           speech: { stt: true, tts: true },
         },
       },
-      runtimeHostProviders: {
-        "host-a": { humanParticipantId: "human-local", claimedAt: 1 },
-      },
       startLiveTranscript,
       participants: [
         {
@@ -2387,7 +2379,6 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       liveTranscriptMediaAvailable: false,
       agentVoiceMediaAvailable: false,
       runtimeHosts: {},
-      runtimeHostProviders: {},
       participants: [
         {
           peerId: "local-peer-id",
@@ -5944,7 +5935,6 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       liveTranscriptMediaAvailable: false,
       agentVoiceMediaAvailable: false,
       runtimeHosts: {},
-      runtimeHostProviders: {},
       participants: [
         {
           peerId: "local-peer-id",
@@ -5979,14 +5969,13 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     expect(screen.queryByText("Connect local Runtime")).not.toBeInTheDocument()
   })
 
-  it("keeps Live Transcript setup free of provider-claim and Terminal handoff controls", () => {
+  it("shows Runtime setup guidance when no eligible Host is connected", () => {
     mockUseSfuChatRoom.mockReturnValue({
       ...baseHookReturn,
       connectionStatus: "connected",
       liveTranscriptMediaAvailable: false,
       agentVoiceMediaAvailable: false,
       runtimeHosts: {},
-      runtimeHostProviders: {},
       participants: [
         {
           peerId: "local-peer-id",
@@ -6060,9 +6049,6 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
           runtimeHostId: "host-a",
           speech: { stt: true, tts: true },
         },
-      },
-      runtimeHostProviders: {
-        "host-a": { humanParticipantId: "human-local", claimedAt: 1 },
       },
       participants: [
         {

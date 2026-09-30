@@ -386,13 +386,12 @@ func TestIpcRequestPreservesExplicitZeroContextCursors(t *testing.T) {
 // recordingClient captures capability updates and room sends so ambiguity,
 // mutation, and cleanup flows can be asserted without network access.
 type recordingClient struct {
-	mu               sync.Mutex
-	joins            int
-	capLists         [][]string
-	sent             []string
-	leftRoom         bool
-	providerConnects int
-	contextOptions   []types.RoomContextReadOptions
+	mu             sync.Mutex
+	joins          int
+	capLists       [][]string
+	sent           []string
+	leftRoom       bool
+	contextOptions []types.RoomContextReadOptions
 }
 
 func (c *recordingClient) Connect() error               { return nil }
@@ -474,12 +473,6 @@ func (c *recordingClient) LeaveRoom(string) error {
 	c.leftRoom = true
 	c.mu.Unlock()
 	return nil
-}
-func (c *recordingClient) ConnectRuntimeProvider(_ string, _ types.RuntimeHostProjection, _ string) (string, error) {
-	c.mu.Lock()
-	c.providerConnects++
-	c.mu.Unlock()
-	return "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8", nil
 }
 func (*recordingClient) Close() error { return nil }
 
@@ -564,37 +557,6 @@ func registerStub(t *testing.T, d *Daemon, instanceID string) stubBundle {
 	return stubBundle{client: client, runtimeRef: rt}
 }
 
-// registerProviderStub adds a resident with an explicit shared Host seed and
-// provider-handle store. It models two different Harnesses (for example Pi
-// and Codex) resident under the same local Runtime daemon.
-func registerProviderStub(
-	t *testing.T,
-	d *Daemon,
-	instanceID string,
-	hostSeed string,
-	providerHandles *runtime.ProviderHandleStore,
-) stubBundle {
-	t.Helper()
-	client := &recordingClient{}
-	rt := runtime.NewResidentRuntime(runtime.Options{
-		InstanceID:      instanceID,
-		RoomID:          "shared",
-		Name:            "Stub-" + instanceID,
-		Client:          client,
-		Adapter:         &stubAdapter{name: "stub"},
-		WaitSeconds:     1,
-		HostSeed:        hostSeed,
-		ProviderHandles: providerHandles,
-	})
-	t.Cleanup(rt.Stop)
-	d.register(&residentInstance{
-		instanceID: instanceID,
-		roomID:     "shared",
-		runtime:    rt,
-	})
-	return stubBundle{client: client, runtimeRef: rt}
-}
-
 func waitForStubJoin(t *testing.T, bundle stubBundle) {
 	t.Helper()
 	if err := bundle.runtimeRef.Start(); err != nil {
@@ -629,44 +591,6 @@ func TestContextReadDispatchPreservesExplicitZeroCursorsToRuntime(t *testing.T) 
 		options[0].BeforeTranscriptSequence == nil || *options[0].BeforeTranscriptSequence != 0 ||
 		options[0].AfterTranscriptSequence == nil || *options[0].AfterTranscriptSequence != 0 {
 		t.Fatalf("daemon lost explicit zero context cursors before Runtime: %#v", options)
-	}
-}
-
-func TestConnectChoosesOneSameHostResidentWithoutHumanInstanceSelection(t *testing.T) {
-	d, _ := startDaemon(t)
-	providerHandles := runtime.NewProviderHandleStore()
-	pi := registerProviderStub(t, d, "pi", "shared-host-seed", providerHandles)
-	codex := registerProviderStub(t, d, "codex", "shared-host-seed", providerHandles)
-	waitForStubJoin(t, pi)
-	waitForStubJoin(t, codex)
-
-	piHost := pi.runtimeRef.CurrentHostProjection()
-	codexHost := codex.runtimeRef.CurrentHostProjection()
-	if piHost == nil || codexHost == nil || piHost.RuntimeHostID != codexHost.RuntimeHostID {
-		t.Fatalf("same daemon residents did not derive one Host: %#v %#v", piHost, codexHost)
-	}
-
-	if _, err := SendIPC(&IpcRequest{
-		Op:            "connect",
-		Room:          "shared",
-		ProviderClaim: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
-	}); err != nil {
-		t.Fatalf("same-Host provider connection failed: %v", err)
-	}
-	pi.client.mu.Lock()
-	piCalls := pi.client.providerConnects
-	pi.client.mu.Unlock()
-	codex.client.mu.Lock()
-	codexCalls := codex.client.providerConnects
-	codex.client.mu.Unlock()
-	if piCalls+codexCalls != 1 {
-		t.Fatalf("provider claim redeemed %d times, want exactly once", piCalls+codexCalls)
-	}
-	if got := providerHandles.Get("shared", piHost.RuntimeHostID); got == "" {
-		t.Fatal("shared daemon provider handle was not retained")
-	}
-	if pi.runtimeRef.Status().ParticipantID == "" || codex.runtimeRef.Status().ParticipantID == "" {
-		t.Fatal("provider connection must not replace either resident Agent")
 	}
 }
 

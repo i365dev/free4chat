@@ -38,7 +38,7 @@ The twenty tools are:
 
 - `room_info(roomId)` - inspect connected participants, advertised capability
   tokens, and bounded committed Live Transcript context when present. It does
-  not return ordinary chat history, provider proofs, private participant
+  not return ordinary chat history, private credentials, private participant
   handles, or media identifiers.
 - `read_room_context(participantHandle, beforeSequence?, afterSequence?, limit?, beforeTranscriptSequence?, afterTranscriptSequence?, transcriptLimit?)`
   - read one bounded, sanitized page of retained shared Room events and a

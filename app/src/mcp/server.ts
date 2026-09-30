@@ -142,9 +142,6 @@ const runtimeFeaturesSchema = z.object({
   // older Runtime omits it, and the Room then sends nothing.
   taskExecutionReconciliation: z.boolean().optional(),
 })
-// 256-bit base64url opaque capability values. The MCP boundary validates the
-// shape but never logs, projects, or includes either value in room_info.
-const runtimeProviderCredentialSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/)
 
 const MCP_HOSTNAMES = [
   "free4.chat",
@@ -388,7 +385,7 @@ function createMcpServer(context: McpRequestContext) {
     "room_info",
     {
       description:
-        "Inspect a Free4Chat room without joining. Returns sanitized participants, capabilities, and the bounded shared Live Transcript context when present; never ordinary room history, provider proof, or media identifiers.",
+        "Inspect a Free4Chat room without joining. Returns sanitized participants, capabilities, and the bounded shared Live Transcript context when present; never ordinary room history, private credentials, or media identifiers.",
       inputSchema: {
         roomId: z.string().trim().min(1).max(MAX_ROOM_LENGTH),
       },
@@ -463,19 +460,9 @@ function createMcpServer(context: McpRequestContext) {
           .optional(),
         runtimeHost: runtimeHostSchema.optional(),
         runtimeFeatures: runtimeFeaturesSchema.optional(),
-        providerClaimHash: runtimeProviderCredentialSchema.optional(),
-        runtimeProviderHandle: runtimeProviderCredentialSchema.optional(),
       },
     },
-    async ({
-      roomId,
-      name,
-      capabilities,
-      runtimeHost,
-      runtimeFeatures,
-      providerClaimHash,
-      runtimeProviderHandle,
-    }) => {
+    async ({ roomId, name, capabilities, runtimeHost, runtimeFeatures }) => {
       if (!(await allowJoin(env, context.requestInfo)))
         return toolError("rate_limited")
       const participantId = crypto.randomUUID()
@@ -508,8 +495,6 @@ function createMcpServer(context: McpRequestContext) {
           // caller has no feature to project, so an older Runtime sends
           // exactly the payload it always did.
           ...(runtimeFeatures ? { runtimeFeatures } : {}),
-          ...(providerClaimHash ? { providerClaimHash } : {}),
-          ...(runtimeProviderHandle ? { runtimeProviderHandle } : {}),
         },
       })
       if (!result.ok)
@@ -518,14 +503,6 @@ function createMcpServer(context: McpRequestContext) {
             ? "invalid_capabilities"
             : controlError(result)
         )
-      const returnedProviderHandle = runtimeProviderCredentialSchema.safeParse(
-        result.data.runtimeProviderHandle
-      )
-      if (
-        result.data.runtimeProviderHandle !== undefined &&
-        returnedProviderHandle.success === false
-      )
-        return toolError("runtime_provider_handle_invalid")
       return toolResult({
         participant: result.data.participant,
         participantHandle: encodeHandle({
@@ -536,9 +513,6 @@ function createMcpServer(context: McpRequestContext) {
         cursor: result.data.cursor,
         expiresAt: result.data.expiresAt,
         agentLeaseMs: result.data.agentLeaseMs,
-        ...(returnedProviderHandle.success
-          ? { runtimeProviderHandle: returnedProviderHandle.data }
-          : {}),
       })
     }
   )
@@ -673,10 +647,9 @@ function createMcpServer(context: McpRequestContext) {
       inputSchema: {
         participantHandle: z.string().min(1),
         runtimeHost: runtimeHostSchema,
-        runtimeProviderHandle: runtimeProviderCredentialSchema.optional(),
       },
     },
-    async ({ participantHandle, runtimeHost, runtimeProviderHandle }) => {
+    async ({ participantHandle, runtimeHost }) => {
       const handle = decodeHandle(participantHandle)
       if (!handle) return toolError("invalid_participant_handle")
       const result = await guardedRoomControl(env, context, handle.room, {
@@ -684,7 +657,6 @@ function createMcpServer(context: McpRequestContext) {
         participantId: handle.participantId,
         token: handle.participantToken,
         runtimeHost,
-        ...(runtimeProviderHandle ? { runtimeProviderHandle } : {}),
       })
       return result.ok
         ? toolResult(result.data)
