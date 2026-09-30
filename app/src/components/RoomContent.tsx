@@ -299,7 +299,6 @@ export default function RoomContent({
 }) {
   const router = useRouter()
   const [roomLinkCopied, setRoomLinkCopied] = useState(false)
-  const [runtimeConnectError, setRuntimeConnectError] = useState("")
   const [taskAgent, setTaskAgent] = useState<TaskAgent | null>(null)
   const [taskInstruction, setTaskInstruction] = useState("")
   // #421: a large Start Task paste becomes a Task-correlated brief attachment
@@ -509,8 +508,6 @@ export default function RoomContent({
     stopLiveTranscript,
     agentVoiceMediaAvailable,
     setAgentVoice,
-    connectLocalRuntime,
-    runtimeConnectionStatus,
     leaveRoom,
     localParticipantId,
     agentActivities,
@@ -2295,17 +2292,6 @@ export default function RoomContent({
     setTimeout(() => setRoomLinkCopied(false), 2000)
   }
 
-  const handleConnectRuntime = () => {
-    setRuntimeConnectError("")
-    void connectLocalRuntime().catch((connectError) => {
-      setRuntimeConnectError(
-        connectError instanceof Error
-          ? connectError.message
-          : "Unable to connect the local Runtime"
-      )
-    })
-  }
-
   if (connectionStatus === "failed") {
     return (
       <main className="flex min-h-screen flex-col items-center justify-center bg-gray-950 text-white">
@@ -2514,16 +2500,11 @@ export default function RoomContent({
             <LiveTranscriptControl
               liveTranscript={liveTranscript}
               runtimeHosts={runtimeHosts}
-              runtimeHostProviders={runtimeHostProviders}
               localParticipantId={effectiveLocalParticipantId}
               participants={participants}
               mediaAvailable={liveTranscriptMediaAvailable}
               onStart={handleStartLiveTranscript}
               onStop={handleStopLiveTranscript}
-              onConnect={handleConnectRuntime}
-              runtimeConnectionStatus={runtimeConnectionStatus}
-              runtimeConnectError={runtimeConnectError}
-              onSuggestInvite={() => setAgentInviteOpen(true)}
             />
             <RuntimeCapabilityControl
               runtimeHosts={runtimeHosts}

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import {
   appendLiveTranscriptSegment,
   canAgentAppendLiveTranscript,
+  canHumanStartLiveTranscript,
   MAX_LIVE_TRANSCRIPT_SEGMENTS,
   MAX_LIVE_TRANSCRIPT_STORAGE_BYTES,
   liveTranscriptStorageByteLength,
@@ -46,15 +47,6 @@ const participants = [
 
 const runtimeHosts = {
   [HOST]: { runtimeHostId: HOST, speech: { stt: true, tts: false } },
-}
-
-const providers = {
-  [HOST]: {
-    humanParticipantId: "human",
-    claimedAt: 1,
-    providerHandleHash: "private",
-    verifiedParticipantIds: ["producer"],
-  },
 }
 
 describe("Live Transcript domain", () => {
@@ -112,6 +104,49 @@ describe("Live Transcript domain", () => {
     expect(restarted.liveTranscript).toMatchObject({ epoch: 4, startedAt: 300 })
   })
 
+  it("authorizes an authenticated Human's explicit Start for any connected STT-ready Host", () => {
+    expect(
+      canHumanStartLiveTranscript({
+        participants,
+        runtimeHosts,
+        humanParticipantId: "human",
+        runtimeHostId: HOST,
+      })
+    ).toBe(true)
+    expect(
+      canHumanStartLiveTranscript({
+        participants: participants.map((participant) =>
+          participant.id === "human"
+            ? { ...participant, connected: false }
+            : participant
+        ),
+        runtimeHosts,
+        humanParticipantId: "human",
+        runtimeHostId: HOST,
+      })
+    ).toBe(false)
+    expect(
+      canHumanStartLiveTranscript({
+        participants,
+        runtimeHosts,
+        humanParticipantId: "human",
+        runtimeHostId: "unavailable-host",
+      })
+    ).toBe(false)
+    expect(
+      canHumanStartLiveTranscript({
+        participants: participants.map((participant) =>
+          participant.kind === "agent"
+            ? { ...participant, connected: false }
+            : participant
+        ),
+        runtimeHosts,
+        humanParticipantId: "human",
+        runtimeHostId: HOST,
+      })
+    ).toBe(false)
+  })
+
   it("keeps a producer through a transient Human reconnect but fails closed on genuine loss", () => {
     expect(
       normalizeLiveTranscriptProducer({
@@ -122,7 +157,6 @@ describe("Live Transcript domain", () => {
             : participant
         ),
         runtimeHosts,
-        providers,
       })
     ).toEqual({ liveTranscript: ACTIVE, changed: false })
 
@@ -133,7 +167,6 @@ describe("Live Transcript domain", () => {
         runtimeHosts: {
           [HOST]: { runtimeHostId: HOST, speech: { stt: false, tts: false } },
         },
-        providers,
       })
     ).toEqual({ liveTranscript: { active: false }, changed: true })
 
@@ -142,7 +175,6 @@ describe("Live Transcript domain", () => {
         liveTranscript: ACTIVE,
         participants,
         runtimeHosts,
-        providers,
         mediaAvailable: false,
       })
     ).toEqual({ liveTranscript: { active: false }, changed: true })
@@ -151,22 +183,21 @@ describe("Live Transcript domain", () => {
       normalizeLiveTranscriptProducer({
         liveTranscript: ACTIVE,
         participants: participants.filter(
-          (participant) => participant.id !== "producer"
+          (participant) =>
+            participant.id !== "producer" && participant.id !== "copied-host"
         ),
         runtimeHosts,
-        providers,
       })
     ).toEqual({ liveTranscript: { active: false }, changed: true })
   })
 
-  it("requires the verified producer-host member, not a copied public host id", () => {
+  it("routes transcript production to a connected member of the selected Host", () => {
     expect(
       canAgentAppendLiveTranscript({
         liveTranscript: ACTIVE,
         caller: participants[1]!,
         participants,
         runtimeHosts,
-        providers,
       })
     ).toBe(true)
     expect(
@@ -175,7 +206,18 @@ describe("Live Transcript domain", () => {
         caller: participants[2]!,
         participants,
         runtimeHosts,
-        providers,
+      })
+    ).toBe(true)
+    expect(
+      canAgentAppendLiveTranscript({
+        liveTranscript: ACTIVE,
+        caller: {
+          id: "copied-id",
+          kind: "agent",
+          runtimeHostId: HOST,
+        },
+        participants,
+        runtimeHosts,
       })
     ).toBe(false)
   })

@@ -824,33 +824,3 @@ export function canHumanControlRuntimeHost({
     )
   )
 }
-
-// The small #177-facing predicate: a current Human can use a Runtime Host's
-// requested speech capability only if this Room has a live explicit provider
-// association for the same Human. Voice remains intentionally outside it.
-export function canHumanUseRuntimeHost({
-  participants,
-  runtimeHosts,
-  providers,
-  humanParticipantId,
-  runtimeHostId,
-  requiredSpeech,
-}: {
-  participants: Iterable<RuntimeHostProviderParticipant>
-  runtimeHosts: RuntimeHostMap | undefined
-  providers: RuntimeHostProviderMap | undefined
-  humanParticipantId: string
-  runtimeHostId: string
-  requiredSpeech: "stt" | "tts"
-}): boolean {
-  if (!isCurrentHuman(participants, humanParticipantId, true)) return false
-  const host = runtimeHosts?.[runtimeHostId]
-  const association = providers?.[runtimeHostId]
-  return (
-    Boolean(host?.speech[requiredSpeech]) &&
-    association?.humanParticipantId === humanParticipantId &&
-    association !== undefined &&
-    liveVerifiedParticipantIds(association, runtimeHostId, participants)
-      .length > 0
-  )
-}

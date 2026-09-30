@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest"
 import {
   MAX_PENDING_RUNTIME_PROVIDER_CLAIMS_PER_HUMAN,
   canHumanControlRuntimeHost,
-  canHumanUseRuntimeHost,
   createRuntimeHostProviderClaim,
   garbageCollectRuntimeHostProviders,
   markRuntimeHostProviderDisconnected,
@@ -233,7 +232,7 @@ describe("Runtime Host provider authorization", () => {
     ).toEqual({ ok: false, error: "runtime_provider_handle_invalid" })
   })
 
-  it("keeps Human-to-host STT use isolated and cleans up on leave/host GC", () => {
+  it("cleans up Human-to-host associations on leave and host GC", () => {
     const providers = {
       [hostA.runtimeHostId]: {
         humanParticipantId: "dawei",
@@ -248,30 +247,6 @@ describe("Runtime Host provider authorization", () => {
         verifiedParticipantIds: ["hermes"],
       },
     }
-    const runtimeHosts = {
-      [hostA.runtimeHostId]: hostA,
-      [hostB.runtimeHostId]: hostB,
-    }
-    expect(
-      canHumanUseRuntimeHost({
-        participants: [...humans, ...verifiedAgents],
-        runtimeHosts,
-        providers,
-        humanParticipantId: "dawei",
-        runtimeHostId: hostA.runtimeHostId,
-        requiredSpeech: "stt",
-      })
-    ).toBe(true)
-    expect(
-      canHumanUseRuntimeHost({
-        participants: [...humans, ...verifiedAgents],
-        runtimeHosts,
-        providers,
-        humanParticipantId: "dawei",
-        runtimeHostId: hostB.runtimeHostId,
-        requiredSpeech: "stt",
-      })
-    ).toBe(false)
     const afterLeave = removeRuntimeHostProviderForHuman({
       providers,
       pendingClaims: {
@@ -315,23 +290,6 @@ describe("Runtime Host provider authorization", () => {
       ],
     })
     expect(afterRedeemerLeaves).toEqual({})
-    expect(
-      canHumanUseRuntimeHost({
-        participants: [
-          ...humans,
-          {
-            id: "spoofed",
-            kind: "agent" as const,
-            runtimeHostId: hostA.runtimeHostId,
-          },
-        ],
-        runtimeHosts,
-        providers: afterRedeemerLeaves,
-        humanParticipantId: "dawei",
-        runtimeHostId: hostA.runtimeHostId,
-        requiredSpeech: "stt",
-      })
-    ).toBe(false)
   })
 
   it("bounds pending claim admission without producing Room messages", () => {

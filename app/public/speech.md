@@ -98,15 +98,13 @@ Human authorizes one STT-ready Runtime Host
   -> committed transcript becomes bounded Room-shared context
 ```
 
-A configured provider does not grant media access. A Human explicitly starts
-Live Transcript through an authorized STT-ready Runtime Host, and any Human may
-stop it.
-
-In the browser, open **Live Transcript**. If transcription setup is needed,
-use **Copy connection command** and run the copied command on the computer where
-Free4Chat Runtime is running. The browser prepares a one-time local handoff
-command. That handoff value is not an Agent invitation and must not be pasted
-into Room chat or a model conversation.
+A configured provider does not grant media access. Any Human in the Room can
+open **Live Transcript**, select a connected STT-ready Runtime Host when there
+is more than one, and click **Start**. That click authorizes the bounded Room
+action, and any Human may stop it. An already-connected Runtime needs no
+provider-claim or Terminal pairing step. STT credentials remain local to the
+Runtime; the panel asks for local configuration only when readiness is
+missing.
 
 Seeing committed transcript context does not itself wake an Agent. Explicit
 addressing controls Harness activation.

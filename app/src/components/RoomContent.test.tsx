@@ -2357,6 +2357,8 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
           name: "Codex",
           kind: "agent",
           room: "test-room",
+          connected: true,
+          runtimeHostId: "host-a",
           voiceAvailable: true,
           voiceEnabled: false,
         },
@@ -5977,7 +5979,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     expect(screen.queryByText("Connect local Runtime")).not.toBeInTheDocument()
   })
 
-  it("opens the Invite Agent popover from the Live Transcript setup copy", () => {
+  it("keeps Live Transcript setup free of provider-claim and Terminal handoff controls", () => {
     mockUseSfuChatRoom.mockReturnValue({
       ...baseHookReturn,
       connectionStatus: "connected",
@@ -6000,25 +6002,20 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
     )
 
-    // Unavailable Live Transcript setup copy points new Humans at the
-    // Agent-first path. Cross-opening is one-feature-at-a-time: the Live
-    // Transcript dialog closes FIRST, then the Invite Agent dialog opens.
     fireEvent.click(screen.getByRole("button", { name: "Live Transcript" }))
     expect(
       screen.getByRole("dialog", { name: "Live Transcript" })
     ).toBeInTheDocument()
-    fireEvent.click(
-      screen.getByRole("button", { name: "Start with Invite Agent" })
-    )
     expect(
-      screen.queryByRole("dialog", { name: "Live Transcript" })
-    ).not.toBeInTheDocument()
-    expect(
-      screen.getByRole("dialog", { name: "Invite an Agent" })
+      screen.getByText(
+        "No Runtime Host is connected to this Room. Join an Agent Runtime to enable transcription."
+      )
     ).toBeInTheDocument()
     expect(
-      screen.getByRole("button", { name: "Copy invite prompt" })
-    ).toBeTruthy()
+      screen.queryByRole("button", {
+        name: /start with invite|connection command/i,
+      })
+    ).not.toBeInTheDocument()
   })
 
   it("keeps participant cards free of personal reaction quick controls", () => {
@@ -6074,6 +6071,14 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
           kind: "human",
           room: "test-room",
           muteState: false,
+        },
+        {
+          peerId: "agent-codex",
+          name: "Codex",
+          kind: "agent",
+          room: "test-room",
+          connected: true,
+          runtimeHostId: "host-a",
         },
       ],
     })

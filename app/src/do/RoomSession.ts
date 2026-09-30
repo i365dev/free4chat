@@ -21,6 +21,7 @@ import {
 import {
   appendLiveTranscriptSegment,
   canAgentAppendLiveTranscript,
+  canHumanStartLiveTranscript,
   NO_LIVE_TRANSCRIPT,
   normalizeLiveTranscriptProducer,
   normalizeStoredLiveTranscript,
@@ -99,7 +100,6 @@ import {
 import {
   createRuntimeHostProviderClaim,
   canHumanControlRuntimeHost,
-  canHumanUseRuntimeHost,
   completeDeferredRuntimeHostProviderReattach,
   deferRuntimeHostProviderReattach,
   garbageCollectRuntimeHostProviders,
@@ -1746,7 +1746,6 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       liveTranscript: liveTranscriptBeforeProducerNormalization,
       participants: Object.values(participants),
       runtimeHosts,
-      providers: normalizedRuntimeHostProviders.providers,
       mediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
     })
     if (normalizedLiveProducer.changed) changed = true
@@ -2482,16 +2481,15 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     this.normalizeLiveTranscriptForRoom(room)
   }
 
-  // A running transcript is valid only while its exact Runtime Host, the
-  // private Human↔Host provider association, and one verified Host member
-  // remain live. This intentionally does not require the selected Human's
-  // control WebSocket to stay connected during a normal reconnect grace.
+  // A running transcript is valid only while its exact STT-ready Runtime
+  // Host and a connected Agent member remain live. This intentionally does
+  // not require the selected Human's control WebSocket to stay connected
+  // during a normal reconnect grace.
   private normalizeLiveTranscriptForRoom(room: RoomRecord): void {
     const normalized = normalizeLiveTranscriptProducer({
       liveTranscript: room.liveTranscript,
       participants: Object.values(room.participants),
       runtimeHosts: room.runtimeHosts,
-      providers: room.runtimeHostProviders,
       mediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
     })
     if (normalized.changed) {
@@ -2526,8 +2524,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
 
   // Live Transcript admission is intentionally separate from the legacy
   // Meeting Notes note-taker grant. A public Runtime Host id is never enough:
-  // require this exact authenticated Agent to be a current verified member of
-  // the selected Host's private Human↔Host provider association.
+  // require this exact authenticated Agent to remain a connected member of
+  // the selected STT-ready Runtime Host.
   private isAgentAuthorizedForLiveTranscriptMedia(
     room: RoomRecord,
     participant: RoomParticipant
@@ -2537,7 +2535,6 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       caller: participant,
       participants: Object.values(room.participants),
       runtimeHosts: room.runtimeHosts,
-      providers: room.runtimeHostProviders,
       mediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
     })
   }
@@ -5176,15 +5173,14 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (!room.liveTranscript.active)
         return this.json({ error: "live_transcript_inactive" }, 409)
       // A public runtimeHostId is discovery metadata only. Appending requires
-      // this exact authenticated Agent to be a current, server-verified
-      // member of the active Host's provider association.
+      // this exact authenticated Agent to be a current member of the active
+      // STT-ready Host.
       if (
         !canAgentAppendLiveTranscript({
           liveTranscript: room.liveTranscript,
           caller: participant,
           participants: Object.values(room.participants),
           runtimeHosts: room.runtimeHosts,
-          providers: room.runtimeHostProviders,
           mediaAvailable: this.env.AGENT_MEDIA_ENABLED === "true",
         })
       )
@@ -9058,13 +9054,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         return
       }
       if (
-        !canHumanUseRuntimeHost({
+        !canHumanStartLiveTranscript({
           participants: Object.values(room.participants),
           runtimeHosts: room.runtimeHosts,
-          providers: room.runtimeHostProviders,
           humanParticipantId: participant.id,
           runtimeHostId: message.runtimeHostId,
-          requiredSpeech: "stt",
         })
       ) {
         socket.send(

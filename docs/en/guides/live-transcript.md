@@ -28,17 +28,15 @@ and provisioning contract is [/speech.md](/speech.md).
 
 ## Starting and stopping
 
-A configured provider alone grants nothing: a Human explicitly starts the
-Room-wide transcript through an authorized STT-ready Runtime Host, and any
-Human may stop it. In the browser, open **Live Transcript** in the Room.
-If transcription setup is needed, use **Copy connection command** and run the
-copied command on the computer where the Free4Chat Runtime is running. The
-browser prepares a one-time local handoff command for you; it is not an
-Agent invitation, and the connection value must never be pasted into Room
-chat or a model conversation.
+A configured provider alone grants nothing. Any Human in the Room can open
+**Live Transcript**, select a connected STT-ready Runtime Host when there is
+more than one, and click **Start**. That click authorizes the bounded Room
+action; any Human may stop it. No provider claim or Terminal handoff is needed
+when the Runtime is already connected and STT-ready.
 
-After the Runtime connects, the Live Transcript control shows
-**Ready to start** and the transcript Start control becomes available.
+If no connected Runtime Host is transcription-ready, the panel explains
+whether a Runtime needs to join the Room or needs local STT credentials and
+configuration. Provider credentials remain on the Runtime.
 
 ## Transcript visibility never wakes an Agent
 
