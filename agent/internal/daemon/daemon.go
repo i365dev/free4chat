@@ -26,12 +26,16 @@ import (
 	"github.com/i365dev/free4chat/agent/internal/voice"
 )
 
-func loadLocalCapabilityController(runtimeDir string) *capability.Controller {
-	adapter, err := capability.LoadFixtureAdapter(runtimeDir)
-	if err != nil {
-		return nil
+func loadLocalCapabilityAdapter(runtimeDir string) (*capability.Controller, *capability.ProcessAdapter) {
+	registration, err := capability.LoadRegistration(runtimeDir)
+	if err != nil || registration == nil {
+		return nil, nil
 	}
-	return capability.NewController(adapter)
+	adapter, err := capability.NewProcessAdapter(*registration)
+	if err != nil {
+		return nil, nil
+	}
+	return capability.NewController(adapter), adapter
 }
 
 // residentInstance is one live room runtime owned by the daemon.
@@ -44,19 +48,21 @@ type residentInstance struct {
 
 // Daemon hosts every resident Agent instance behind one Unix socket.
 type Daemon struct {
-	mu         sync.Mutex
-	instances  map[string]*residentInstance
-	listener   net.Listener
-	closed     chan struct{}
-	stopping   bool
-	finalized  bool
-	finishOnce sync.Once
-	voiceGate  voice.Gate
+	mu                    sync.Mutex
+	capabilityLifecycleMu sync.Mutex
+	instances             map[string]*residentInstance
+	listener              net.Listener
+	closed                chan struct{}
+	stopping              bool
+	finalized             bool
+	finishOnce            sync.Once
+	voiceGate             voice.Gate
 	// hostLog is the bounded shared diagnostic log (#228).
 	hostLog             *BoundedLog
 	providerHandles     *runtime.ProviderHandleStore
 	transcriptProducers *TranscriptProducerCoordinator
 	localCapability     *capability.Controller
+	capabilityProcess   *capability.ProcessAdapter
 	capabilityHandler   types.ResidentCapabilityController
 	// runtimeExecutable is the exact binary that owns this daemon. The
 	// Harness receives it through launcher-owned environment policy so local
@@ -68,6 +74,7 @@ type Daemon struct {
 // New creates an idle daemon.
 func New() *Daemon {
 	runtimeExecutable, _ := os.Executable()
+	localCapability, capabilityProcess := loadLocalCapabilityAdapter(RuntimeDirectory())
 	d := &Daemon{
 		instances:           make(map[string]*residentInstance),
 		closed:              make(chan struct{}),
@@ -75,10 +82,14 @@ func New() *Daemon {
 		hostLog:             NewBoundedLog(RuntimeDirectory()),
 		providerHandles:     runtime.NewProviderHandleStore(),
 		transcriptProducers: NewTranscriptProducerCoordinator(),
-		localCapability:     loadLocalCapabilityController(RuntimeDirectory()),
+		localCapability:     localCapability,
+		capabilityProcess:   capabilityProcess,
 		runtimeExecutable:   runtimeExecutable,
 	}
 	d.capabilityHandler = &daemonCapabilityController{daemon: d}
+	if capabilityProcess != nil {
+		d.watchCapabilityProcess(capabilityProcess)
+	}
 	return d
 }
 
@@ -210,34 +221,10 @@ func (d *Daemon) Dispatch(request *IpcRequest) (any, error) {
 		return d.statusViews(), nil
 	case "diagnostics":
 		return d.diagnosticsViews(request.InstanceID, request.LogTail), nil
-	case "capability-configure":
-		if err := capability.SaveFixtureEndpoint(RuntimeDirectory(), request.FixtureEndpoint); err != nil {
-			return nil, err
-		}
-		adapter, err := capability.LoadFixtureAdapter(RuntimeDirectory())
-		if err != nil {
-			return nil, capability.ErrUnavailable
-		}
-		d.mu.Lock()
-		d.localCapability = capability.NewController(adapter)
-		instances := make([]*residentInstance, 0, len(d.instances))
-		for _, instance := range d.instances {
-			instances = append(instances, instance)
-		}
-		d.mu.Unlock()
-		refreshed := 0
-		refreshFailures := 0
-		for _, instance := range instances {
-			if err := instance.runtime.RefreshRuntimeHostProjection(); err != nil {
-				refreshFailures++
-				continue
-			}
-			refreshed++
-		}
-		if refreshFailures > 0 {
-			return nil, fmt.Errorf("local capability configured, but Runtime Host projection refresh failed for %d resident(s)", refreshFailures)
-		}
-		return map[string]any{"configured": true, "refreshedResidents": refreshed}, nil
+	case "capability-adapter-register":
+		return d.registerCapabilityAdapter(capability.Registration{Command: request.AdapterCommand, Args: request.AdapterArgs})
+	case "capability-adapter-remove":
+		return d.removeCapabilityAdapter()
 	case "capability-list":
 		if d.capabilityHandler == nil {
 			return []types.RuntimeCapabilityProjection{}, nil
@@ -892,16 +879,25 @@ func (d *Daemon) completeConfirmedSelfLeave(instanceID string) {
 // listener teardown is deferred to finishStopAfterReply so the stop IPC reply
 // still reaches its caller before the process exits.
 func (d *Daemon) beginStop() {
+	d.capabilityLifecycleMu.Lock()
 	d.mu.Lock()
 	d.stopping = true
+	adapter := d.capabilityProcess
+	d.capabilityProcess = nil
+	d.localCapability = nil
 	instances := make([]*residentInstance, 0, len(d.instances))
 	for _, instance := range d.instances {
 		instances = append(instances, instance)
 	}
 	d.instances = make(map[string]*residentInstance)
 	d.mu.Unlock()
+	d.capabilityLifecycleMu.Unlock()
 
 	var wg sync.WaitGroup
+	if adapter != nil {
+		wg.Add(1)
+		go func() { defer wg.Done(); _ = adapter.Close() }()
+	}
 	for _, instance := range instances {
 		d.transcriptProducers.ReleaseInstance(instance.instanceID)
 		wg.Add(1)
@@ -919,6 +915,103 @@ func (d *Daemon) beginStop() {
 	case <-done:
 	case <-time.After(3 * time.Second):
 	}
+}
+
+func (d *Daemon) registerCapabilityAdapter(registration capability.Registration) (any, error) {
+	d.capabilityLifecycleMu.Lock()
+	defer d.capabilityLifecycleMu.Unlock()
+	if err := d.rejectIfStopping(); err != nil {
+		return nil, err
+	}
+	adapter, err := capability.NewProcessAdapter(registration)
+	if err != nil {
+		return nil, err
+	}
+	if err := capability.SaveRegistration(RuntimeDirectory(), registration); err != nil {
+		_ = adapter.Close()
+		return nil, err
+	}
+	d.mu.Lock()
+	if d.stopping {
+		d.mu.Unlock()
+		_ = capability.RemoveRegistration(RuntimeDirectory())
+		_ = adapter.Close()
+		return nil, errors.New("daemon is stopping")
+	}
+	previous := d.capabilityProcess
+	d.capabilityProcess = adapter
+	d.localCapability = capability.NewController(adapter)
+	instances := d.residentInstancesLocked()
+	d.mu.Unlock()
+	if previous != nil {
+		_ = previous.Close()
+	}
+	d.watchCapabilityProcess(adapter)
+	if err := d.refreshCapabilityProjection(instances); err != nil {
+		return nil, err
+	}
+	return map[string]any{"registered": true}, nil
+}
+
+func (d *Daemon) removeCapabilityAdapter() (any, error) {
+	d.capabilityLifecycleMu.Lock()
+	defer d.capabilityLifecycleMu.Unlock()
+	if err := d.rejectIfStopping(); err != nil {
+		return nil, err
+	}
+	if err := capability.RemoveRegistration(RuntimeDirectory()); err != nil {
+		return nil, err
+	}
+	d.mu.Lock()
+	previous := d.capabilityProcess
+	d.capabilityProcess = nil
+	d.localCapability = nil
+	instances := d.residentInstancesLocked()
+	d.mu.Unlock()
+	if previous != nil {
+		_ = previous.Close()
+	}
+	if err := d.refreshCapabilityProjection(instances); err != nil {
+		return nil, err
+	}
+	return map[string]any{"removed": true}, nil
+}
+
+func (d *Daemon) residentInstancesLocked() []*residentInstance {
+	instances := make([]*residentInstance, 0, len(d.instances))
+	for _, instance := range d.instances {
+		instances = append(instances, instance)
+	}
+	return instances
+}
+
+func (d *Daemon) refreshCapabilityProjection(instances []*residentInstance) error {
+	failures := 0
+	for _, instance := range instances {
+		if err := instance.runtime.RefreshRuntimeHostProjection(); err != nil {
+			failures++
+		}
+	}
+	if failures > 0 {
+		return fmt.Errorf("local Adapter changed, but Runtime Host projection refresh failed for %d resident(s)", failures)
+	}
+	return nil
+}
+
+func (d *Daemon) watchCapabilityProcess(adapter *capability.ProcessAdapter) {
+	go func() {
+		<-adapter.Done()
+		d.mu.Lock()
+		if d.capabilityProcess != adapter || d.stopping {
+			d.mu.Unlock()
+			return
+		}
+		d.capabilityProcess = nil
+		d.localCapability = nil
+		instances := d.residentInstancesLocked()
+		d.mu.Unlock()
+		_ = d.refreshCapabilityProjection(instances)
+	}()
 }
 
 func (d *Daemon) isStopping() bool {

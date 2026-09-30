@@ -1,12 +1,30 @@
 # Experimental local capability Adapter spike
 
-This folder is Phase 0 evidence only. It is not imported by the Go Runtime.
+This folder contains the experimental reference Adapter and validator. The production Go Runtime launches the Adapter as an external process and does not import its source.
 
 Run with Python 3 (standard library only):
 
 ```sh
 python3 validate.py
 ```
+
+To dogfood through the production daemon, start the standalone fixture and create an Adapter-owned config file:
+
+```sh
+python3 fixture.py --port 43127
+printf '{"fixtureBaseUrl":"http://127.0.0.1:43127"}\n' > adapter-config.json
+free4chat-agent capability adapter register \\
+  --exec python3 \\
+  --arg /absolute/path/to/agent/experimental/local-capability-adapter/adapter.py \\
+  --arg --config \\
+  --arg /absolute/path/to/adapter-config.json
+free4chat-agent capability list --json
+free4chat-agent capability observe --id living_room_light
+free4chat-agent capability invoke --id living_room_light --action set_led --args '{"color":"#123456"}'
+free4chat-agent capability adapter remove
+```
+
+Replace `/absolute/path/to` with the checkout paths. Registration explicitly approves local execution. `adapter-config.json` belongs to the Adapter, not Free4Chat Runtime; do not put credentials in command arguments.
 
 The validator starts an ephemeral deterministic localhost fixture, writes an Adapter-owned `adapter-config.json` in a temporary directory, launches `adapter.py`, and checks `list`, `describe`, `observe`, a valid `set_led` invocation, unsupported-action errors, and failure handling for malformed, oversized, duplicate, and missing responses. No Free4Chat source package or Runtime configuration is used. The only fixture endpoint is in the Adapter config file, never in a protocol descriptor or request.
 

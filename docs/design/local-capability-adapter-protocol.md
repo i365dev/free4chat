@@ -1,6 +1,6 @@
-# Local Capability Adapter Protocol (Phase 0)
+# Local Capability Adapter Protocol and V1 Runtime
 
-**Status:** Phase 0 recommendation; no production Runtime migration in this change.
+**Status:** Phase 0 protocol decision; this change adds its first production Runtime integration.
 
 ## Decision
 
@@ -52,7 +52,7 @@ Methods and arguments:
 - `observe`: `capabilityId`; returns a JSON value bounded as below.
 - `invoke`: `capabilityId`, `action`, and `args`; returns a JSON value bounded as below.
 
-Descriptor fields are the existing Room projection fields: `capabilityId`, `title`, `version`, `observe` (boolean), and `actions` (`name`, `title`, `input`). `input` is the existing closed object schema with primitive `string`, `number`, or `boolean` properties and optional `required` names. Descriptor bounds and forbidden integration/secret-shaped fields follow `RuntimeCapabilityProjection.Valid()`; the whole descriptor is at most 1,024 bytes. One Adapter may list up to eight descriptors, subject to the aggregate frame bound. The current #513 Runtime Host projection itself accepts one descriptor; that is a Runtime migration limit, not an Adapter schema difference.
+Descriptor fields are the existing Room projection fields: `capabilityId`, `title`, `version`, `observe` (boolean), and `actions` (`name`, `title`, `input`). `input` is the existing closed object schema with primitive `string`, `number`, or `boolean` properties and optional `required` names. Descriptor bounds and forbidden integration/secret-shaped fields follow `RuntimeCapabilityProjection.Valid()`; the whole descriptor is at most 1,024 bytes. The protocol can carry up to eight descriptors in a bounded list, but production V1 requires exactly one: zero or multiple descriptors fail registration explicitly. Room/Runtime Host projection capacity remains one.
 
 The protocol intentionally has no `health` call: a successful `list` is the readiness probe, and process exit/EOF signals loss of the Adapter. It has no `initialize` call because version is checked on each envelope. It has no protocol cancellation method: V1 has one in-flight call, and the Runtime cancels by closing/killing the child and starting a fresh process on a later request.
 
@@ -63,7 +63,7 @@ The protocol intentionally has no `health` call: a successful `list` is the read
 - Descriptors: at most eight; each at most 1,024 encoded bytes; each descriptor follows the existing projection limits (64-character title, 32-character version, four actions, 16 properties per action, and the existing identifier/type/sensitive-field rules).
 - Invoke `args`: at most 1,024 encoded JSON bytes.
 - `observe` and `invoke` result: at most 4,096 encoded JSON bytes.
-- Operation deadline: 1.5 seconds for the Phase 0 reference fixture; production may configure one bounded Runtime policy.
+- Operation deadline: 1.5 seconds in the V1 supervisor.
 
 Error codes are closed: `invalid_request`, `unsupported_method`, `unknown_capability`, `unsupported_action`, `invalid_args`, `unavailable`, `too_large`, and `internal`. Do not include vendor error text, endpoint values, or credentials in protocol errors. A timeout maps to `unavailable` at the protocol edge while the Runtime may retain a local timeout classification.
 
@@ -92,24 +92,24 @@ Agent finds or writes Adapter
 → temporary Adapter is stopped and its generated files may be removed
 ```
 
-Starting an executable does not publish its capability. A Room capability request does not grant the Adapter filesystem, network, USB, or secret authority. For Agent-generated temporary Adapters, the future Runtime registration should carry an explicit owner (Room/session or user-level) and stop/delete only Room/session-owned temporary processes at lease expiry; user-installed persistent Adapters remain independently managed. Neither registration store, daemon/package manager, nor automatic installer is part of Phase 0.
+`free4chat-agent capability adapter register --exec ... [--arg ...]` is the explicit local execution approval and stores only the command and bounded argv in a private Runtime config file. `capability adapter remove` unregisters it. Starting an executable does not publish its capability; Human Room publication/control approval remains separate. A Room capability request does not grant the Adapter filesystem, network, USB, or secret authority. V1 registrations are daemon-owned and persist across daemon restarts. Room/session-owned temporary Adapter cleanup is deferred; user-installed persistent processes are the supported V1 lifecycle. There is no installer or package manager.
 
 ## Migration from the #512/#513 fixture seam
 
-| Current piece | Phase 0 disposition | Evidence / later action |
+| Current piece | V1 disposition | Evidence / implementation |
 | --- | --- | --- |
 | `agent/internal/types.RuntimeCapabilityProjection` and its validation | **KEEP GENERIC** | Semantic descriptor already excludes endpoint/config/credentials and bounds Room projection. Reuse its wire shape. |
 | Runtime capability request dispatch and Room authorization/correlation | **KEEP GENERIC** | `agent/internal/runtime/runtime.go`, `agent/internal/daemon/capability_controller.go`, and `agent/internal/free4chat/resident_events.go` carry semantic operations, not vendor routes. Keep these on the Runtime side. |
-| `agent/internal/capability.Controller` bounds/error normalization | **KEEP GENERIC**, after decoupling the single fixture ID | Bounds, timeout, JSON validation, and safe error mapping are reusable; `CapabilityID = local_fixture` is fixture-specific. |
-| `agent/internal/capability/fixture_http.go` | **MOVE BEHIND ADAPTER PROTOCOL** | `NewFixtureAdapter`, `/state`, `/actions/set-led`, `color`, and loopback HTTP rules are all proof-specific. Replace with the external process only in a later Runtime migration. |
-| `agent/internal/capability/config.go` | **DELETE AFTER MIGRATION** | `local-capability.json` and `fixtureEndpoint` belong to the fixture adapter. Adapter-local config remains outside Runtime configuration. |
-| Daemon `capability-configure` / `FixtureEndpoint` IPC and controller replacement | **MOVE BEHIND ADAPTER PROTOCOL** | `agent/internal/daemon/daemon.go` and `ipc.go` currently accept a fixture URL and load the fixture implementation. Later replace with approved process registration, not a generic endpoint field. |
-| `agent/internal/cli` `capability configure --fixture-endpoint` | **DELETE AFTER MIGRATION** | It configures the fixture URL. The semantic `list`, `describe`, `observe`, and `invoke` commands can remain generic. |
+| `agent/internal/capability.Controller` bounds/error normalization | **KEEP GENERIC** | It validates semantic descriptors and typed action args, and bounds request/result payloads. Fixture ID and color policy are removed. |
+| `agent/internal/capability/fixture_http.go` | **REMOVED** | `agent/internal/capability/process.go` owns generic stdio framing/lifecycle. HTTP routes exist only in the experimental Python Adapter. |
+| `agent/internal/capability/config.go` | **REPLACED** | `capability-adapter.json` persists only executable and bounded argv with private file permissions. Adapter config remains Adapter-owned. |
+| Daemon `capability-configure` / `FixtureEndpoint` IPC and controller replacement | **REPLACED** | `capability-adapter-register/remove` starts, atomically replaces, or stops the daemon-owned process and refreshes live Runtime Host projection. Process exit clears the current projection. |
+| `agent/internal/cli` `capability configure --fixture-endpoint` | **REMOVED** | `capability adapter register/remove` manages only local process identity; semantic `list`, `describe`, `observe`, and `invoke` remain unchanged. |
 | Harness instructions and semantic capability CLI | **KEEP GENERIC** | The prompt uses descriptor-provided IDs/actions and local policy; remove only fixture assumptions if any enter it. |
 | Python reference Adapter / fixture / validator in `agent/experimental/local-capability-adapter/` | **PROOF-ONLY** | Executable spec evidence, outside production Runtime packages and dependencies. |
-| Current Go fixture tests | **DELETE AFTER MIGRATION** | They validate the one fixed HTTP proof and should be replaced by protocol conformance tests when production migration is authorized. |
+| Current Go fixture tests | **REPLACED** | Focused conformance, lifecycle, timeout, bounds, process failure, and Python reference dogfood tests exercise the external seam. |
 
-No production migration is included here. Before implementation, decide whether the Runtime Host projection's current one-capability ceiling should increase to match the protocol's bounded list, and whether registration should be resident-owned or daemon-owned. These are generic lifecycle/projection decisions, not vendor-specific behavior.
+The one-capability Runtime Host ceiling is intentionally unchanged. Multi-capability support and Room/session-scoped temporary Adapter ownership require later evidence.
 
 ## Threat model
 
@@ -117,7 +117,7 @@ Treat the Adapter as separately approved local code, not as trusted because its 
 
 ## Non-goals
 
-- Production Runtime migration, daemon/package manager, registry, marketplace, SDK, or automatic code installation.
+- Device discovery framework, package manager, registry, marketplace, SDK, or automatic code installation.
 - Xiaomi, Home Assistant, Epson/CUPS, BLE, MQTT, serial, USB, or vendor integration in Runtime.
 - Runtime credential storage or universal secret schema.
 - Arbitrary local network proxying.
@@ -126,4 +126,4 @@ Treat the Adapter as separately approved local code, not as trusted because its 
 
 ## Reuse proof
 
-The reference adapter `living_room_light` translates `observe` to the deterministic fixture `GET /state` and `invoke(set_led)` to `POST /actions/set-led`. The endpoint exists only in an Adapter-owned config file. A second Adapter for any other fixture/device can expose the same descriptor/action semantics while changing only its local implementation/config; Room/Core/Runtime continue to see `list / describe / observe / invoke` and bounded semantic JSON.
+The reference adapter `living_room_light` translates `observe` to the deterministic fixture `GET /state` and `invoke(set_led)` to `POST /actions/set-led`. The endpoint exists only in an Adapter-owned config file. Production daemon tests register this Python process, exercise the Human semantic IPC path, route an Agent's existing Room capability RPC through the same controller, replace the process, and verify process crash clears projection. A second Adapter for any other fixture/device can expose the same descriptor/action semantics while changing only its local implementation/config; Room/Core/Runtime continue to see `list / describe / observe / invoke` and bounded semantic JSON.

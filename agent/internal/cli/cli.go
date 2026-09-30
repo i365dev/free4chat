@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/i365dev/free4chat/agent/internal/attachments"
+	"github.com/i365dev/free4chat/agent/internal/capability"
 	"github.com/i365dev/free4chat/agent/internal/daemon"
 	"github.com/i365dev/free4chat/agent/internal/doctor"
 	"github.com/i365dev/free4chat/agent/internal/free4chat"
@@ -50,7 +51,8 @@ func usageText() string {
   free4chat-agent create --agent <hermes|opencode|codex|claude|pi> --name <name> [--capability <token>]... [--agent-env <NAME>]...
   free4chat-agent create --agent-command <command> [--agent-arg <arg> ...] --name <name> [--capability <token>]... [--agent-env <NAME>]...
   free4chat-agent capabilities [--instance <id>] [--set <token>,<token>,...]
-  free4chat-agent capability configure --fixture-endpoint <loopback-http-origin>
+  free4chat-agent capability adapter register --exec <command> [--arg <argument>]...
+  free4chat-agent capability adapter remove
   free4chat-agent capability list --json
   free4chat-agent capability describe --id <capability-id>
   free4chat-agent capability observe --id <capability-id>
@@ -329,12 +331,30 @@ func run(args []string) error {
 				return errUsage()
 			}
 			return runViaDaemon(&daemon.IpcRequest{Op: "capability-list"})
-		case "configure":
-			endpoint := option(args, "--fixture-endpoint")
-			if endpoint == "" || len(args) != 2 {
+		case "adapter":
+			if len(args) == 0 {
 				return errUsage()
 			}
-			return runViaDaemon(&daemon.IpcRequest{Op: "capability-configure", FixtureEndpoint: endpoint})
+			switch args[0] {
+			case "register":
+				registrationArgs := args[1:]
+				if len(registrationArgs) < 2 || registrationArgs[0] != "--exec" {
+					return errUsage()
+				}
+				command := registrationArgs[1]
+				adapterArgs := repeatedOption(registrationArgs[2:], "--arg")
+				if command == "" || len(adapterArgs) > capability.MaxAdapterArgs || len(registrationArgs) != 2+2*len(adapterArgs) {
+					return errUsage()
+				}
+				return runViaDaemon(&daemon.IpcRequest{Op: "capability-adapter-register", AdapterCommand: command, AdapterArgs: adapterArgs})
+			case "remove":
+				if len(args) != 1 {
+					return errUsage()
+				}
+				return runViaDaemon(&daemon.IpcRequest{Op: "capability-adapter-remove"})
+			default:
+				return errUsage()
+			}
 		case "describe":
 			id := option(args, "--id")
 			if id == "" || len(args) != 2 {
