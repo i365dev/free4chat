@@ -1,6 +1,6 @@
 # Generated Task App authoring format probe
 
-**Scope:** design only. This report does not change the public contract or production code. It starts from `cf-sfu` `6a0a33e65a0b7b3fad4a89427b4d516aa4d097de` (#535).
+**Scope:** approved narrow implementation. This report and implementation start from `cf-sfu` `6a0a33e65a0b7b3fad4a89427b4d516aa4d097de` (#535). The Agent-facing authoring contract changes to HTML; the internal bundle, Room publication, and Room App Host contracts stay unchanged. No Runtime is released in this PR.
 
 ## CURRENT AUTHORING PATH
 
@@ -37,15 +37,15 @@ It is not usable in the current Free4Chat path: `extractTextChunk` discards ever
 
 ## RECOMMENDED AGENT AUTHORING FORMAT
 
-Use one ordinary, complete, self-contained HTML document as the public Agent source, carried verbatim as the payload of the existing Task-output text block. The marker remains framing; the payload stops being JSON. Document the accepted small-app subset clearly:
+Use one ordinary, complete, self-contained HTML document as the public Agent source, carried verbatim as the payload of the existing Task-output text block. The marker remains framing; the payload stops being JSON. V1 deliberately accepts only a narrow subset:
 
-- Require a document with one non-empty `<title>` (≤80 characters), a `<head>`, and a `<body>`.
+- Require a document with one non-empty `<title>` (≤80 UTF-8 bytes), a `<head>`, and a `<body>`.
 - Keep styles inline in one or more `<style>` elements in `<head>`; combine their text in document order.
-- Keep executable code inline in one or more classic `<script>` elements at the end of `<body>`; combine them in document order. Reject external `src`, module, async/defer, or scripts in `<head>` because the current bundle executes one classic JS field after bridge setup.
+- Allow zero or one executable classic inline `<script>` at the end of `<body>`. If present, it must be the final meaningful body child. Reject multiple scripts, external `src`, module, async/defer, and scripts in `<head>` because combining multiple script elements can change execution semantics and the current bundle executes one classic JS field after bridge setup.
 - Use body markup for the app. Reject external stylesheet/resource links. `initialState` is `{}` in V1; application meaning and UI state stay in Agent-authored code.
 - The document title becomes `manifest.title`. No custom metadata block is needed.
 
-A mature HTML5 parser (the Go `golang.org/x/net/html` parser already present in the dependency graph is a candidate) must walk the document tree. Do not extract with regex. Preserve node order when serializing body markup; concatenate styles/scripts in source order; reject source constructs that cannot be represented without changing their intended execution order. HTML parser recovery is deterministic, but the implementation should normalize through that parser and fail closed when required document structure/title or the representable subset is missing.
+A mature HTML5 parser (the Go `golang.org/x/net/html` parser already present in the dependency graph is a candidate) must walk the document tree. Do not extract with regex. Preserve node order when serializing body markup; concatenate style text in source order; reject source constructs that cannot be represented without changing their intended execution order. HTML parser recovery is deterministic, but the implementation should normalize through that parser and fail closed when required document structure/title or the representable subset is missing. If no script or style is present, use a non-empty internal comment placeholder to satisfy existing V1 source validation; the Agent does not need to author one.
 
 ## RECOMMENDED INTERNAL FORMAT
 
@@ -68,9 +68,9 @@ The normalizer first caps raw HTML at 48 KiB UTF-8 so parsing stays bounded, the
 
 ## ROOM APP CAPABILITIES PRESERVED
 
-Only the authoring ingress changes. The normalized bundle enters the existing Generated Room App publication and `generatedRoomAppSrcDoc()` path. Its bridge injection remains host-owned and precedes app JS. The existing generated-App capabilities remain in force: opaque-origin iframe sandbox, MessagePort, Room-shared state/revisions, participant projection, Task → Agent → Runtime capability bridge, lifecycle, and current bounds. A browser still executes the app's HTML/CSS/JS. It does not reduce App capability or create a second App type/runtime.
+Only the authoring ingress changes. The normalized bundle enters the existing Generated Task Room App publication and the same `RoomAppHost` / `generatedRoomAppSrcDoc()` path used by other Room Apps. Its bridge injection remains host-owned and precedes app JS. RoomAppHost already handles the generic `sendReliable`, `sendRealtime`, `sendReliableTo`, and inbound reliable/realtime/unicast messages for generated Apps as well as curated Apps; it does not filter these transport messages by `source === "generated"`. The existing generated-App facade does not expose methods that send those three outbound message types, so generated App code cannot currently use them through `window.free4chat`.
 
-One boundary matters: the general Room App Host protocol handles `sendReliable`, `sendRealtime`, and targeted reliable messages for curated Apps, but the current `generatedRoomAppSrcDoc()` facade does not expose those methods to Generated Task App code. The authoring normalizer must not imply or add them. If the question requires those three APIs to be available to Generated Apps, that is a separate capability gap, not something this format change can preserve or fix. Current Generated App realtime collaboration is through its existing shared-state path.
+This is a narrow existing generated-facade/API parity gap, not a second collaboration runtime. The authoring normalizer must not fix or expand it. Generated Task Apps remain on the same RoomAppHost and Room transports; their existing shared-state path supplies Room collaboration today.
 
 ## SECURITY / VALIDATION
 
@@ -94,7 +94,7 @@ If approved, keep the patch focused:
 4. Update prompt/parser tests and `docs/en/guides/interactive-task-outputs.md` with the accepted HTML subset and one source example.
 5. Leave `app/src/common/generatedRoomApp.ts`, Room publication/storage, and Room App Host unchanged.
 
-No Runtime release or live-provider structured-resource matrix is needed for this change.
+This implementation changes the Agent Runtime's authoring contract. It requires a new official Runtime release before production dogfood can use it. ACP resource transport and a live-provider structured-resource matrix are not prerequisites. Do not make a Runtime release as part of this implementation task.
 
 ## WHAT MUST NOT CHANGE
 
@@ -102,7 +102,7 @@ Do not create a new Task App/App type, UI DSL, DAG, component framework, generic
 
 ## RECOMMENDATION: IMPLEMENT
 
-Implement self-contained HTML as the Agent-facing authoring source and normalize it to the existing internal bundle. The dogfood failures point to serialization, not packaging. Full-document parsing has a bounded implementation cost and preserves the already-proven internal publication and host boundary. Keep the internal bundle private and stable; defer ACP resource transport until a provider and the generic adapter demonstrably deliver it.
+Implement self-contained HTML as the Agent-facing authoring source and normalize it to the existing internal bundle. The dogfood failures point to serialization, not packaging. A narrow HTML5-parsed subset has bounded implementation cost and preserves the already-proven internal publication and host boundary. Keep the internal bundle private and stable; defer ACP resource transport until a provider and the generic adapter demonstrably deliver it. Production dogfood requires a later official Runtime release; this PR does not release it.
 
 ## Concrete printer-status example
 
