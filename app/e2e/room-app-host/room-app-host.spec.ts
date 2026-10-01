@@ -889,6 +889,44 @@ test("Room App host contract survives open, fullscreen, exit, hide and reopen", 
   await test.step("the fixture App stays interactive inside the sandbox", async () => {
     const fixture = fixtureFrame()
     await expect(fixture.getByTestId("fixture-participants")).toHaveText("1")
+
+    if (isTwoPaneRoom(page)) {
+      const splitter = page.getByTestId("room-splitter")
+      const splitterBox = await splitter.boundingBox()
+      const iframeBox = await appIframe(page).boundingBox()
+      expect(splitterBox).not.toBeNull()
+      expect(iframeBox).not.toBeNull()
+
+      const before = await roomStage(page).evaluate(
+        (element) => element.style.width
+      )
+      const start = {
+        x: splitterBox!.x + splitterBox!.width / 2,
+        y: splitterBox!.y + splitterBox!.height / 2,
+      }
+      const overApp = {
+        x: iframeBox!.x + iframeBox!.width / 2,
+        y: iframeBox!.y + iframeBox!.height / 2,
+      }
+
+      await page.mouse.move(start.x, start.y)
+      await page.mouse.down()
+      await page.mouse.move(overApp.x, overApp.y)
+      await expect
+        .poll(() => roomStage(page).evaluate((element) => element.style.width))
+        .not.toBe(before)
+      const afterDrag = await roomStage(page).evaluate(
+        (element) => element.style.width
+      )
+
+      // Release over the iframe, then move again to prove the drag has ended.
+      await page.mouse.up()
+      await page.mouse.move(start.x, start.y)
+      expect(
+        await roomStage(page).evaluate((element) => element.style.width)
+      ).toBe(afterDrag)
+    }
+
     // "fixture-ticks" was already incremented to 1 before fullscreen, and every
     // click/outbound message adds one: the App-local state carried through the
     // whole focus-mode round trip.

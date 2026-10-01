@@ -354,6 +354,8 @@ export default function RoomContent({
   // click. There is deliberately no persisted "Interrupted" Task state.
   const [taskInterruptFailed, setTaskInterruptFailed] = useState(false)
   const [activeInteraction, setActiveInteraction] = useState("room")
+  const [mobileSheetReturnInteraction, setMobileSheetReturnInteraction] =
+    useState<string | null>(null)
   const [activeRoomAppId, setActiveRoomAppId] = useState<string | null>(null)
   const [activeGeneratedAppId, setActiveGeneratedAppId] = useState<
     string | null
@@ -839,6 +841,14 @@ export default function RoomContent({
       setActiveRoomAppId(null)
       setActiveGeneratedAppId(publication.appInstanceId)
       setStageView("screen")
+      if (!isMd) {
+        setMobileSheetReturnInteraction(
+          taskProjections.some((task) => task.requestId === activeInteraction)
+            ? activeInteraction
+            : null
+        )
+        setMobileRoomSheetOpen(true)
+      }
       const result = await loadGeneratedAppDocument(publication)
       if (result !== "unavailable") return
       // The App this transition selected cannot be shown. Release it, but
@@ -847,7 +857,7 @@ export default function RoomContent({
         current === publication.appInstanceId ? null : current
       )
     },
-    [loadGeneratedAppDocument]
+    [activeInteraction, isMd, loadGeneratedAppDocument, taskProjections]
   )
   // Background reconciliation: keeps a RESIDENT generated App's document in
   // step with Room truth without touching the Stage owner or focus mode.
@@ -1937,7 +1947,9 @@ export default function RoomContent({
   }, [activeSharePeerIdForStage, activeTask?.requestId])
 
   const containerRef = useRef<HTMLDivElement>(null)
-  const isDragging = useRef(false)
+  const [isDragging, setIsDragging] = useState(false)
+  const dragPointerIdRef = useRef<number | null>(null)
+  const dragTargetRef = useRef<HTMLDivElement | null>(null)
   const [splitRatio, setSplitRatio] = useState(50)
   // The launcher anchors to the Stage strip's `Apps…` control, never to the
   // strip itself: the strip is a horizontal scroller, so an in-flow popover
@@ -2018,22 +2030,73 @@ export default function RoomContent({
   }, [activeScreenShares.length > 0, stageAppVisible])
 
   useEffect(() => {
-    const onMouseMove = (e: MouseEvent) => {
-      if (!isDragging.current || !containerRef.current) return
+    if (!isDragging) return
+
+    const finishDrag = (pointerId?: number) => {
+      const activePointerId = dragPointerIdRef.current
+      if (
+        pointerId !== undefined &&
+        activePointerId !== null &&
+        pointerId !== activePointerId
+      )
+        return
+      const target = dragTargetRef.current
+      dragPointerIdRef.current = null
+      dragTargetRef.current = null
+      if (
+        target &&
+        activePointerId !== null &&
+        target.hasPointerCapture?.(activePointerId)
+      ) {
+        try {
+          target.releasePointerCapture(activePointerId)
+        } catch {
+          // The browser may already have released capture during pointer loss.
+        }
+      }
+      setIsDragging(false)
+    }
+
+    const onPointerMove = (e: PointerEvent) => {
+      if (e.pointerId !== dragPointerIdRef.current || !containerRef.current)
+        return
       const rect = containerRef.current.getBoundingClientRect()
       const ratio = ((e.clientX - rect.left) / rect.width) * 100
       setSplitRatio(Math.max(20, Math.min(80, ratio)))
     }
-    const onMouseUp = () => {
-      isDragging.current = false
-    }
-    window.addEventListener("mousemove", onMouseMove)
-    window.addEventListener("mouseup", onMouseUp)
+    const onPointerUp = (e: PointerEvent) => finishDrag(e.pointerId)
+    const onPointerCancel = (e: PointerEvent) => finishDrag(e.pointerId)
+    const onLostPointerCapture = (e: PointerEvent) => finishDrag(e.pointerId)
+    const onWindowBlur = () => finishDrag()
+
+    window.addEventListener("pointermove", onPointerMove)
+    window.addEventListener("pointerup", onPointerUp)
+    window.addEventListener("pointercancel", onPointerCancel)
+    window.addEventListener("lostpointercapture", onLostPointerCapture)
+    window.addEventListener("blur", onWindowBlur)
     return () => {
-      window.removeEventListener("mousemove", onMouseMove)
-      window.removeEventListener("mouseup", onMouseUp)
+      window.removeEventListener("pointermove", onPointerMove)
+      window.removeEventListener("pointerup", onPointerUp)
+      window.removeEventListener("pointercancel", onPointerCancel)
+      window.removeEventListener("lostpointercapture", onLostPointerCapture)
+      window.removeEventListener("blur", onWindowBlur)
+      const target = dragTargetRef.current
+      const pointerId = dragPointerIdRef.current
+      dragTargetRef.current = null
+      dragPointerIdRef.current = null
+      if (
+        target &&
+        pointerId !== null &&
+        target.hasPointerCapture?.(pointerId)
+      ) {
+        try {
+          target.releasePointerCapture(pointerId)
+        } catch {
+          // Unmount can race the browser's automatic pointer release.
+        }
+      }
     }
-  }, [])
+  }, [isDragging])
 
   const lastBucketRef = useRef<string>("")
   const activatedRoomRef = useRef(false)
@@ -2632,13 +2695,25 @@ export default function RoomContent({
                 type="button"
                 data-testid="room-mobile-sheet-close"
                 onClick={() => {
-                  setActiveInteraction("room")
+                  const returnToTask = taskProjections.some(
+                    (task) => task.requestId === mobileSheetReturnInteraction
+                  )
+                  setActiveInteraction(
+                    returnToTask && mobileSheetReturnInteraction
+                      ? mobileSheetReturnInteraction
+                      : "room"
+                  )
+                  setMobileSheetReturnInteraction(null)
                   setMobileRoomSheetOpen(false)
                 }}
-                aria-label="Open Room chat"
+                aria-label={
+                  mobileSheetReturnInteraction
+                    ? "Return to Task chat"
+                    : "Open Room chat"
+                }
                 className="shrink-0 rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700"
               >
-                Room chat
+                {mobileSheetReturnInteraction ? "Task chat" : "Room chat"}
               </button>
             </div>
           )}
@@ -3130,14 +3205,19 @@ export default function RoomContent({
         </div>
 
         <div
+          data-testid="room-splitter"
           className={`w-1 cursor-col-resize bg-gray-800 transition-colors hover:bg-blue-500/50 active:bg-blue-500 ${
             isStageAppFullscreen ? "hidden" : "hidden md:block"
           }`}
           hidden={isStageAppFullscreen}
           aria-hidden={isStageAppFullscreen}
           inert={isStageAppFullscreen}
-          onMouseDown={(e) => {
-            isDragging.current = true
+          onPointerDown={(e) => {
+            if (dragPointerIdRef.current !== null) return
+            dragPointerIdRef.current = e.pointerId
+            dragTargetRef.current = e.currentTarget
+            e.currentTarget.setPointerCapture(e.pointerId)
+            setIsDragging(true)
             e.preventDefault()
           }}
         />
