@@ -83,17 +83,17 @@ type residentEventStream struct {
 // "task-control" envelope type; an ordinary "events" envelope never carries
 // them.
 type residentEventEnvelope struct {
-	Type                string                              `json:"type"`
-	Events              []types.RoomEvent                   `json:"events"`
-	Cursor              int64                               `json:"cursor"`
-	ExpiresAt           int64                               `json:"expiresAt"`
-	Participants        []json.RawMessage                   `json:"participants"`
-	RuntimeHosts        map[string]json.RawMessage          `json:"runtimeHosts"`
-	RoomApps            []json.RawMessage                   `json:"roomApps"`
+	Type                        string                                      `json:"type"`
+	Events                      []types.RoomEvent                           `json:"events"`
+	Cursor                      int64                                       `json:"cursor"`
+	ExpiresAt                   int64                                       `json:"expiresAt"`
+	Participants                []json.RawMessage                           `json:"participants"`
+	RuntimeHosts                map[string]json.RawMessage                  `json:"runtimeHosts"`
+	RoomApps                    []json.RawMessage                           `json:"roomApps"`
 	RuntimeParticipantTransport types.RuntimeParticipantTransportProjection `json:"participantTransport"`
-	MediaState          *types.ResidentMediaState           `json:"mediaState,omitempty"`
-	Expired             bool                                `json:"expired,omitempty"`
-	Truncated           bool                                `json:"truncated,omitempty"`
+	MediaState                  *types.ResidentMediaState                   `json:"mediaState,omitempty"`
+	Expired                     bool                                        `json:"expired,omitempty"`
+	Truncated                   bool                                        `json:"truncated,omitempty"`
 	// Private resident-only Task control (#409, #484).
 	Control       string `json:"control,omitempty"`
 	TaskRequestID string `json:"taskRequestId,omitempty"`
