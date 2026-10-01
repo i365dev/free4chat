@@ -78,7 +78,7 @@ Retain the exact current `safeSource` checks: reject NUL, `</script`, `<iframe`,
 
 Inline event handlers are currently permitted by the inline-script CSP and source validator; keep that behavior for this format decision. The existing bridge still gates capability calls on a trusted control click. External links/resources do not gain a host capability, and `javascript:` remains rejected. Any change to these rules is a separate security/design decision.
 
-Multiple style blocks are concatenated in document order. Multiple supported script blocks are concatenated in document order and execute after host bridge injection; scripts in `<head>` and execution-order-sensitive placements are rejected rather than silently moved. Standard HTML parsing gives deterministic recovery for malformed markup; only the documented subset is accepted, and normalized output still passes the unchanged strict bundle validator. Add parser fixtures when implementation is approved.
+Multiple style blocks are concatenated in document order. V1 accepts zero or one classic inline script, which must be the final meaningful child of `<body>`; multiple executable scripts are rejected. Scripts in `<head>` and execution-order-sensitive placements are rejected rather than silently moved. Standard HTML parsing gives deterministic recovery for malformed markup; only the documented subset is accepted, and normalized output still passes the unchanged strict bundle validator. Add parser fixtures when implementation is approved.
 
 ## HARNESS COMPATIBILITY
 
