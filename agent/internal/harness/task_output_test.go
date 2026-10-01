@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -37,6 +38,44 @@ func TestParseHarnessTurnResultExtractsBoundedGeneratedTaskApp(t *testing.T) {
 	}
 }
 
+func TestParseHarnessTurnResultAcceptsInlineAndPrettyPrintedGeneratedTaskApp(t *testing.T) {
+	jsonBundle := validTaskAppJSON(t)
+	var pretty bytes.Buffer
+	if err := json.Indent(&pretty, []byte(jsonBundle), "", "  "); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name string
+		text string
+	}{
+		{
+			name: "inline opening marker",
+			text: taskOutputOpen + " " + jsonBundle + "\n" + taskOutputClose,
+		},
+		{
+			name: "pretty printed JSON",
+			text: taskOutputOpen + "\n\t" + pretty.String() + "\n\t" + taskOutputClose,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := ParseHarnessTurnResult(test.text, "req-printer")
+			if result.GeneratedApp == nil || result.Text != "" {
+				t.Fatalf("Task App output was not extracted: %+v", result)
+			}
+		})
+	}
+}
+
+func TestParseHarnessTurnResultPreservesHumanReplyBeforeGeneratedTaskApp(t *testing.T) {
+	text := "The printer status panel is ready.\n\n" + taskOutputOpen + " " + validTaskAppJSON(t) + "\n" + taskOutputClose
+	result := ParseHarnessTurnResult(text, "req-printer")
+	if result.GeneratedApp == nil || result.Text != "The printer status panel is ready." {
+		t.Fatalf("Human-facing reply was not preserved with the extracted App: %+v", result)
+	}
+}
+
 func TestParseHarnessTurnResultAcceptsTaskOutputOnlyForTaskAndRejectsInvalid(t *testing.T) {
 	jsonBundle := validTaskAppJSON(t)
 	block := taskOutputOpen + "\n" + jsonBundle + "\n" + taskOutputClose
@@ -49,6 +88,14 @@ func TestParseHarnessTurnResultAcceptsTaskOutputOnlyForTaskAndRejectsInvalid(t *
 	invalidResult := ParseHarnessTurnResult(invalidBlock, "req-printer")
 	if invalidResult.GeneratedApp != nil || invalidResult.Text != invalidBlock {
 		t.Fatalf("invalid output must remain ordinary text and publish nothing: %+v", invalidResult)
+	}
+}
+
+func TestParseHarnessTurnResultRejectsNonTerminalGeneratedTaskAppCloseMarker(t *testing.T) {
+	text := taskOutputOpen + " " + validTaskAppJSON(t) + "\n" + taskOutputClose + " trailing text"
+	result := ParseHarnessTurnResult(text, "req-printer")
+	if result.GeneratedApp != nil || result.Text != text {
+		t.Fatalf("non-terminal close marker must publish nothing: %+v", result)
 	}
 }
 

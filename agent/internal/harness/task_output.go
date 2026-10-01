@@ -49,23 +49,15 @@ func ParseHarnessTurnResult(text, taskRequestID string) types.HarnessTurnResult 
 }
 
 func parseGeneratedAppOutput(text string) (string, map[string]any, bool) {
-	lines := strings.Split(text, "\n")
-	if len(lines) < 3 || lines[len(lines)-1] != taskOutputClose {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasSuffix(trimmed, taskOutputClose) {
 		return text, nil, false
 	}
-	open := -1
-	for index, line := range lines[:len(lines)-1] {
-		if line == taskOutputOpen {
-			if open >= 0 {
-				return text, nil, false
-			}
-			open = index
-		}
-	}
-	if open < 0 || open == len(lines)-2 {
+	open := strings.Index(trimmed, taskOutputOpen)
+	if open < 0 || strings.Contains(trimmed[open+len(taskOutputOpen):], taskOutputOpen) {
 		return text, nil, false
 	}
-	encoded := strings.Join(lines[open+1:len(lines)-1], "\n")
+	encoded := strings.TrimSpace(trimmed[open+len(taskOutputOpen) : len(trimmed)-len(taskOutputClose)])
 	if len(encoded) == 0 || len(encoded) > generatedapp.MaxBundleBytes {
 		return text, nil, false
 	}
@@ -82,5 +74,5 @@ func parseGeneratedAppOutput(text string) (string, map[string]any, bool) {
 	if err != nil || generatedapp.Validate(compact, bundle) != nil {
 		return text, nil, false
 	}
-	return strings.TrimSpace(strings.Join(lines[:open], "\n")), bundle, true
+	return strings.TrimSpace(trimmed[:open]), bundle, true
 }
