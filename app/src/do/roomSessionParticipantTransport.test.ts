@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 
 import { RoomSession } from "./RoomSession"
 
@@ -84,10 +84,10 @@ function makeRoom() {
   }
 }
 
-describe("RoomSession capability transport association", () => {
-  it("projects only the originating Task Agent, current Host, capabilities, and ready Human sources", () => {
+describe("RoomSession Runtime participant transport association", () => {
+  it("projects only the originating Task Agent, current Host, capability IDs, and ready Human sources", () => {
     const session = new RoomSession({} as never, {} as never) as any
-    const state = session.projectCapabilityTransportState(
+    const state = session.projectRuntimeParticipantTransportState(
       makeRoom(),
       "resident"
     )
@@ -104,6 +104,44 @@ describe("RoomSession capability transport association", () => {
       ],
       sources: [{ participantId: "owner", sessionId: "owner-session" }],
     })
+    expect(JSON.stringify(state)).not.toMatch(
+      /runtime-capability-(request|result)|requestId|operation|args/
+    )
+  })
+
+  it("does not accept capability operation payloads through the Human Room WebSocket", async () => {
+    const session = new RoomSession({} as never, {} as never) as any
+    const room = makeRoom()
+    session.loadRoom = async () => room
+    session.isExpired = () => false
+    const saveRoom = vi.fn()
+    session.saveRoom = saveRoom
+    const socket = {
+      deserializeAttachment: () => ({
+        participantId: "owner",
+        token: "owner-token",
+        connectionNonce: "owner-connection",
+      }),
+      send: vi.fn(),
+      close: vi.fn(),
+      serializeAttachment: vi.fn(),
+    }
+
+    await session.webSocketMessage(
+      socket,
+      JSON.stringify({
+        type: "generated-app-capability-request",
+        requestId: "request-a",
+        appInstanceId,
+        bundleRevision: 2,
+        capabilityId: "printer_status",
+        operation: "observe",
+      })
+    )
+
+    expect(saveRoom).not.toHaveBeenCalled()
+    expect(socket.send).not.toHaveBeenCalled()
+    expect(socket.close).not.toHaveBeenCalled()
   })
 
   it("keeps a live originating App route after Task completion and closes on Adapter capability loss", () => {
@@ -127,11 +165,11 @@ describe("RoomSession capability transport association", () => {
       },
     })
     expect(
-      session.projectCapabilityTransportState(room, "resident").routes
+      session.projectRuntimeParticipantTransportState(room, "resident").routes
     ).toHaveLength(1)
     room.runtimeHosts[hostId].capabilities = []
     expect(
-      session.projectCapabilityTransportState(room, "resident").routes
+      session.projectRuntimeParticipantTransportState(room, "resident").routes
     ).toHaveLength(0)
   })
 
@@ -141,13 +179,13 @@ describe("RoomSession capability transport association", () => {
       id: "resident",
       token: "secret",
       kind: "agent",
-      capabilityDataTransport: {
+      participantDataTransport: {
         sessionId: "private-sfu-session",
         ready: true,
       },
     }
     const info = session.participantForInfo(participant)
-    expect(info.capabilityDataTransport).toBeUndefined()
+    expect(info.participantDataTransport).toBeUndefined()
     expect(JSON.stringify(info)).not.toContain("private-sfu-session")
   })
 })

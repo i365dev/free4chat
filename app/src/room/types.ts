@@ -264,7 +264,7 @@ export interface RoomParticipant {
   // Current Runtime participant-local App DataChannel session. Session ids
   // are host routing metadata only and are removed from room_info/MCP views;
   // generated iframe projections never include them.
-  capabilityDataTransport?: {
+  participantDataTransport?: {
     sessionId: string
     ready: boolean
   }

@@ -205,27 +205,27 @@ func (c *SfuRestClient) CreateAgentSession() (string, error) {
 	return sessionID, nil
 }
 
-// CreateAgentCapabilitySession creates the no-media participant session used
-// only while the Room projects a live Generated App association.
-func (c *SfuRestClient) CreateAgentCapabilitySession() (string, error) {
-	data, err := c.request("agent-capability-session", http.MethodPost, c.base())
+// CreateAgentParticipantDataSession creates the no-media headless participant
+// session used while the Room projects an authorized Runtime data route.
+func (c *SfuRestClient) CreateAgentParticipantDataSession() (string, error) {
+	data, err := c.request("agent-participant-data-session", http.MethodPost, c.base())
 	if err != nil {
 		return "", err
 	}
 	sessionID, _ := data["sessionId"].(string)
 	if sessionID == "" {
-		return "", errors.New("capability_session_invalid")
+		return "", errors.New("participant_data_session_invalid")
 	}
 	return sessionID, nil
 }
 
-// SetAgentCapabilityReady publishes only whether the direct reliable channel
+// SetAgentParticipantDataReady publishes only whether the direct reliable channel
 // is usable; it carries no request payload or capability result.
-func (c *SfuRestClient) SetAgentCapabilityReady(sessionID string, ready bool) error {
+func (c *SfuRestClient) SetAgentParticipantDataReady(sessionID string, ready bool) error {
 	body := c.base()
 	body["sessionId"] = sessionID
 	body["ready"] = ready
-	_, err := c.request("agent-capability-ready", http.MethodPost, body)
+	_, err := c.request("agent-participant-data-ready", http.MethodPost, body)
 	return err
 }
 

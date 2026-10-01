@@ -364,6 +364,60 @@ func (p RuntimeCapabilityProjection) Valid() bool {
 	return err == nil && len(wire) <= 1024
 }
 
+// AllowsRequest checks a bounded capability operation against the exact
+// semantic descriptor currently advertised by the local Runtime. A capability
+// ID alone does not authorize observe or invoke.
+func (p RuntimeCapabilityProjection) AllowsRequest(request ResidentCapabilityRequest) bool {
+	if !p.Valid() || request.CapabilityID != p.CapabilityID || !request.Valid() {
+		return false
+	}
+	switch request.Operation {
+	case ResidentCapabilityObserve:
+		return p.Observe
+	case ResidentCapabilityInvoke:
+		for _, action := range p.Actions {
+			if action.Name != request.Action {
+				continue
+			}
+			if request.Args == nil {
+				return false
+			}
+			for name := range request.Args {
+				if _, ok := action.Input.Properties[name]; !ok {
+					return false
+				}
+			}
+			for _, name := range action.Input.Required {
+				if _, ok := request.Args[name]; !ok {
+					return false
+				}
+			}
+			for name, value := range request.Args {
+				switch action.Input.Properties[name] {
+				case "string":
+					if _, ok := value.(string); !ok {
+						return false
+					}
+				case "number":
+					switch value.(type) {
+					case float64, float32, int, int32, int64, uint, uint32, uint64, json.Number:
+					default:
+						return false
+					}
+				case "boolean":
+					if _, ok := value.(bool); !ok {
+						return false
+					}
+				default:
+					return false
+				}
+			}
+			return true
+		}
+	}
+	return false
+}
+
 func validCapabilityText(value string, max int) bool {
 	if value == "" || len([]rune(value)) > max || strings.TrimSpace(value) != value || runtimeCapabilityURLPattern.MatchString(value) {
 		return false
@@ -1311,10 +1365,10 @@ type WaitResult struct {
 	// RoomApps is populated by the private resident event stream with current,
 	// bounded App discovery metadata. The public MCP contract is unchanged.
 	RoomApps []RoomAppProjection `json:"-"`
-	// CapabilityTransport is a private, bounded control-plane association for
+	// RuntimeParticipantTransport is a private, bounded control-plane association for
 	// direct participant DataChannels. It contains no operation payloads and
 	// is excluded from the public Room/MCP projection.
-	CapabilityTransport CapabilityTransportProjection `json:"-"`
+	RuntimeParticipantTransport RuntimeParticipantTransportProjection `json:"-"`
 	// RuntimeHosts (#176 Phase A): one coarse readiness projection per
 	// Runtime Host id present in the Room, shared by all same-host Agents.
 	RuntimeHosts map[string]RuntimeHostProjection
@@ -1342,15 +1396,15 @@ type WaitResult struct {
 	TaskExecutionResync bool `json:"-"`
 }
 
-// CapabilityTransportProjection is control-plane state only. Request and
+// RuntimeParticipantTransportProjection is control-plane state only. Request and
 // result payloads travel over participant DataChannels, never through the
 // resident event stream or RoomSession RPC relay.
-type CapabilityTransportProjection struct {
-	Routes  []CapabilityTransportRoute  `json:"routes"`
-	Sources []CapabilityTransportSource `json:"sources"`
+type RuntimeParticipantTransportProjection struct {
+	Routes  []RuntimeParticipantTransportRoute  `json:"routes"`
+	Sources []RuntimeParticipantTransportSource `json:"sources"`
 }
 
-type CapabilityTransportRoute struct {
+type RuntimeParticipantTransportRoute struct {
 	AppInstanceID      string   `json:"appInstanceId"`
 	BundleRevision     int64    `json:"bundleRevision"`
 	TaskRequestID      string   `json:"taskRequestId"`
@@ -1359,27 +1413,27 @@ type CapabilityTransportRoute struct {
 	CapabilityIDs      []string `json:"capabilityIds"`
 }
 
-type CapabilityTransportSource struct {
+type RuntimeParticipantTransportSource struct {
 	ParticipantID string `json:"participantId"`
 	SessionID     string `json:"sessionId"`
 }
 
 var (
-	capabilityTransportAppIDPattern       = regexp.MustCompile(`^generated:[A-Za-z0-9_-]{1,64}$`)
-	capabilityTransportParticipantPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
-	capabilityTransportSessionPattern     = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
+	participantTransportAppIDPattern       = regexp.MustCompile(`^generated:[A-Za-z0-9_-]{1,64}$`)
+	participantTransportParticipantPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+	participantTransportSessionPattern     = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 )
 
-func (p CapabilityTransportProjection) Valid() bool {
+func (p RuntimeParticipantTransportProjection) Valid() bool {
 	if len(p.Routes) > 8 || len(p.Sources) > 32 {
 		return false
 	}
 	routes := make(map[string]struct{}, len(p.Routes))
 	for _, route := range p.Routes {
-		if !capabilityTransportAppIDPattern.MatchString(route.AppInstanceID) ||
+		if !participantTransportAppIDPattern.MatchString(route.AppInstanceID) ||
 			route.BundleRevision < 1 || route.TaskRequestID == "" ||
 			!validCapabilityText(route.TaskRequestID, MaxResidentTaskRequestID) ||
-			!capabilityTransportParticipantPattern.MatchString(route.AgentParticipantID) ||
+			!participantTransportParticipantPattern.MatchString(route.AgentParticipantID) ||
 			!ValidRuntimeHostID(route.RuntimeHostID) ||
 			len(route.CapabilityIDs) == 0 || len(route.CapabilityIDs) > 8 {
 			return false
@@ -1401,8 +1455,8 @@ func (p CapabilityTransportProjection) Valid() bool {
 	}
 	sources := make(map[string]struct{}, len(p.Sources))
 	for _, source := range p.Sources {
-		if !capabilityTransportParticipantPattern.MatchString(source.ParticipantID) ||
-			!capabilityTransportSessionPattern.MatchString(source.SessionID) {
+		if !participantTransportParticipantPattern.MatchString(source.ParticipantID) ||
+			!participantTransportSessionPattern.MatchString(source.SessionID) {
 			return false
 		}
 		if _, exists := sources[source.ParticipantID]; exists {

@@ -1114,7 +1114,7 @@ export function useSfuChatRoom(
         if (
           !agent ||
           agent.kind !== "agent" ||
-          !agent.capabilityDataTransport?.ready ||
+          !agent.participantDataTransport?.ready ||
           !encoded ||
           !channel ||
           channel.readyState !== "open" ||
@@ -1785,10 +1785,27 @@ export function useSfuChatRoom(
   const handleRoomAppChannelMessage = useCallback(
     (sourceParticipantId: string, lane: RoomAppLane, event: MessageEvent) => {
       const envelope = decodeRoomAppEnvelope(event.data)
+      const capabilityRequestId =
+        envelope?.payload.type === "runtime-capability-result" &&
+        typeof envelope.payload.requestId === "string"
+          ? envelope.payload.requestId
+          : null
+      const pendingCapability = capabilityRequestId
+        ? pendingRuntimeCapabilityRequestsRef.current.get(capabilityRequestId)
+        : undefined
+      const isPendingGeneratedCapabilityResult = Boolean(
+        lane === "reliable" &&
+          envelope &&
+          pendingCapability &&
+          pendingCapability.agentParticipantId === sourceParticipantId &&
+          pendingCapability.appInstanceId === envelope.appInstanceId &&
+          pendingCapability.bundleRevision === envelope.payload.bundleRevision
+      )
       if (
         !envelope ||
         envelope.lane !== lane ||
-        !isRoomAppInstanceForRoom(roomName, envelope.appInstanceId)
+        (!isRoomAppInstanceForRoom(roomName, envelope.appInstanceId) &&
+          !isPendingGeneratedCapabilityResult)
       ) {
         roomAppStatsRef.current.droppedMessages += 1
         if (lane === "reliable")
@@ -1971,11 +1988,11 @@ export function useSfuChatRoom(
       const media = participant.media
       const publisherSessionId =
         participant.kind === "agent"
-          ? participant.capabilityDataTransport?.sessionId
+          ? participant.participantDataTransport?.sessionId
           : media?.sessionId
       const publisherReady =
         participant.kind === "agent"
-          ? Boolean(participant.capabilityDataTransport?.sessionId)
+          ? participant.participantDataTransport?.ready === true
           : media?.appDataChannelReady === true
       const key = roomAppChannelKey(participant.id, lane)
       if (
@@ -2037,7 +2054,7 @@ export function useSfuChatRoom(
           sessionRef.current?.sessionId !== session.sessionId ||
           (participantMapRef.current.get(participant.id)?.kind === "agent"
             ? participantMapRef.current.get(participant.id)
-                ?.capabilityDataTransport?.sessionId
+                ?.participantDataTransport?.sessionId
             : participantMapRef.current.get(participant.id)?.media
                 ?.sessionId) !== publisherSessionId
         )
@@ -3056,9 +3073,14 @@ export function useSfuChatRoom(
         void subscribeTrack(participant, track)
       if (participant.media?.fileChannelReady)
         void subscribeFileChannel(participant)
-      if (participant.media?.appDataChannelReady) {
+      const participantDataReady =
+        participant.kind === "agent"
+          ? participant.participantDataTransport?.ready === true
+          : participant.media?.appDataChannelReady === true
+      if (participantDataReady) {
         void subscribeRoomAppChannel(participant, "reliable")
-        void subscribeRoomAppChannel(participant, "realtime")
+        if (participant.kind === "human")
+          void subscribeRoomAppChannel(participant, "realtime")
       }
     }
   }, [subscribeFileChannel, subscribeRoomAppChannel, subscribeTrack])
@@ -3136,10 +3158,26 @@ export function useSfuChatRoom(
             participant.media &&
             previous.media.sessionId !== participant.media.sessionId
         )
+        const participantDataTransportChanged =
+          participant.kind === "agent" &&
+          (previous?.participantDataTransport?.sessionId !==
+            participant.participantDataTransport?.sessionId ||
+            previous?.participantDataTransport?.ready !==
+              participant.participantDataTransport?.ready)
         if (mediaSessionChanged || agentAudioTrackRemoved) {
           resetRemoteParticipant(participant.id)
           resetRemoteRoomAppParticipant(participant.id, "session_changed")
-        } else if (previous?.media) {
+        } else if (participantDataTransportChanged) {
+          resetRemoteRoomAppParticipant(
+            participant.id,
+            "participant_data_transport_changed"
+          )
+        }
+        if (
+          previous?.media &&
+          !mediaSessionChanged &&
+          !agentAudioTrackRemoved
+        ) {
           for (const previousTrack of previousTracks) {
             if (
               !currentTracks.some(
@@ -3568,14 +3606,16 @@ export function useSfuChatRoom(
           message.participant.id
         )
         if (
-          participant?.media &&
+          participant?.kind === "human" &&
+          participant.media &&
           typeof message.participant.muted === "boolean"
         ) {
           participant.media.muted = message.participant.muted
           rebuildParticipants()
         }
         if (
-          participant?.media &&
+          participant?.kind === "human" &&
+          participant.media &&
           message.participant.fileChannelReady === true
         ) {
           participant.media.fileChannelReady = true
@@ -3583,7 +3623,8 @@ export function useSfuChatRoom(
           rebuildParticipants()
         }
         if (
-          participant?.media &&
+          participant?.kind === "human" &&
+          participant.media &&
           message.participant.appDataChannelReady === true
         ) {
           participant.media.appDataChannelReady = true

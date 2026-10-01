@@ -1022,14 +1022,14 @@ describe("Room App host contract", () => {
       participantId: "a",
       name: "Alice",
       kind: "human" as const,
-      capabilityDataTransport: { sessionId: "private-session", ready: true },
+      participantDataTransport: { sessionId: "private-session", ready: true },
       runtimeHostId: "private-host",
     }
     const privateAgent = {
       participantId: "b",
       name: "Pi",
       kind: "agent" as const,
-      capabilityDataTransport: {
+      participantDataTransport: {
         sessionId: "private-agent-session",
         ready: true,
       },

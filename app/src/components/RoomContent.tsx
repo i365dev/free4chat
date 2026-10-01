@@ -78,6 +78,7 @@ import {
   participantsBucket,
   withAnalyticsRoomId,
 } from "../common/utils"
+import { initialTaskAgentParticipantId } from "../do/taskScope"
 import { useSfuChatRoom, type RoomMicState } from "../hooks/useSfuChatRoom"
 import { useTurnstile } from "../hooks/useTurnstile"
 import type { TaskExecutionProjection } from "../room/types"
@@ -2944,6 +2945,25 @@ export default function RoomContent({
                   const originatingTask = taskProjections.find(
                     (task) => task.requestId === publication.taskRequestId
                   )
+                  const originatingAgentParticipantId = originatingTask
+                    ? initialTaskAgentParticipantId(
+                        {
+                          fromParticipantId:
+                            originatingTask.createdByParticipantId,
+                          targetParticipantId:
+                            originatingTask.targetParticipantId,
+                        },
+                        Object.fromEntries(
+                          participants.map((participant) => [
+                            participant.peerId,
+                            {
+                              id: participant.peerId,
+                              kind: participant.kind,
+                            },
+                          ])
+                        )
+                      )
+                    : undefined
                   // Stage ownership, not the raw selection: the generated Task
                   // App is visible only while it owns the Stage, so a curated
                   // selection hides it instead of stacking beside it.
@@ -2979,7 +2999,7 @@ export default function RoomContent({
                         generatedAppBundleRevision={publication.bundleRevision}
                         generatedAppTaskRequestId={publication.taskRequestId}
                         generatedAppAgentParticipantId={
-                          originatingTask?.targetParticipantId
+                          originatingAgentParticipantId
                         }
                         requestGeneratedCapability={
                           requestGeneratedAppCapability

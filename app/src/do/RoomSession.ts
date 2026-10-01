@@ -464,7 +464,7 @@ interface AgentEventSocketAttachment {
   activeTaskTurns?: AgentEventActiveTaskTurn[]
 }
 
-interface CapabilityTransportRouteProjection {
+interface RuntimeParticipantTransportRouteProjection {
   appInstanceId: string
   bundleRevision: number
   taskRequestId: string
@@ -473,14 +473,14 @@ interface CapabilityTransportRouteProjection {
   capabilityIds: string[]
 }
 
-interface CapabilityTransportSourceProjection {
+interface RuntimeParticipantTransportSourceProjection {
   participantId: string
   sessionId: string
 }
 
-interface CapabilityTransportProjection {
-  routes: CapabilityTransportRouteProjection[]
-  sources: CapabilityTransportSourceProjection[]
+interface RuntimeParticipantTransportProjection {
+  routes: RuntimeParticipantTransportRouteProjection[]
+  sources: RuntimeParticipantTransportSourceProjection[]
 }
 
 interface AgentEventActiveTaskTurn {
@@ -848,18 +848,18 @@ type ControlRequest =
       sessionId: string
     }
   | {
-      action: "agent-capability-transport-admit"
+      action: "agent-participant-data-transport-admit"
       participantId: string
       token: string
     }
   | {
-      action: "agent-capability-transport-attach"
+      action: "agent-participant-data-transport-attach"
       participantId: string
       token: string
       sessionId: string
     }
   | {
-      action: "agent-capability-transport-ready"
+      action: "agent-participant-data-transport-ready"
       participantId: string
       token: string
       sessionId: string
@@ -2072,7 +2072,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       token: _token,
       connectionNonce: _nonce,
       media: _media,
-      capabilityDataTransport: _capabilityDataTransport,
+      participantDataTransport: _participantDataTransport,
       ...safeParticipant
     } = participant
     return safeParticipant
@@ -2649,7 +2649,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     cursor: number
     expiresAt: number
     roomApps: ReturnType<typeof projectCallableRoomApps>
-    capabilityTransport: CapabilityTransportProjection
+    participantTransport: RuntimeParticipantTransportProjection
     truncated?: boolean
   } {
     this.warmCollabRegistry(room)
@@ -2711,7 +2711,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       cursor: serverCursor,
       expiresAt: room.expiresAt,
       roomApps: this.projectRoomAppsForAgent(room),
-      capabilityTransport: this.projectCapabilityTransportState(
+      participantTransport: this.projectRuntimeParticipantTransportState(
         room,
         participantId
       ),
@@ -2725,10 +2725,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
    * the published Task App to its originating Agent/Host and lists currently
    * connected Human Room App publishers for direct SFU subscriptions.
    */
-  private projectCapabilityTransportState(
+  private projectRuntimeParticipantTransportState(
     room: RoomRecord,
     participantId: string
-  ): CapabilityTransportProjection {
+  ): RuntimeParticipantTransportProjection {
     const agent = room.participants[participantId]
     if (agent?.kind !== "agent" || !agent.connected)
       return { routes: [], sources: [] }
@@ -2738,7 +2738,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       return { routes: [], sources: [] }
 
     const taskIndex = buildTaskProjectionIndex(room.messages, room.participants)
-    const routes: CapabilityTransportRouteProjection[] = []
+    const routes: RuntimeParticipantTransportRouteProjection[] = []
     for (const publication of Object.values(room.generatedApps ?? {})) {
       if (routes.length >= MAX_GENERATED_APPS_PER_ROOM) break
       const task = taskIndex.tasks.get(publication.taskRequestId)
@@ -3996,7 +3996,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     participant.connected = false
     participant.connectionNonce = undefined
     participant.lastSeenAt = Date.now()
-    delete participant.capabilityDataTransport
+    delete participant.participantDataTransport
     this.clearAgentActivitiesForParticipant(participant.id)
     await this.saveRoom(room)
     await this.scheduleNextAlarm(room)
@@ -4050,7 +4050,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     participant.connected = true
     participant.connectionNonce = connectionNonce
     participant.lastSeenAt = Date.now()
-    delete participant.capabilityDataTransport
+    delete participant.participantDataTransport
     await this.saveRoom(room)
     await this.scheduleNextAlarm(room)
 
@@ -5663,7 +5663,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       return this.json({ ok: true, expiresAt: room.expiresAt })
     }
 
-    if (request.action === "agent-capability-transport-admit") {
+    if (request.action === "agent-participant-data-transport-admit") {
       const room = await this.activeRoom()
       if (!room) return this.json({ error: "room_expired" }, 410)
       const participant = this.findParticipant(
@@ -5673,13 +5673,19 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       )
       if (!participant || participant.kind !== "agent")
         return this.json({ error: "unauthorized" }, 401)
-      const state = this.projectCapabilityTransportState(room, participant.id)
+      const state = this.projectRuntimeParticipantTransportState(
+        room,
+        participant.id
+      )
       if (state.routes.length === 0 || state.sources.length === 0)
-        return this.json({ error: "capability_transport_unavailable" }, 403)
+        return this.json(
+          { error: "participant_data_transport_unavailable" },
+          403
+        )
       return this.json({ ok: true })
     }
 
-    if (request.action === "agent-capability-transport-attach") {
+    if (request.action === "agent-participant-data-transport-attach") {
       const room = await this.activeRoom()
       if (!room) return this.json({ error: "room_expired" }, 410)
       const participant = this.findParticipant(
@@ -5689,7 +5695,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       )
       if (!participant || participant.kind !== "agent")
         return this.json({ error: "unauthorized" }, 401)
-      const state = this.projectCapabilityTransportState(room, participant.id)
+      const state = this.projectRuntimeParticipantTransportState(
+        room,
+        participant.id
+      )
       if (
         state.routes.length === 0 ||
         state.sources.length === 0 ||
@@ -5698,8 +5707,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         request.sessionId.length > 128 ||
         !/^[A-Za-z0-9._:-]+$/.test(request.sessionId)
       )
-        return this.json({ error: "capability_transport_unavailable" }, 403)
-      participant.capabilityDataTransport = {
+        return this.json(
+          { error: "participant_data_transport_unavailable" },
+          403
+        )
+      participant.participantDataTransport = {
         sessionId: request.sessionId,
         ready: false,
       }
@@ -5710,7 +5722,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       return this.json({ ok: true })
     }
 
-    if (request.action === "agent-capability-transport-ready") {
+    if (request.action === "agent-participant-data-transport-ready") {
       const room = await this.activeRoom()
       if (!room) return this.json({ error: "room_expired" }, 410)
       const participant = this.findParticipant(
@@ -5721,17 +5733,23 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (
         !participant ||
         participant.kind !== "agent" ||
-        participant.capabilityDataTransport?.sessionId !== request.sessionId
+        participant.participantDataTransport?.sessionId !== request.sessionId
       )
         return this.json({ error: "unauthorized" }, 401)
-      const state = this.projectCapabilityTransportState(room, participant.id)
+      const state = this.projectRuntimeParticipantTransportState(
+        room,
+        participant.id
+      )
       if (
         state.routes.length === 0 ||
         (request.ready === true && state.sources.length === 0) ||
         typeof request.ready !== "boolean"
       )
-        return this.json({ error: "capability_transport_unavailable" }, 403)
-      participant.capabilityDataTransport.ready = request.ready
+        return this.json(
+          { error: "participant_data_transport_unavailable" },
+          403
+        )
+      participant.participantDataTransport.ready = request.ready
       participant.lastSeenAt = Date.now()
       await this.saveRoom(room)
       await this.scheduleNextAlarm(room)
@@ -6133,11 +6151,14 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         capabilitySession &&
         (participant.kind !== "agent" ||
           request.sessionId !==
-            participant.capabilityDataTransport?.sessionId ||
-          this.projectCapabilityTransportState(room, participant.id).routes
-            .length === 0)
+            participant.participantDataTransport?.sessionId ||
+          this.projectRuntimeParticipantTransportState(room, participant.id)
+            .routes.length === 0)
       )
-        return this.json({ error: "capability_transport_unavailable" }, 403)
+        return this.json(
+          { error: "participant_data_transport_unavailable" },
+          403
+        )
       // Finding #2: the generic authorize() gate backs every subsequent
       // Agent media operation (/tracks, /renegotiate, /tracks/close,
       // /datachannels/*), not just the initial agent-room-media discovery
@@ -6271,15 +6292,15 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
             candidate.connected &&
             (candidate.media?.sessionId === request.dataChannelSessionId ||
               (candidate.kind === "agent" &&
-                candidate.capabilityDataTransport?.sessionId ===
+                candidate.participantDataTransport?.sessionId ===
                   request.dataChannelSessionId &&
-                this.projectCapabilityTransportState(room, candidate.id).routes
-                  .length > 0))
+                this.projectRuntimeParticipantTransportState(room, candidate.id)
+                  .routes.length > 0))
         )
         const capabilitySource =
           participant.kind === "agent" &&
           request.purpose === "generated-app-capability" &&
-          this.projectCapabilityTransportState(
+          this.projectRuntimeParticipantTransportState(
             room,
             participant.id
           ).sources.some(

@@ -335,10 +335,10 @@ type ResidentRuntime struct {
 	residentMu  sync.Mutex
 	resident    types.ResidentEventStream
 
-	mediaController               *media.Controller
-	capabilityTransport           *media.ParticipantCapabilityTransport
-	capabilityTransportProjection string
-	mediaMu                       sync.Mutex
+	mediaController                *media.Controller
+	participantTransport           *media.RuntimeParticipantTransport
+	participantTransportProjection string
+	mediaMu                        sync.Mutex
 	// residentMediaStateApplyMu serializes cache changes with their Controller
 	// application. It is held across the apply call so a replay cannot take a
 	// stale snapshot, yield to revocation, and then re-enable media afterward.
@@ -1292,7 +1292,7 @@ func (r *ResidentRuntime) advanceFromWait(result types.WaitResult) {
 	// processed outside the Runtime event queue so a grant transition never
 	// wakes or creates a Harness turn.
 	r.observeResidentMediaState(result.MediaState)
-	r.observeCapabilityTransport(result.CapabilityTransport)
+	r.observeRuntimeParticipantTransport(result.RuntimeParticipantTransport)
 
 	// Deduplicate within the envelope as well as against the prior transport
 	// receipt boundary. This map is intentionally envelope-local: the monotonic
@@ -1323,9 +1323,9 @@ func (r *ResidentRuntime) advanceFromWait(result types.WaitResult) {
 	r.mu.Unlock()
 }
 
-// observeCapabilityTransport consumes Room state out of band. It never enters
+// observeRuntimeParticipantTransport consumes Room state out of band. It never enters
 // the Harness event queue and never starts a Harness turn.
-func (r *ResidentRuntime) observeCapabilityTransport(projection types.CapabilityTransportProjection) {
+func (r *ResidentRuntime) observeRuntimeParticipantTransport(projection types.RuntimeParticipantTransportProjection) {
 	encoded, err := json.Marshal(projection)
 	if err != nil {
 		return
@@ -1336,13 +1336,13 @@ func (r *ResidentRuntime) observeCapabilityTransport(projection types.Capability
 		r.mu.Unlock()
 		return
 	}
-	if signature == r.capabilityTransportProjection {
+	if signature == r.participantTransportProjection {
 		r.mu.Unlock()
 		return
 	}
-	old := r.capabilityTransport
-	r.capabilityTransport = nil
-	r.capabilityTransportProjection = signature
+	old := r.participantTransport
+	r.participantTransport = nil
+	r.participantTransportProjection = signature
 	handleText := r.participantHandle
 	r.mu.Unlock()
 	if old != nil {
@@ -1355,25 +1355,25 @@ func (r *ResidentRuntime) observeCapabilityTransport(projection types.Capability
 	if err != nil {
 		return
 	}
-	transport := media.NewParticipantCapabilityTransport(r.options.SiteOrigin, handle, r.options.CapabilityHandler, r.log)
+	transport := media.NewRuntimeParticipantTransport(r.options.SiteOrigin, handle, r.options.CapabilityHandler, r.log)
 	r.mu.Lock()
-	if r.stopped || r.capabilityTransportProjection != signature {
+	if r.stopped || r.participantTransportProjection != signature {
 		r.mu.Unlock()
 		transport.Close()
 		return
 	}
-	r.capabilityTransport = transport
+	r.participantTransport = transport
 	r.mu.Unlock()
 	go func() {
 		if err := transport.Start(context.Background(), projection); err != nil {
-			r.log("runtime_capability_transport_unavailable", map[string]string{"reason": "transport_setup_failed"})
+			r.log("runtime_participant_transport_unavailable", map[string]string{"reason": "transport_setup_failed"})
 			transport.Close()
 			r.mu.Lock()
-			if r.capabilityTransport == transport {
-				r.capabilityTransport = nil
+			if r.participantTransport == transport {
+				r.participantTransport = nil
 				// A later Room envelope with the same projection should retry
 				// setup after a transient signaling or DataChannel failure.
-				r.capabilityTransportProjection = ""
+				r.participantTransportProjection = ""
 			}
 			r.mu.Unlock()
 		}
@@ -2563,12 +2563,12 @@ func (r *ResidentRuntime) beginStop(lastError string) bool {
 // (bounded teardown), then the lease, then Harness/client.
 func (r *ResidentRuntime) releaseResources() {
 	r.mu.Lock()
-	capabilityTransport := r.capabilityTransport
-	r.capabilityTransport = nil
-	r.capabilityTransportProjection = ""
+	participantTransport := r.participantTransport
+	r.participantTransport = nil
+	r.participantTransportProjection = ""
 	r.mu.Unlock()
-	if capabilityTransport != nil {
-		capabilityTransport.Close()
+	if participantTransport != nil {
+		participantTransport.Close()
 	}
 	r.residentMediaStateApplyMu.Lock()
 	defer r.residentMediaStateApplyMu.Unlock()

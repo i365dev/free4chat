@@ -122,6 +122,33 @@ func TestResidentEventStreamUsesHeadersAndDecodesEnvelope(t *testing.T) {
 	}
 }
 
+func TestResidentEventStreamRejectsCapabilityOperationFrames(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Errorf("accept resident stream: %v", err)
+			return
+		}
+		payload := []byte(`{"type":"runtime-capability-request","requestId":"request-a","capabilityId":"printer_status","operation":"observe"}`)
+		_ = conn.Write(context.Background(), websocket.MessageText, payload)
+	}))
+	t.Cleanup(server.Close)
+
+	client := New(server.URL + "/mcp")
+	stream, err := client.OpenResidentEventStream(
+		context.Background(), residentHandle("room-1", "agent-1", "private-token"), 0,
+	)
+	if err != nil {
+		t.Fatalf("open resident stream: %v", err)
+	}
+	defer stream.Close()
+	if _, err := stream.Receive(context.Background()); err == nil {
+		t.Fatal("resident event transport accepted a per-operation capability frame")
+	} else if protocolErr, ok := err.(*Error); !ok || protocolErr.Code != CodeToolError {
+		t.Fatalf("unexpected rejection for obsolete capability frame: %v", err)
+	}
+}
+
 func TestParseResidentRoomAppsFailsClosed(t *testing.T) {
 	entries := []json.RawMessage{
 		json.RawMessage(`{"appInstanceId":"test-app:0123abcd","appId":"test-app","title":"Test App","source":"curated","callable":false,"unavailableReason":"ambiguous_host"}`),

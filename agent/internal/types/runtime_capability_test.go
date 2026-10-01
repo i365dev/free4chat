@@ -56,13 +56,13 @@ func TestRuntimeCapabilityProjectionAndRpcBounds(t *testing.T) {
 	}
 
 	request.Args = map[string]any{"value": "on"}
-	transportProjection := CapabilityTransportProjection{
-		Routes: []CapabilityTransportRoute{{
+	transportProjection := RuntimeParticipantTransportProjection{
+		Routes: []RuntimeParticipantTransportRoute{{
 			AppInstanceID:  "generated:123e4567-e89b-12d3-a456-426614174000",
 			BundleRevision: 2, TaskRequestID: "task-origin", AgentParticipantID: "agent-a",
 			RuntimeHostID: "host-route-1", CapabilityIDs: []string{"fixture"},
 		}},
-		Sources: []CapabilityTransportSource{{ParticipantID: "human-a", SessionID: "human-session-1"}},
+		Sources: []RuntimeParticipantTransportSource{{ParticipantID: "human-a", SessionID: "human-session-1"}},
 	}
 	if !transportProjection.Valid() {
 		t.Fatal("bounded participant transport association rejected")

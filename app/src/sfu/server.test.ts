@@ -579,8 +579,8 @@ describe("Origin policy is route-scoped, not global", () => {
 
   const missingOriginAllowed = [
     "agent-session",
-    "agent-capability-session",
-    "agent-capability-ready",
+    "agent-participant-data-session",
+    "agent-participant-data-ready",
     "agent-room-media",
     "tracks",
     "renegotiate",
@@ -735,14 +735,16 @@ describe("Generated App capability participant session", () => {
       return { status: 200, body: { ok: true } }
     })
     const response = await handleSfuRequest(
-      req("agent-capability-session", { body: JSON.stringify(agentBody) }),
+      req("agent-participant-data-session", {
+        body: JSON.stringify(agentBody),
+      }),
       env
     )
     expect(response.status).toBe(200)
     expect(await json(response)).toEqual({ sessionId: "cap-session" })
     expect(actions).toEqual([
-      "agent-capability-transport-admit",
-      "agent-capability-transport-attach",
+      "agent-participant-data-transport-admit",
+      "agent-participant-data-transport-attach",
     ])
     expect(fetchMock).toHaveBeenCalledOnce()
   })

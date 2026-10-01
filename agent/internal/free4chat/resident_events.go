@@ -90,7 +90,7 @@ type residentEventEnvelope struct {
 	Participants        []json.RawMessage                   `json:"participants"`
 	RuntimeHosts        map[string]json.RawMessage          `json:"runtimeHosts"`
 	RoomApps            []json.RawMessage                   `json:"roomApps"`
-	CapabilityTransport types.CapabilityTransportProjection `json:"capabilityTransport"`
+	RuntimeParticipantTransport types.RuntimeParticipantTransportProjection `json:"participantTransport"`
 	MediaState          *types.ResidentMediaState           `json:"mediaState,omitempty"`
 	Expired             bool                                `json:"expired,omitempty"`
 	Truncated           bool                                `json:"truncated,omitempty"`
@@ -247,10 +247,10 @@ func (s *residentEventStream) Receive(ctx context.Context) (types.WaitResult, er
 		MediaState: envelope.MediaState,
 		RoomApps:   parseResidentRoomApps(envelope.RoomApps),
 	}
-	if !envelope.CapabilityTransport.Valid() {
+	if !envelope.RuntimeParticipantTransport.Valid() {
 		return types.WaitResult{}, &Error{Message: "resident capability transport projection is invalid", Code: CodeToolError}
 	}
-	wait.CapabilityTransport = envelope.CapabilityTransport
+	wait.RuntimeParticipantTransport = envelope.RuntimeParticipantTransport
 	if envelope.Participants != nil {
 		raw := make([]any, 0, len(envelope.Participants))
 		for _, item := range envelope.Participants {

@@ -133,7 +133,7 @@ func (c *residentTestClient) residentOpenSnapshot() (int, []int64, []string) {
 	return c.openCount, append([]int64(nil), c.openCursors...), append([]string(nil), c.openParticIDs...)
 }
 
-func TestResidentRuntimeUsesEventStreamAndSparseLeaseHeartbeat(t *testing.T) {
+func TestResidentRuntimeUsesEventStreamAndControlProjectionsDoNotWakeHarness(t *testing.T) {
 	stream := newResidentTestStream()
 	client := &residentTestClient{
 		fakeClient: &fakeClient{},
@@ -163,11 +163,27 @@ func TestResidentRuntimeUsesEventStreamAndSparseLeaseHeartbeat(t *testing.T) {
 			MediaAvailable: true,
 			MeetingNotes:   types.ResidentMeetingNotesState{Active: true, StartedAt: 7},
 		},
+		RuntimeParticipantTransport: types.RuntimeParticipantTransportProjection{
+			Routes: []types.RuntimeParticipantTransportRoute{{
+				AppInstanceID:      "generated:123e4567-e89b-12d3-a456-426614174000",
+				BundleRevision:     1,
+				TaskRequestID:      "task-origin",
+				AgentParticipantID: "agent-a",
+				RuntimeHostID:      "11111111-2222-3333-4444-555555555555",
+				CapabilityIDs:      []string{"printer_status"},
+			}},
+		},
 		Cursor: 0, ExpiresAt: time.Now().Add(time.Hour).UnixMilli(),
 	}
 	time.Sleep(50 * time.Millisecond)
 	if got := adapter.sessionsInt(); got != 0 {
-		t.Fatalf("media-only resident state must not wake Harness, turns=%d", got)
+		t.Fatalf("media or participant transport control state must not wake Harness, turns=%d", got)
+	}
+	rt.mu.Lock()
+	transport := rt.participantTransport
+	rt.mu.Unlock()
+	if transport != nil {
+		t.Fatal("Runtime without a local capability handler must fail closed")
 	}
 	stream.results <- types.WaitResult{
 		Events: []types.RoomEvent{roomEvent(1, true)},

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import {
   buildTaskProjectionIndex,
+  initialTaskAgentParticipantId,
   projectTaskEvent,
   resolveAgentTaskTargets,
   resolveHumanTaskTargets,
@@ -99,6 +100,25 @@ function participants(): Record<string, RoomParticipant> {
 }
 
 describe("Task scope projection", () => {
+  it("resolves the canonical originating Agent from either Task endpoint", () => {
+    const roomParticipants = participants()
+    const humanToAgent = {
+      fromParticipantId: "human",
+      targetParticipantId: "agent-a",
+    }
+    const agentToHuman = {
+      fromParticipantId: "agent-b",
+      targetParticipantId: "human",
+    }
+
+    expect(initialTaskAgentParticipantId(humanToAgent, roomParticipants)).toBe(
+      "agent-a"
+    )
+    expect(initialTaskAgentParticipantId(agentToHuman, roomParticipants)).toBe(
+      "agent-b"
+    )
+  })
+
   it("hides unrelated Agents and admits an explicitly targeted Agent", () => {
     const messages = [
       request(),

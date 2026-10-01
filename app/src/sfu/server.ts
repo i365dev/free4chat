@@ -101,8 +101,8 @@ function trackObjects(value: unknown): Array<Record<string, unknown>> | null {
 // Origin, since there's no demonstrated non-browser caller for them.
 const MISSING_ORIGIN_ALLOWED_ROUTES = new Set([
   "agent-session",
-  "agent-capability-session",
-  "agent-capability-ready",
+  "agent-participant-data-session",
+  "agent-participant-data-ready",
   "agent-room-media",
   "agent-track-active",
   "tracks",
@@ -685,11 +685,15 @@ export async function handleSfuRequest(
     return json({ sessionId: session.sessionId })
   }
 
-  if (route === "agent-capability-session") {
+  if (route === "agent-participant-data-session") {
     if (request.method !== "POST")
       return json({ error: "method_not_allowed" }, 405)
     if (
-      !(await checkRateLimit(request, env, "sfu:rl:agent-capability-session"))
+      !(await checkRateLimit(
+        request,
+        env,
+        "sfu:rl:agent-participant-data-session"
+      ))
     )
       return json({ error: "rate_limited" }, 429)
     const body = await readBody(request)
@@ -703,7 +707,7 @@ export async function handleSfuRequest(
     // Admission derives the exact Task/Agent/Host/capability association from
     // Room state and deliberately does not depend on AGENT_MEDIA_ENABLED.
     const admitted = await roomControl(env, room, {
-      action: "agent-capability-transport-admit",
+      action: "agent-participant-data-transport-admit",
       participantId,
       token,
     })
@@ -715,7 +719,7 @@ export async function handleSfuRequest(
     const session = (await upstream.json()) as { sessionId?: string }
     if (!session.sessionId) return json({ error: "sfu_session_invalid" }, 502)
     const attached = await roomControl(env, room, {
-      action: "agent-capability-transport-attach",
+      action: "agent-participant-data-transport-attach",
       participantId,
       token,
       sessionId: session.sessionId,
@@ -724,7 +728,7 @@ export async function handleSfuRequest(
     return json({ sessionId: session.sessionId })
   }
 
-  if (route === "agent-capability-ready") {
+  if (route === "agent-participant-data-ready") {
     if (request.method !== "POST")
       return json({ error: "method_not_allowed" }, 405)
     const body = await readBody(request)
@@ -743,7 +747,7 @@ export async function handleSfuRequest(
     )
       return badRequest("invalid_transport_state")
     return roomControl(env, room, {
-      action: "agent-capability-transport-ready",
+      action: "agent-participant-data-transport-ready",
       participantId,
       token,
       sessionId,

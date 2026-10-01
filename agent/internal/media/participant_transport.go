@@ -48,10 +48,10 @@ type reliableParticipantDataChannel interface {
 	Send([]byte) error
 }
 
-// ParticipantCapabilityTransport owns a media-free Pion connection for the
+// RuntimeParticipantTransport owns a media-free Pion connection for the
 // currently projected Generated App association. It has no queue: requests
 // are admitted only while the peer and the matching source channel are live.
-type ParticipantCapabilityTransport struct {
+type RuntimeParticipantTransport struct {
 	siteOrigin string
 	handle     DecodedHandle
 	handler    types.ResidentCapabilityController
@@ -64,25 +64,25 @@ type ParticipantCapabilityTransport struct {
 	session  string
 	engine   *Engine
 	outbound reliableParticipantDataChannel
-	routes   map[string]types.CapabilityTransportRoute
+	routes   map[string]types.RuntimeParticipantTransportRoute
 	sources  map[string]string // negotiated subscriber label -> participant id
 	inflight chan struct{}
 	seen     map[string]time.Time
 }
 
-func NewParticipantCapabilityTransport(siteOrigin string, handle DecodedHandle, handler types.ResidentCapabilityController, log func(string, map[string]string)) *ParticipantCapabilityTransport {
+func NewRuntimeParticipantTransport(siteOrigin string, handle DecodedHandle, handler types.ResidentCapabilityController, log func(string, map[string]string)) *RuntimeParticipantTransport {
 	if log == nil {
 		log = func(string, map[string]string) {}
 	}
-	return &ParticipantCapabilityTransport{siteOrigin: siteOrigin, handle: handle, handler: handler, log: log, inflight: make(chan struct{}, capabilityRequestLimit), seen: map[string]time.Time{}}
+	return &RuntimeParticipantTransport{siteOrigin: siteOrigin, handle: handle, handler: handler, log: log, inflight: make(chan struct{}, capabilityRequestLimit), seen: map[string]time.Time{}}
 }
 
-func (t *ParticipantCapabilityTransport) Start(ctx context.Context, projection types.CapabilityTransportProjection) error {
+func (t *RuntimeParticipantTransport) Start(ctx context.Context, projection types.RuntimeParticipantTransportProjection) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if !projection.Valid() || len(projection.Routes) == 0 {
-		return errors.New("capability_transport_unavailable")
+		return errors.New("participant_data_transport_unavailable")
 	}
 	if t.handler == nil {
 		return errors.New("capability_controller_unavailable")
@@ -93,7 +93,7 @@ func (t *ParticipantCapabilityTransport) Start(ctx context.Context, projection t
 			available[capability.CapabilityID] = struct{}{}
 		}
 	}
-	filteredRoutes := make([]types.CapabilityTransportRoute, 0, len(projection.Routes))
+	filteredRoutes := make([]types.RuntimeParticipantTransportRoute, 0, len(projection.Routes))
 	for _, route := range projection.Routes {
 		if route.AgentParticipantID != t.handle.ParticipantID {
 			return errors.New("capability_route_participant_mismatch")
@@ -116,12 +116,12 @@ func (t *ParticipantCapabilityTransport) Start(ctx context.Context, projection t
 	if t.closed {
 		t.mu.Unlock()
 		cancel()
-		return errors.New("capability_transport_closed")
+		return errors.New("participant_data_transport_closed")
 	}
 	t.ctx, t.cancel = transportCtx, cancel
 	t.mu.Unlock()
 	rest := NewSfuRestClient(t.siteOrigin, t.handle)
-	session, err := rest.CreateAgentCapabilitySession()
+	session, err := rest.CreateAgentParticipantDataSession()
 	if err != nil {
 		cancel()
 		return err
@@ -134,7 +134,7 @@ func (t *ParticipantCapabilityTransport) Start(ctx context.Context, projection t
 	fail := func(err error) error {
 		cancel()
 		engine.Close()
-		_ = rest.SetAgentCapabilityReady(session, false)
+		_ = rest.SetAgentParticipantDataReady(session, false)
 		return err
 	}
 	if err := engine.Create(); err != nil {
@@ -200,24 +200,24 @@ func (t *ParticipantCapabilityTransport) Start(ctx context.Context, projection t
 	if !allReady() {
 		return fail(errors.New("capability_datachannel_timeout"))
 	}
-	routes := make(map[string]types.CapabilityTransportRoute, len(projection.Routes))
+	routes := make(map[string]types.RuntimeParticipantTransportRoute, len(projection.Routes))
 	for _, route := range projection.Routes {
 		routes[route.AppInstanceID] = route
 	}
 	t.mu.Lock()
 	if t.closed || transportCtx.Err() != nil {
 		t.mu.Unlock()
-		return fail(errors.New("capability_transport_closed"))
+		return fail(errors.New("participant_data_transport_closed"))
 	}
 	t.session, t.engine, t.outbound, t.routes, t.sources = session, engine, outbound, routes, sources
 	t.mu.Unlock()
-	if err := rest.SetAgentCapabilityReady(session, true); err != nil {
+	if err := rest.SetAgentParticipantDataReady(session, true); err != nil {
 		return fail(err)
 	}
 	return nil
 }
 
-func (t *ParticipantCapabilityTransport) receive(label string, payload []byte) {
+func (t *RuntimeParticipantTransport) receive(label string, payload []byte) {
 	if len(payload) == 0 || len(payload) > capabilityPayloadLimit {
 		return
 	}
@@ -226,7 +226,6 @@ func (t *ParticipantCapabilityTransport) receive(label string, payload []byte) {
 		t.mu.Unlock()
 		return
 	}
-	sourceID := t.sources[label]
 	var envelope roomAppEnvelope
 	var frame capabilityFrame
 	if err := json.Unmarshal(payload, &envelope); err != nil || envelope.ProtocolVersion != 1 || envelope.Lane != "reliable" || json.Unmarshal(envelope.Payload, &frame) != nil || frame.Type != capabilityRequestFrame || envelope.AppInstanceID != frame.AppInstanceID {
@@ -236,6 +235,13 @@ func (t *ParticipantCapabilityTransport) receive(label string, payload []byte) {
 	route, ok := t.routes[frame.AppInstanceID]
 	if !ok || frame.BundleRevision != route.BundleRevision || frame.TaskRequestID != route.TaskRequestID || frame.AgentID != route.AgentParticipantID || !containsString(route.CapabilityIDs, frame.CapabilityID) || frame.RequestID == "" || len(frame.RequestID) > 64 || strings.TrimSpace(frame.RequestID) != frame.RequestID {
 		t.mu.Unlock()
+		return
+	}
+	request := types.ResidentCapabilityRequest{RequestID: frame.RequestID, RuntimeHostID: route.RuntimeHostID, CapabilityID: frame.CapabilityID, Operation: frame.Operation, Action: frame.Action, Args: frame.Args}
+	if !t.capabilityRequestAllowed(route, request) {
+		out := t.outbound
+		t.mu.Unlock()
+		t.sendResult(out, route, frame, "unauthorized", nil)
 		return
 	}
 	now := time.Now()
@@ -270,33 +276,57 @@ func (t *ParticipantCapabilityTransport) receive(label string, payload []byte) {
 		<-t.inflight
 		return
 	}
-	go t.execute(transportCtx, out, sourceID, route, frame)
+	go t.execute(transportCtx, out, route, frame)
 }
 
-func (t *ParticipantCapabilityTransport) execute(transportCtx context.Context, out reliableParticipantDataChannel, sourceID string, route types.CapabilityTransportRoute, frame capabilityFrame) {
+func (t *RuntimeParticipantTransport) execute(transportCtx context.Context, out reliableParticipantDataChannel, route types.RuntimeParticipantTransportRoute, frame capabilityFrame) {
 	defer func() { <-t.inflight }()
 	ctx, cancel := context.WithTimeout(transportCtx, 8*time.Second)
 	defer cancel()
 	request := types.ResidentCapabilityRequest{RequestID: frame.RequestID, RuntimeHostID: route.RuntimeHostID, CapabilityID: frame.CapabilityID, Operation: frame.Operation, Action: frame.Action, Args: frame.Args}
-	result := capabilityFrame{Type: capabilityResultFrame, RequestID: frame.RequestID, AppInstanceID: route.AppInstanceID, BundleRevision: route.BundleRevision, TaskRequestID: route.TaskRequestID, AgentID: route.AgentParticipantID, CapabilityID: frame.CapabilityID, Operation: frame.Operation}
-	if !request.Valid() {
-		result.Error = "invalid_request"
+	failure := ""
+	var value map[string]any
+	if !request.Valid() || !t.capabilityRequestAllowed(route, request) {
+		failure = "unauthorized"
 	} else if t.handler == nil {
-		result.Error = "unavailable"
-	} else if value, err := t.handler.HandleCapabilityRequest(ctx, request); err != nil {
+		failure = "unavailable"
+	} else if handled, err := t.handler.HandleCapabilityRequest(ctx, request); err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			result.Error = "timeout"
+			failure = "timeout"
 		} else {
-			result.Error = "unavailable"
+			failure = "unavailable"
 		}
 	} else {
-		result.OK = true
-		result.Result = value
-		if !types.ResidentCapabilityResultPayloadValid(value) {
-			result.OK = false
-			result.Result = nil
-			result.Error = "controller_error"
+		value = handled
+		if !types.ResidentCapabilityResultPayloadValid(handled) {
+			value = nil
+			failure = "controller_error"
 		}
+	}
+	t.sendResult(out, route, frame, failure, value)
+}
+
+func (t *RuntimeParticipantTransport) capabilityRequestAllowed(route types.RuntimeParticipantTransportRoute, request types.ResidentCapabilityRequest) bool {
+	if !containsString(route.CapabilityIDs, request.CapabilityID) || t.handler == nil {
+		return false
+	}
+	for _, descriptor := range t.handler.DescribeCapabilities() {
+		if descriptor.CapabilityID == request.CapabilityID && descriptor.AllowsRequest(request) {
+			return true
+		}
+	}
+	return false
+}
+
+func (t *RuntimeParticipantTransport) sendResult(out reliableParticipantDataChannel, route types.RuntimeParticipantTransportRoute, request capabilityFrame, failure string, value map[string]any) {
+	if out == nil {
+		return
+	}
+	result := capabilityFrame{Type: capabilityResultFrame, RequestID: request.RequestID, AppInstanceID: route.AppInstanceID, BundleRevision: route.BundleRevision, TaskRequestID: route.TaskRequestID, AgentID: route.AgentParticipantID, CapabilityID: request.CapabilityID, Operation: request.Operation, Result: value}
+	if failure != "" {
+		result.Error = failure
+	} else {
+		result.OK = true
 	}
 	payload, err := json.Marshal(result)
 	if err != nil {
@@ -307,7 +337,7 @@ func (t *ParticipantCapabilityTransport) execute(transportCtx context.Context, o
 		return
 	}
 	if err := out.Send(wire); err != nil {
-		t.log("runtime_capability_result_failed", map[string]string{"source": sourceID})
+		t.log("runtime_participant_result_failed", map[string]string{"source": request.AgentID})
 	}
 }
 
@@ -320,7 +350,7 @@ func containsString(items []string, value string) bool {
 	return false
 }
 
-func (t *ParticipantCapabilityTransport) Close() {
+func (t *RuntimeParticipantTransport) Close() {
 	t.mu.Lock()
 	if t.closed {
 		t.mu.Unlock()
@@ -341,7 +371,7 @@ func (t *ParticipantCapabilityTransport) Close() {
 		cancel()
 	}
 	if session != "" {
-		_ = NewSfuRestClient(t.siteOrigin, t.handle).SetAgentCapabilityReady(session, false)
+		_ = NewSfuRestClient(t.siteOrigin, t.handle).SetAgentParticipantDataReady(session, false)
 	}
 	if engine != nil {
 		engine.Close()

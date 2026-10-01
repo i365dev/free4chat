@@ -19,22 +19,39 @@ func (c *capabilityTestChannel) Send(payload []byte) error {
 }
 
 type capabilityTestHandler struct {
-	calls chan types.ResidentCapabilityRequest
+	calls       chan types.ResidentCapabilityRequest
+	descriptors []types.RuntimeCapabilityProjection
 }
 
-func (*capabilityTestHandler) DescribeCapabilities() []types.RuntimeCapabilityProjection { return nil }
+func (h *capabilityTestHandler) DescribeCapabilities() []types.RuntimeCapabilityProjection {
+	return h.descriptors
+}
 func (h *capabilityTestHandler) HandleCapabilityRequest(_ context.Context, request types.ResidentCapabilityRequest) (map[string]any, error) {
 	h.calls <- request
 	return map[string]any{"status": "ready"}, nil
 }
 
-func TestParticipantCapabilityTransportUsesBoundedParticipantFrames(t *testing.T) {
-	handler := &capabilityTestHandler{calls: make(chan types.ResidentCapabilityRequest, 1)}
+func validCapabilityTestDescriptor(capabilityID string, observe bool) types.RuntimeCapabilityProjection {
+	descriptor := types.RuntimeCapabilityProjection{
+		CapabilityID: capabilityID,
+		Title:        "Status",
+		Version:      "1",
+		Observe:      observe,
+		Actions:      []types.RuntimeCapabilityAction{},
+	}
+	return descriptor
+}
+
+func TestRuntimeParticipantTransportUsesBoundedParticipantFrames(t *testing.T) {
+	handler := &capabilityTestHandler{
+		calls:       make(chan types.ResidentCapabilityRequest, 1),
+		descriptors: []types.RuntimeCapabilityProjection{validCapabilityTestDescriptor("printer_status", true)},
+	}
 	channel := &capabilityTestChannel{payloads: make(chan []byte, 1)}
-	transport := NewParticipantCapabilityTransport("https://example.invalid", DecodedHandle{ParticipantID: "agent-a"}, handler, nil)
+	transport := NewRuntimeParticipantTransport("https://example.invalid", DecodedHandle{ParticipantID: "agent-a"}, handler, nil)
 	transport.ctx = context.Background()
 	transport.outbound = channel
-	transport.routes = map[string]types.CapabilityTransportRoute{
+	transport.routes = map[string]types.RuntimeParticipantTransportRoute{
 		"generated:123e4567-e89b-12d3-a456-426614174000": {
 			AppInstanceID:  "generated:123e4567-e89b-12d3-a456-426614174000",
 			BundleRevision: 2, TaskRequestID: "task-a", AgentParticipantID: "agent-a",
@@ -73,12 +90,12 @@ func TestParticipantCapabilityTransportUsesBoundedParticipantFrames(t *testing.T
 	}
 }
 
-func TestParticipantCapabilityTransportDropsStaleRouteAndUnmappedSource(t *testing.T) {
+func TestRuntimeParticipantTransportDropsStaleRouteAndUnmappedSource(t *testing.T) {
 	handler := &capabilityTestHandler{calls: make(chan types.ResidentCapabilityRequest, 1)}
-	transport := NewParticipantCapabilityTransport("https://example.invalid", DecodedHandle{ParticipantID: "agent-a"}, handler, nil)
+	transport := NewRuntimeParticipantTransport("https://example.invalid", DecodedHandle{ParticipantID: "agent-a"}, handler, nil)
 	transport.ctx = context.Background()
 	transport.outbound = &capabilityTestChannel{payloads: make(chan []byte, 1)}
-	transport.routes = map[string]types.CapabilityTransportRoute{}
+	transport.routes = map[string]types.RuntimeParticipantTransportRoute{}
 	transport.sources = map[string]string{"room-app-reliable-human-a-subscriber": "human-a"}
 	payload, _ := json.Marshal(roomAppEnvelope{ProtocolVersion: 1, Lane: "reliable", AppInstanceID: "generated:123e4567-e89b-12d3-a456-426614174000", Payload: json.RawMessage(`{"type":"runtime-capability-request","requestId":"request-a","appInstanceId":"generated:123e4567-e89b-12d3-a456-426614174000","bundleRevision":2,"taskRequestId":"task-a","agentParticipantId":"agent-a","capabilityId":"printer_status","operation":"observe"}`)})
 	transport.receive("room-app-reliable-unknown-subscriber", payload)
@@ -87,6 +104,77 @@ func TestParticipantCapabilityTransportDropsStaleRouteAndUnmappedSource(t *testi
 	case <-handler.calls:
 		t.Fatal("stale or unmapped route reached the capability controller")
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestRuntimeParticipantTransportEnforcesCurrentDescriptorBeforeDispatch(t *testing.T) {
+	invokeDescriptor := validCapabilityTestDescriptor("printer_status", false)
+	action := types.RuntimeCapabilityAction{Name: "set_mode", Title: "Set mode"}
+	action.Input.Type = "object"
+	action.Input.Properties = map[string]string{"mode": "string"}
+	action.Input.Required = []string{"mode"}
+	invokeDescriptor.Actions = []types.RuntimeCapabilityAction{action}
+
+	tests := []struct {
+		name         string
+		descriptor   types.RuntimeCapabilityProjection
+		operation    types.ResidentCapabilityOperation
+		action       string
+		args         map[string]any
+		wantDispatch bool
+	}{
+		{name: "observe disabled by descriptor", descriptor: validCapabilityTestDescriptor("printer_status", false), operation: types.ResidentCapabilityObserve},
+		{name: "unknown invoke action", descriptor: invokeDescriptor, operation: types.ResidentCapabilityInvoke, action: "unknown", args: map[string]any{"mode": "quiet"}},
+		{name: "invalid action args", descriptor: invokeDescriptor, operation: types.ResidentCapabilityInvoke, action: "set_mode", args: map[string]any{"mode": true}},
+		{name: "missing required action arg", descriptor: invokeDescriptor, operation: types.ResidentCapabilityInvoke, action: "set_mode", args: map[string]any{}},
+		{name: "advertised valid action", descriptor: invokeDescriptor, operation: types.ResidentCapabilityInvoke, action: "set_mode", args: map[string]any{"mode": "quiet"}, wantDispatch: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			handler := &capabilityTestHandler{
+				calls:       make(chan types.ResidentCapabilityRequest, 1),
+				descriptors: []types.RuntimeCapabilityProjection{test.descriptor},
+			}
+			outbound := &capabilityTestChannel{payloads: make(chan []byte, 1)}
+			transport := NewRuntimeParticipantTransport("https://example.invalid", DecodedHandle{ParticipantID: "agent-a"}, handler, nil)
+			transport.ctx = context.Background()
+			transport.outbound = outbound
+			appID := "generated:123e4567-e89b-12d3-a456-426614174000"
+			route := types.RuntimeParticipantTransportRoute{
+				AppInstanceID: appID, BundleRevision: 2, TaskRequestID: "task-a",
+				AgentParticipantID: "agent-a", RuntimeHostID: "host-route-1",
+				CapabilityIDs: []string{"printer_status"},
+			}
+			transport.routes = map[string]types.RuntimeParticipantTransportRoute{appID: route}
+			transport.sources = map[string]string{"room-app-reliable-human-a-subscriber": "human-a"}
+			frame := capabilityFrame{
+				Type: capabilityRequestFrame, RequestID: "request-a", AppInstanceID: appID,
+				BundleRevision: 2, TaskRequestID: "task-a", AgentID: "agent-a",
+				CapabilityID: "printer_status", Operation: test.operation,
+				Action: test.action, Args: test.args,
+			}
+			framePayload, _ := json.Marshal(frame)
+			wire, _ := json.Marshal(roomAppEnvelope{ProtocolVersion: 1, Lane: "reliable", AppInstanceID: appID, Payload: framePayload})
+			transport.receive("room-app-reliable-human-a-subscriber", wire)
+
+			if test.wantDispatch {
+				select {
+				case got := <-handler.calls:
+					if got.Operation != test.operation || got.Action != test.action {
+						t.Fatalf("unexpected dispatched request: %+v", got)
+					}
+				case <-time.After(time.Second):
+					t.Fatal("advertised valid operation did not reach the controller")
+				}
+			} else {
+				select {
+				case got := <-handler.calls:
+					t.Fatalf("unadvertised operation reached the controller: %+v", got)
+				case <-time.After(25 * time.Millisecond):
+				}
+			}
+		})
 	}
 }
 
