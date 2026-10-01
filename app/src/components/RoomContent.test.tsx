@@ -4464,6 +4464,16 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     })
 
     describe("#475 generated Task App Stage parity", () => {
+      let previousViewportWidth = 0
+
+      beforeEach(() => {
+        previousViewportWidth = window.innerWidth
+      })
+
+      afterEach(() => {
+        window.innerWidth = previousViewportWidth
+      })
+
       /** The canonical Room generation id the hook projects in RoomState. */
       const STAGE_ANALYTICS_ROOM_ID = "3f7c1c2e-9a4b-4d5e-8f01-2b6c7d8e9f10"
       const GENERATED_APP_ID = "generated:00000000-0000-4000-8000-0000000000a1"
@@ -4735,6 +4745,52 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         expect(generatedSlotHidden()).toBe(false)
         expect(slotHidden("test-app-1")).toBe(true)
         expect(visibleStageAppSlots()).toHaveLength(1)
+      })
+
+      it("opens the resident Task App sheet from mobile Task chat and returns to that Task when closed", async () => {
+        vi.stubEnv("NODE_ENV", "production")
+        window.innerWidth = 390
+        renderBothAppRoom()
+
+        fireEvent.click(screen.getByTestId("interaction-tab-task-task-live"))
+        expect(screen.queryByTestId("room-mobile-sheet")).toBeNull()
+        expect(
+          screen.getByTestId("interaction-tab-task-task-live")
+        ).toHaveAttribute("aria-selected", "true")
+
+        fireEvent.click(
+          within(screen.getByTestId("generated-room-app-card")).getByRole(
+            "button",
+            { name: "Open App" }
+          )
+        )
+        const sheet = await screen.findByTestId("room-mobile-sheet")
+        await waitFor(() => expect(generatedSlotHidden()).toBe(false))
+
+        const residentHost = generatedHost()
+        const residentIframe = generatedIframe()
+        expect(within(sheet).getByTestId("room-stage")).toContainElement(
+          residentHost
+        )
+
+        fireEvent.click(screen.getByTestId("room-mobile-sheet-close"))
+        expect(screen.queryByTestId("room-mobile-sheet")).toBeNull()
+        expect(
+          screen.getByTestId("interaction-tab-task-task-live")
+        ).toHaveAttribute("aria-selected", "true")
+        expect(generatedHost()).toBe(residentHost)
+        expect(generatedIframe()).toBe(residentIframe)
+
+        fireEvent.click(
+          within(screen.getByTestId("generated-room-app-card")).getByRole(
+            "button",
+            { name: "Open App" }
+          )
+        )
+        expect(await screen.findByTestId("room-mobile-sheet")).toContainElement(
+          residentHost
+        )
+        expect(generatedIframe()).toBe(residentIframe)
       })
 
       it("hides the generated host when Screen becomes the Stage surface", async () => {

@@ -443,6 +443,65 @@ describe("RoomContent — narrow-screen composition", () => {
     )
   })
 
+  it("captures desktop splitter drags across content and clears them on release, cancel, blur, and unmount", () => {
+    window.innerWidth = DESKTOP_WIDTH
+    const { container, unmount } = renderRoom()
+    const splitter = screen.getByTestId("room-splitter") as HTMLDivElement
+    const room = container.querySelector(".room-content") as HTMLDivElement
+    room.getBoundingClientRect = vi.fn(
+      () => ({ left: 0, width: 1000 } as DOMRect)
+    )
+    const setCapture = vi.fn()
+    const hasCapture = vi.fn(() => true)
+    const releaseCapture = vi.fn()
+    splitter.setPointerCapture = setCapture
+    splitter.hasPointerCapture = hasCapture
+    splitter.releasePointerCapture = releaseCapture
+
+    const stage = screen.getByTestId("room-stage")
+    const sendPointer = (
+      target: Element | Window,
+      type: string,
+      pointerId: number,
+      clientX = 0
+    ) => {
+      const event = new Event(type, { bubbles: true })
+      Object.defineProperties(event, {
+        pointerId: { value: pointerId },
+        clientX: { value: clientX },
+      })
+      fireEvent(target, event)
+    }
+
+    sendPointer(splitter, "pointerdown", 1)
+    sendPointer(window, "pointermove", 1, 700)
+    expect(stage).toHaveStyle({ width: "70%" })
+    expect(setCapture).toHaveBeenCalledWith(1)
+
+    // A release outside the divider ends the active drag. Later movement over
+    // App/content surfaces cannot leave a stale resize listener working.
+    sendPointer(window, "pointerup", 1)
+    sendPointer(window, "pointermove", 1, 800)
+    expect(stage).toHaveStyle({ width: "70%" })
+    expect(releaseCapture).toHaveBeenCalledWith(1)
+
+    sendPointer(splitter, "pointerdown", 2)
+    sendPointer(window, "pointermove", 2, 600)
+    sendPointer(window, "pointercancel", 2)
+    sendPointer(window, "pointermove", 2, 800)
+    expect(stage).toHaveStyle({ width: "60%" })
+
+    sendPointer(splitter, "pointerdown", 3)
+    sendPointer(window, "pointermove", 3, 400)
+    fireEvent.blur(window)
+    sendPointer(window, "pointermove", 3, 800)
+    expect(stage).toHaveStyle({ width: "40%" })
+
+    sendPointer(splitter, "pointerdown", 4)
+    unmount()
+    expect(releaseCapture).toHaveBeenCalledWith(4)
+  })
+
   it("keeps a fullscreen Room App owning the phone content region", () => {
     window.innerWidth = PHONE_WIDTH
     renderRoom({ roomAppsEnabled: true })
