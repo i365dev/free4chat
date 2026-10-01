@@ -336,14 +336,17 @@ func TestDaemonSingletonProtectsLiveRuntimeState(t *testing.T) {
 		_, workspaceErr := os.Stat(filepath.Join(workspace, "sentinel"))
 		currentSocket, socketErr := os.Stat(SocketPath())
 		_, ipcErr := SendIPC(&IpcRequest{Op: "status"})
-		t.Logf("reproduction: second Run remained live; workspace_removed=%t socket_replaced=%t canonical_ipc_reachable=%t adapter_starts=%d", os.IsNotExist(workspaceErr), socketErr == nil && !os.SameFile(originalSocket, currentSocket), ipcErr == nil, adapterStarts())
-		daemonB.stopAll()
-		select {
-		case <-doneB:
-		case <-time.After(2 * time.Second):
-			t.Fatal("second daemon did not stop after failed singleton assertion")
+		if os.IsNotExist(workspaceErr) || socketErr != nil || !os.SameFile(originalSocket, currentSocket) || ipcErr != nil || adapterStarts() != 1 {
+			t.Fatalf("competing daemon mutated live owner state: workspace_removed=%t socket_replaced=%t canonical_ipc_reachable=%t adapter_starts=%d", os.IsNotExist(workspaceErr), socketErr == nil && !os.SameFile(originalSocket, currentSocket), ipcErr == nil, adapterStarts())
 		}
-		t.Fatal("second daemon acquired a second listener while daemon A remained alive")
+		select {
+		case err := <-doneB:
+			if err == nil || !strings.Contains(err.Error(), "already running") {
+				t.Fatalf("second daemon should fail closed after bounded contention, got %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("second daemon did not fail after bounded lock contention")
+		}
 	}
 
 	if _, err := os.Stat(filepath.Join(workspace, "sentinel")); err != nil {
@@ -383,6 +386,53 @@ func TestDaemonSingletonProtectsLiveRuntimeState(t *testing.T) {
 	case <-doneC:
 	case <-time.After(2 * time.Second):
 		t.Fatal("daemon C did not stop")
+	}
+}
+
+func TestDaemonStopThenImmediateRestart(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "fcagent-restart-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	t.Setenv("FREE4CHAT_AGENT_DIR", dir)
+	t.Setenv("FREE4CHAT_TEST_DISABLE_NATIVE_CREDENTIAL_STORE", "1")
+
+	daemonA := New()
+	doneA := make(chan error, 1)
+	t.Cleanup(func() { daemonA.stopAll() })
+	go func() { doneA <- daemonA.Run() }()
+	waitForSocketUp(t, SocketPath(), 5*time.Second)
+	if _, err := SendIPC(&IpcRequest{Op: "stop"}); err != nil {
+		t.Fatalf("daemon A stop request failed: %v", err)
+	}
+
+	// Start B as soon as the stop reply arrives. A may still be finishing its
+	// teardown and holding daemon.lock; bounded lock retry must bridge that gap.
+	daemonB := New()
+	doneB := make(chan error, 1)
+	t.Cleanup(func() { daemonB.stopAll() })
+	go func() { doneB <- daemonB.Run() }()
+	waitForSocketUp(t, SocketPath(), 5*time.Second)
+	if _, err := SendIPC(&IpcRequest{Op: "status"}); err != nil {
+		t.Fatalf("replacement daemon did not own the canonical socket: %v", err)
+	}
+	select {
+	case err := <-doneA:
+		if err != nil {
+			t.Fatalf("stopped daemon A returned an error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("stopped daemon A did not finish")
+	}
+	daemonB.stopAll()
+	select {
+	case err := <-doneB:
+		if err != nil {
+			t.Fatalf("replacement daemon B returned an error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("replacement daemon B did not stop")
 	}
 }
 
