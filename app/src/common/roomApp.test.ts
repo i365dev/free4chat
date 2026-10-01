@@ -1018,12 +1018,24 @@ describe("Room App host contract", () => {
   })
 
   it("bounds the participant projection and separates reliable/realtime rate", () => {
-    expect(
-      projectRoomAppParticipants([
-        { participantId: "a", name: "Alice", kind: "human" },
-        { participantId: "b", name: "Pi", kind: "agent" },
-      ])
-    ).toEqual([
+    const privateHuman = {
+      participantId: "a",
+      name: "Alice",
+      kind: "human" as const,
+      capabilityDataTransport: { sessionId: "private-session", ready: true },
+      runtimeHostId: "private-host",
+    }
+    const privateAgent = {
+      participantId: "b",
+      name: "Pi",
+      kind: "agent" as const,
+      capabilityDataTransport: {
+        sessionId: "private-agent-session",
+        ready: true,
+      },
+      runtimeHostId: "private-agent-host",
+    }
+    expect(projectRoomAppParticipants([privateHuman, privateAgent])).toEqual([
       { participantId: "a", name: "Alice", kind: "human" },
       { participantId: "b", name: "Pi", kind: "agent" },
     ])

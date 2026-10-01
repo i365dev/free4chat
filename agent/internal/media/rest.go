@@ -63,10 +63,11 @@ func SiteOriginFromMCPURL(mcpURL string) (string, error) {
 type Purpose string
 
 const (
-	PurposeAgentTransport Purpose = "agent-transport"
-	PurposeMeetingNotes   Purpose = "meeting-notes"
-	PurposeLiveTranscript Purpose = "live-transcript"
-	PurposeVoiceReply     Purpose = "voice-reply"
+	PurposeAgentTransport         Purpose = "agent-transport"
+	PurposeGeneratedAppCapability Purpose = "generated-app-capability"
+	PurposeMeetingNotes           Purpose = "meeting-notes"
+	PurposeLiveTranscript         Purpose = "live-transcript"
+	PurposeVoiceReply             Purpose = "voice-reply"
 )
 
 // AgentMediaDiscoveryDenied is the agent-room-media denial code introduced
@@ -202,6 +203,63 @@ func (c *SfuRestClient) CreateAgentSession() (string, error) {
 		return "", errors.New("agent_session_invalid")
 	}
 	return sessionID, nil
+}
+
+// CreateAgentCapabilitySession creates the no-media participant session used
+// only while the Room projects a live Generated App association.
+func (c *SfuRestClient) CreateAgentCapabilitySession() (string, error) {
+	data, err := c.request("agent-capability-session", http.MethodPost, c.base())
+	if err != nil {
+		return "", err
+	}
+	sessionID, _ := data["sessionId"].(string)
+	if sessionID == "" {
+		return "", errors.New("capability_session_invalid")
+	}
+	return sessionID, nil
+}
+
+// SetAgentCapabilityReady publishes only whether the direct reliable channel
+// is usable; it carries no request payload or capability result.
+func (c *SfuRestClient) SetAgentCapabilityReady(sessionID string, ready bool) error {
+	body := c.base()
+	body["sessionId"] = sessionID
+	body["ready"] = ready
+	_, err := c.request("agent-capability-ready", http.MethodPost, body)
+	return err
+}
+
+// CreateParticipantDataChannels allocates bounded, already-associated
+// negotiated channels on the current Cloudflare session.
+func (c *SfuRestClient) CreateParticipantDataChannels(sessionID string, channels []map[string]any) ([]uint16, error) {
+	if len(channels) == 0 || len(channels) > 33 {
+		return nil, errors.New("invalid_datachannel_count")
+	}
+	body := c.base()
+	body["sessionId"] = sessionID
+	body["purpose"] = string(PurposeGeneratedAppCapability)
+	body["dataChannels"] = channels
+	data, err := c.request("datachannels/new", http.MethodPost, body)
+	if err != nil {
+		return nil, err
+	}
+	raw, _ := data["dataChannels"].([]any)
+	if len(raw) != len(channels) {
+		return nil, errors.New("datachannel_allocation_invalid")
+	}
+	ids := make([]uint16, 0, len(raw))
+	for _, entry := range raw {
+		record, ok := entry.(map[string]any)
+		if !ok {
+			return nil, errors.New("datachannel_allocation_invalid")
+		}
+		id, ok := record["id"].(float64)
+		if !ok || id < 0 || id > 65534 || id != float64(uint16(id)) {
+			return nil, errors.New("datachannel_allocation_invalid")
+		}
+		ids = append(ids, uint16(id))
+	}
+	return ids, nil
 }
 
 // EstablishDataChannelTransport establishes the initial WebRTC transport

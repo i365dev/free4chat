@@ -193,6 +193,31 @@ describe("resolveAgentPurposePermission — agent-transport purpose", () => {
   })
 })
 
+describe("resolveAgentPurposePermission — generated app participant transport", () => {
+  it("allows reliable data transport without any media direction or grant", () => {
+    expect(
+      resolveAgentPurposePermission({
+        purpose: "generated-app-capability",
+        wantsLocalPublish: false,
+        wantsRemoteSubscribe: false,
+        involvesVideo: false,
+      })
+    ).toEqual({ ok: true })
+    for (const direction of [
+      { wantsLocalPublish: true, wantsRemoteSubscribe: false },
+      { wantsLocalPublish: false, wantsRemoteSubscribe: true },
+    ]) {
+      expect(
+        resolveAgentPurposePermission({
+          purpose: "generated-app-capability",
+          ...direction,
+          involvesVideo: false,
+        })
+      ).toEqual({ ok: false, error: "agent_media_direction_forbidden" })
+    }
+  })
+})
+
 describe("isAgentAuthorizedForVoice", () => {
   it("authorizes only present enabled participant grants", () => {
     const voice = { "agent-a": { enabled: true as const, enabledAt: 1000 } }

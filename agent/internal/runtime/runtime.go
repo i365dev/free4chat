@@ -175,9 +175,10 @@ type Options struct {
 	// Room-selected Live Transcript Runtime Host. Nil disables the optional
 	// producer path fail-closed while preserving text and legacy media.
 	TranscriptProducers media.LiveTranscriptCoordinator
-	// CapabilityHandler is the Runtime-local seam for bounded capability RPCs
-	// initiated by Generated Task Apps. It is independent of Harness execution
-	// and never enters a Harness prompt. Nil fails closed.
+	// CapabilityHandler is the Runtime-local seam for bounded capability calls
+	// initiated by Generated Task Apps over the participant DataChannel. It is
+	// independent of Harness execution and never enters a Harness prompt. Nil
+	// fails closed.
 	CapabilityHandler types.ResidentCapabilityController
 	// TaskSessionContinuation is the launcher-registry PRODUCT policy for
 	// continuing an existing native Harness session from the Room Start Task
@@ -334,8 +335,10 @@ type ResidentRuntime struct {
 	residentMu  sync.Mutex
 	resident    types.ResidentEventStream
 
-	mediaController *media.Controller
-	mediaMu         sync.Mutex
+	mediaController               *media.Controller
+	capabilityTransport           *media.ParticipantCapabilityTransport
+	capabilityTransportProjection string
+	mediaMu                       sync.Mutex
 	// residentMediaStateApplyMu serializes cache changes with their Controller
 	// application. It is held across the apply call so a replay cannot take a
 	// stale snapshot, yield to revocation, and then re-enable media afterward.
@@ -1147,15 +1150,6 @@ func (r *ResidentRuntime) applyResidentFrame(
 		r.dispatchSessionControl(stream, result.SessionControl)
 		return residentFrameApplied, false
 	}
-	if result.CapabilityRequest != nil {
-		if !r.isCurrentResidentStream(stream) {
-			return residentFrameDropped, false
-		}
-		// Human capability calls are deterministic control requests. Dispatch
-		// them separately from Task scheduling and Harness turn admission.
-		r.dispatchCapabilityRequest(stream, result.CapabilityRequest)
-		return residentFrameApplied, false
-	}
 	if result.TaskControl != nil {
 		if !r.isCurrentResidentStream(stream) {
 			return residentFrameDropped, false
@@ -1201,53 +1195,6 @@ func (r *ResidentRuntime) applyResidentFrame(
 	// it as a Harness wakeup/retry boundary for pre-existing work.
 	wake := len(result.Events) > 0 && len(r.pendingScopes()) > 0 && !r.isStopped()
 	return residentFrameApplied, wake
-}
-
-func (r *ResidentRuntime) dispatchCapabilityRequest(
-	stream types.ResidentEventStream,
-	request *types.ResidentCapabilityRequest,
-) {
-	if request == nil || !request.Valid() {
-		return
-	}
-	writer, ok := stream.(types.ResidentCapabilityEventStream)
-	if !ok {
-		return
-	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		defer cancel()
-		response := types.ResidentCapabilityResult{Request: *request}
-		handler := r.options.CapabilityHandler
-		if handler == nil {
-			response.Error = "unavailable"
-		} else {
-			result, err := handler.HandleCapabilityRequest(ctx, *request)
-			if err != nil {
-				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-					response.Error = "timeout"
-				} else {
-					response.Error = "controller_error"
-				}
-			} else {
-				response.OK = true
-				response.Result = result
-			}
-		}
-		if !response.Valid() {
-			response.OK = false
-			response.Result = nil
-			response.Error = "controller_error"
-		}
-		if !r.isCurrentResidentStream(stream) {
-			return
-		}
-		if err := writer.SendCapabilityResult(ctx, response); err != nil {
-			r.log("runtime_capability_result_failed", map[string]string{
-				"operation": string(request.Operation),
-			})
-		}
-	}()
 }
 
 func (r *ResidentRuntime) setResidentStream(
@@ -1345,6 +1292,7 @@ func (r *ResidentRuntime) advanceFromWait(result types.WaitResult) {
 	// processed outside the Runtime event queue so a grant transition never
 	// wakes or creates a Harness turn.
 	r.observeResidentMediaState(result.MediaState)
+	r.observeCapabilityTransport(result.CapabilityTransport)
 
 	// Deduplicate within the envelope as well as against the prior transport
 	// receipt boundary. This map is intentionally envelope-local: the monotonic
@@ -1373,6 +1321,63 @@ func (r *ResidentRuntime) advanceFromWait(result types.WaitResult) {
 		r.cursor = result.Cursor
 	}
 	r.mu.Unlock()
+}
+
+// observeCapabilityTransport consumes Room state out of band. It never enters
+// the Harness event queue and never starts a Harness turn.
+func (r *ResidentRuntime) observeCapabilityTransport(projection types.CapabilityTransportProjection) {
+	encoded, err := json.Marshal(projection)
+	if err != nil {
+		return
+	}
+	signature := string(encoded)
+	r.mu.Lock()
+	if r.stopped {
+		r.mu.Unlock()
+		return
+	}
+	if signature == r.capabilityTransportProjection {
+		r.mu.Unlock()
+		return
+	}
+	old := r.capabilityTransport
+	r.capabilityTransport = nil
+	r.capabilityTransportProjection = signature
+	handleText := r.participantHandle
+	r.mu.Unlock()
+	if old != nil {
+		old.Close()
+	}
+	if len(projection.Routes) == 0 || !projection.Valid() || r.options.CapabilityHandler == nil || r.options.SiteOrigin == "" {
+		return
+	}
+	handle, err := media.DecodeParticipantHandle(handleText)
+	if err != nil {
+		return
+	}
+	transport := media.NewParticipantCapabilityTransport(r.options.SiteOrigin, handle, r.options.CapabilityHandler, r.log)
+	r.mu.Lock()
+	if r.stopped || r.capabilityTransportProjection != signature {
+		r.mu.Unlock()
+		transport.Close()
+		return
+	}
+	r.capabilityTransport = transport
+	r.mu.Unlock()
+	go func() {
+		if err := transport.Start(context.Background(), projection); err != nil {
+			r.log("runtime_capability_transport_unavailable", map[string]string{"reason": "transport_setup_failed"})
+			transport.Close()
+			r.mu.Lock()
+			if r.capabilityTransport == transport {
+				r.capabilityTransport = nil
+				// A later Room envelope with the same projection should retry
+				// setup after a transient signaling or DataChannel failure.
+				r.capabilityTransportProjection = ""
+			}
+			r.mu.Unlock()
+		}
+	}()
 }
 
 func (r *ResidentRuntime) acceptEvent(event types.RoomEvent) {
@@ -2557,6 +2562,14 @@ func (r *ResidentRuntime) beginStop(lastError string) bool {
 // releaseResources mirrors the Node cleanupResources ordering: media first
 // (bounded teardown), then the lease, then Harness/client.
 func (r *ResidentRuntime) releaseResources() {
+	r.mu.Lock()
+	capabilityTransport := r.capabilityTransport
+	r.capabilityTransport = nil
+	r.capabilityTransportProjection = ""
+	r.mu.Unlock()
+	if capabilityTransport != nil {
+		capabilityTransport.Close()
+	}
 	r.residentMediaStateApplyMu.Lock()
 	defer r.residentMediaStateApplyMu.Unlock()
 	r.mediaMu.Lock()

@@ -34,9 +34,11 @@ is at most 48 KiB, initial/shared state at most 16 KiB, and one Room may hold at
 most four generated Apps. Direct App network access is not part of V0; a
 generic network runtime would need a separate authorization and proxy design.
 Generated Task Apps can invoke bounded semantic capabilities through the
-host-owned MessagePort bridge. RoomSession resolves the current publication
-through its canonical Task Agent and current Runtime Host; App code cannot
-choose a Runtime Host or make network requests.
+host-owned MessagePort bridge. The Room projects a temporary association from
+the published App and originating Task to its current Agent, Runtime Host, and
+available capability IDs. That sparse association is control-plane state; it
+does not carry operation requests or results. App code cannot choose a Runtime
+Host or make network requests.
 
 The Lab catalog's optional `clipboardWrite: true` field is the only current
 clipboard opt-in. Missing metadata grants nothing; unsupported capability
@@ -57,18 +59,23 @@ the committed state. The state is ephemeral Room storage and is deleted with
 the Room.
 
 Generated App code may call `free4chat.capabilities.observe(capabilityId)` or
-`free4chat.capabilities.invoke(capabilityId, action, args)` synchronously from
-a trusted click handler on a concrete control (`button`, form control, link, or
-`role="button"`). The bridge consumes one operation from that click; calls
-outside a trusted control click are refused. The host carries that bounded
-operation over the authenticated Room socket; RoomSession resolves the current
-publication's Task to its originating Agent and current Runtime Host, then uses
-the existing Runtime capability RPC. The Human action authorizes that single deterministic
-operation. Calls fail closed if the Task Agent, Host, capability, or published
-bundle revision is no longer current. Results use the existing semantic result
-bounds, which exclude endpoint, credential, URI, hostname, and protocol
-details. The iframe receives no Host ID, participant capability, or Runtime
-connection details.
+`free4chat.capabilities.invoke(capabilityId, action, args)` from the trusted
+click handler for a concrete control (`button`, form control, link, or
+`role="button"`). The bridge consumes exactly one operation for that click.
+The click authorization remains active through the click event's handlers and
+microtasks, then expires; mount-time and ambient calls are refused.
+
+The parent host sends the bounded request over its existing reliable Room App
+DataChannel. The originating Runtime subscribes to that Human's reliable lane
+on its no-media Pion participant session, validates the current association,
+and invokes its local capability controller. The result returns on the same
+reliable lane. RoomSession handles association, channel admission, and
+readiness only; it never relays per-operation payloads. Runtime or Adapter
+departure makes the route unavailable, and disconnected operations are neither
+queued nor replayed. Task completion alone does not invalidate a still-live
+originating route. Results use the semantic result bounds, which exclude
+endpoint, credential, URI, hostname, and protocol details. The iframe receives
+no Host ID, participant capability, session ID, or Runtime connection details.
 
 ## Messages and trust boundary
 
@@ -91,6 +98,12 @@ the Room App instances; `appInstanceId` multiplexes bounded messages:
 
 - `reliable`: ordered, fully reliable DataChannel;
 - `realtime`: unordered and stale-droppable (`maxRetransmits: 0`).
+
+Generated capability request and result frames use only the reliable lane.
+The public App send primitive rejects those reserved frame types; only the
+host-owned capability bridge can emit them. The Runtime subscribes only to
+currently ready Human reliable channels and publishes results on its
+`room-app-reliable-{participantId}` lane.
 
 Participant-targeted reliable messages use the existing authenticated Room
 WebSocket as a separate low-frequency path. The Room derives sender identity

@@ -2941,6 +2941,9 @@ export default function RoomContent({
               {roomAppSelf &&
                 Object.values(generatedAppDocuments).map((document) => {
                   const publication = document.publication
+                  const originatingTask = taskProjections.find(
+                    (task) => task.requestId === publication.taskRequestId
+                  )
                   // Stage ownership, not the raw selection: the generated Task
                   // App is visible only while it owns the Stage, so a curated
                   // selection hides it instead of stacking beside it.
@@ -2974,6 +2977,10 @@ export default function RoomContent({
                         app={app}
                         appInstanceId={publication.appInstanceId}
                         generatedAppBundleRevision={publication.bundleRevision}
+                        generatedAppTaskRequestId={publication.taskRequestId}
+                        generatedAppAgentParticipantId={
+                          originatingTask?.targetParticipantId
+                        }
                         requestGeneratedCapability={
                           requestGeneratedAppCapability
                         }

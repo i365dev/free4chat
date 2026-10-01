@@ -101,6 +101,8 @@ function trackObjects(value: unknown): Array<Record<string, unknown>> | null {
 // Origin, since there's no demonstrated non-browser caller for them.
 const MISSING_ORIGIN_ALLOWED_ROUTES = new Set([
   "agent-session",
+  "agent-capability-session",
+  "agent-capability-ready",
   "agent-room-media",
   "agent-track-active",
   "tracks",
@@ -683,6 +685,72 @@ export async function handleSfuRequest(
     return json({ sessionId: session.sessionId })
   }
 
+  if (route === "agent-capability-session") {
+    if (request.method !== "POST")
+      return json({ error: "method_not_allowed" }, 405)
+    if (
+      !(await checkRateLimit(request, env, "sfu:rl:agent-capability-session"))
+    )
+      return json({ error: "rate_limited" }, 429)
+    const body = await readBody(request)
+    if (!body) return badRequest("invalid_json")
+    const room = typeof body.room === "string" ? body.room : ""
+    const participantId =
+      typeof body.participantId === "string" ? body.participantId : ""
+    const token = typeof body.token === "string" ? body.token : ""
+    if (!room || !participantId || !token) return badRequest("missing_session")
+    // This is a participant data transport for an already-published Task App.
+    // Admission derives the exact Task/Agent/Host/capability association from
+    // Room state and deliberately does not depend on AGENT_MEDIA_ENABLED.
+    const admitted = await roomControl(env, room, {
+      action: "agent-capability-transport-admit",
+      participantId,
+      token,
+    })
+    if (!admitted.ok) return admitted
+    const upstream = await realtimeRequest(env, "/sessions/new", {
+      method: "POST",
+    })
+    if (!upstream.ok) return json({ error: "sfu_session_failed" }, 502)
+    const session = (await upstream.json()) as { sessionId?: string }
+    if (!session.sessionId) return json({ error: "sfu_session_invalid" }, 502)
+    const attached = await roomControl(env, room, {
+      action: "agent-capability-transport-attach",
+      participantId,
+      token,
+      sessionId: session.sessionId,
+    })
+    if (!attached.ok) return attached
+    return json({ sessionId: session.sessionId })
+  }
+
+  if (route === "agent-capability-ready") {
+    if (request.method !== "POST")
+      return json({ error: "method_not_allowed" }, 405)
+    const body = await readBody(request)
+    if (!body) return badRequest("invalid_json")
+    const room = typeof body.room === "string" ? body.room : ""
+    const participantId =
+      typeof body.participantId === "string" ? body.participantId : ""
+    const token = typeof body.token === "string" ? body.token : ""
+    const sessionId = typeof body.sessionId === "string" ? body.sessionId : ""
+    if (
+      !room ||
+      !participantId ||
+      !token ||
+      !sessionId ||
+      typeof body.ready !== "boolean"
+    )
+      return badRequest("invalid_transport_state")
+    return roomControl(env, room, {
+      action: "agent-capability-transport-ready",
+      participantId,
+      token,
+      sessionId,
+      ready: body.ready,
+    })
+  }
+
   if (route === "agent-room-media") {
     if (request.method !== "POST")
       return json({ error: "method_not_allowed" }, 405)
@@ -1198,8 +1266,57 @@ export async function handleSfuRequest(
       kind?: string
     }
     if (dataChannelCallerKind === "agent") {
-      if (route === "datachannels/new")
+      const capabilityPurpose = body.purpose === "generated-app-capability"
+      if (route === "datachannels/new" && capabilityPurpose) {
+        const channels = Array.isArray(body.dataChannels)
+          ? body.dataChannels.filter(
+              (channel): channel is Record<string, unknown> =>
+                Boolean(channel) && typeof channel === "object"
+            )
+          : []
+        if (!channels.length || channels.length > 33)
+          return badRequest("invalid_data_channel")
+        for (const channel of channels) {
+          const localName = `room-app-reliable-${participantId}`
+          const isLocal =
+            channel.location === "local" &&
+            channel.dataChannelName === localName &&
+            channel.ordered === true
+          const remoteName =
+            typeof channel.dataChannelName === "string"
+              ? channel.dataChannelName
+              : ""
+          const remoteId = remoteName.startsWith("room-app-reliable-")
+            ? remoteName.slice("room-app-reliable-".length)
+            : ""
+          const isRemote =
+            channel.location === "remote" &&
+            /^[A-Za-z0-9_-]{1,128}$/.test(remoteId) &&
+            remoteName === `room-app-reliable-${remoteId}` &&
+            channel.ordered === true &&
+            channel.waitForAck === true &&
+            typeof channel.sessionId === "string"
+          if (!isLocal && !isRemote)
+            return json({ error: "agent_datachannel_shape_forbidden" }, 403)
+          if (isRemote) {
+            const sourceAuth = await authorize(
+              env,
+              room,
+              participantId,
+              token,
+              sessionId,
+              undefined,
+              undefined,
+              channel.sessionId as string,
+              undefined,
+              "generated-app-capability"
+            )
+            if (!sourceAuth.ok) return sourceAuth
+          }
+        }
+      } else if (route === "datachannels/new") {
         return json({ error: "agent_datachannel_forbidden" }, 403)
+      }
       if (
         route === "datachannels/establish" &&
         !isServerEventsDataChannel(body.dataChannel)

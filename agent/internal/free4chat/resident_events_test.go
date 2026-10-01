@@ -649,41 +649,6 @@ func TestResidentEventStreamDecodesPrivateSessionControl(t *testing.T) {
 	}
 }
 
-func TestResidentEventStreamDecodesPrivateCapabilityRequest(t *testing.T) {
-	wait, err := receiveResidentFrame(t, map[string]any{
-		"type":          "runtime-capability-request",
-		"requestId":     "human-request-1",
-		"runtimeHostId": "host-route-1",
-		"capabilityId":  "fixture",
-		"operation":     "invoke",
-		"action":        "set-state",
-		"args":          map[string]any{"value": "on"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if wait.CapabilityRequest == nil || !wait.CapabilityRequest.Valid() {
-		t.Fatalf("private capability request not decoded: %+v", wait)
-	}
-	if wait.CapabilityRequest.RequestID != "human-request-1" || wait.CapabilityRequest.Operation != types.ResidentCapabilityInvoke || wait.CapabilityRequest.Args["value"] != "on" {
-		t.Fatalf("request correlation or args changed: %+v", wait.CapabilityRequest)
-	}
-	if len(wait.Events) != 0 || wait.Cursor != 0 {
-		t.Fatalf("capability request leaked into room event state: %+v", wait)
-	}
-	if _, err := receiveResidentFrame(t, map[string]any{
-		"type":          "runtime-capability-request",
-		"requestId":     "bad",
-		"runtimeHostId": "host-route-1",
-		"capabilityId":  "fixture",
-		"operation":     "invoke",
-		"action":        "set-state",
-		"args":          map[string]any{"value": strings.Repeat("x", 9000)},
-	}); err == nil {
-		t.Fatal("oversized args must be rejected")
-	}
-}
-
 // TestResidentEventStreamRejectsMalformedSessionControl proves a malformed
 // session control fails closed: it is neither degraded into an ordinary Room
 // event nor partially applied.

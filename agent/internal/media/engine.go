@@ -10,6 +10,7 @@ package media
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -78,6 +79,9 @@ type EngineEvents struct {
 	OnTrack func(TrackEvent)
 	// OnAudioFrame delivers one decoded RTP payload for an audio MID.
 	OnAudioFrame func(AudioFrameEvent)
+	// OnDataChannelMessage exposes bounded participant DataChannel payloads to
+	// generic Runtime transport owners. It carries no media or Harness semantics.
+	OnDataChannelMessage func(label string, payload []byte)
 }
 
 // Engine is the in-process Pion PeerConnection (no JSONL boundary). It is a
@@ -230,7 +234,67 @@ func (e *Engine) Create() error {
 	pc.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
 		e.handleIncomingTrack(track, receiver)
 	})
+	pc.OnDataChannel(func(channel *webrtc.DataChannel) {
+		channel.OnMessage(func(message webrtc.DataChannelMessage) {
+			if e.ev.OnDataChannelMessage != nil {
+				e.ev.OnDataChannelMessage(channel.Label(), append([]byte(nil), message.Data...))
+			}
+		})
+	})
 	return nil
+}
+
+// ParticipantDataChannel is the minimal reliable DataChannel surface used by
+// bounded participant-local Runtime transports.
+type ParticipantDataChannel struct {
+	channel *webrtc.DataChannel
+}
+
+func (c *ParticipantDataChannel) Label() string {
+	if c == nil || c.channel == nil {
+		return ""
+	}
+	return c.channel.Label()
+}
+
+func (c *ParticipantDataChannel) Send(payload []byte) error {
+	if c == nil || c.channel == nil || c.channel.ReadyState() != webrtc.DataChannelStateOpen {
+		return errors.New("datachannel_unavailable")
+	}
+	return c.channel.Send(payload)
+}
+
+func (c *ParticipantDataChannel) Ready() bool {
+	return c != nil && c.channel != nil && c.channel.ReadyState() == webrtc.DataChannelStateOpen
+}
+
+func (c *ParticipantDataChannel) OnOpen(handler func()) {
+	if c != nil && c.channel != nil && handler != nil {
+		c.channel.OnOpen(handler)
+	}
+}
+
+// CreateParticipantDataChannel registers one already-authorized reliable
+// Cloudflare DataChannel with Pion using its negotiated channel id.
+func (e *Engine) CreateParticipantDataChannel(label string, id uint16) (*ParticipantDataChannel, error) {
+	if e == nil || e.pc == nil || label == "" {
+		return nil, errors.New("invalid_datachannel")
+	}
+	ordered := true
+	channel, err := e.pc.CreateDataChannel(label, &webrtc.DataChannelInit{
+		Negotiated: &ordered,
+		ID:         &id,
+		Ordered:    &ordered,
+	})
+	if err != nil {
+		return nil, err
+	}
+	channel.OnMessage(func(message webrtc.DataChannelMessage) {
+		if e.ev.OnDataChannelMessage != nil {
+			e.ev.OnDataChannelMessage(channel.Label(), append([]byte(nil), message.Data...))
+		}
+	})
+	return &ParticipantDataChannel{channel: channel}, nil
 }
 
 // CreateServerEventsChannel creates the server-events DataChannel BEFORE any

@@ -163,6 +163,9 @@ export function generatedRoomAppSrcDoc(bundle: GeneratedRoomAppBundle): string {
       let revision = 0;
       let sharedState = {};
       let activeControlClick = false;
+      let controlClickExpiry = null;
+      const pendingCapabilityLimit = 4;
+      const capabilityTimeoutMs = 10000;
       const pendingCapabilities = new Map();
       const sharedListeners = new Set();
       const participantListeners = new Set();
@@ -192,17 +195,32 @@ export function generatedRoomAppSrcDoc(bundle: GeneratedRoomAppBundle): string {
         if (!port) return Promise.resolve({ ok: false, error: "unavailable" });
         if (!activeControlClick) return Promise.resolve({ ok: false, error: "unauthorized" });
         activeControlClick = false;
+        if (controlClickExpiry !== null) clearTimeout(controlClickExpiry);
+        controlClickExpiry = null;
+        if (pendingCapabilities.size >= pendingCapabilityLimit)
+          return Promise.resolve({ ok: false, error: "busy" });
         const requestId = "cap-" + (++nextCapabilityRequest).toString(36) + "-" + Math.random().toString(36).slice(2, 10);
         return new Promise((resolve) => {
-          pendingCapabilities.set(requestId, resolve);
+          const timeout = setTimeout(() => {
+            pendingCapabilities.delete(requestId);
+            resolve({ type: "runtime-capability-result", requestId, ok: false, error: "timeout" });
+          }, capabilityTimeoutMs);
+          pendingCapabilities.set(requestId, (result) => {
+            clearTimeout(timeout);
+            resolve(result);
+          });
           port.postMessage({ type: "capabilityRequest", appInstanceId, bundleRevision, requestId, capabilityId, operation, ...(action === undefined ? {} : { action }), ...(args === undefined ? {} : { args }) });
         });
       }
       window.addEventListener("click", (event) => {
         const target = event.target;
         if (!event.isTrusted || !(target instanceof Element) || !target.closest("button, input, select, textarea, a[href], [role='button']")) return;
+        if (controlClickExpiry !== null) clearTimeout(controlClickExpiry);
         activeControlClick = true;
-        queueMicrotask(() => { activeControlClick = false; });
+        controlClickExpiry = setTimeout(() => {
+          activeControlClick = false;
+          controlClickExpiry = null;
+        }, 0);
       }, true);
       window.free4chat = api;
       window.addEventListener("message", (event) => {

@@ -81,6 +81,7 @@ export type AgentMediaPurpose =
   | "live-transcript"
   | "voice-reply"
   | "agent-transport"
+  | "generated-app-capability"
 
 /**
  * #83 direction matrix (pure, fail-closed): what an explicit narrow purpose
@@ -102,7 +103,8 @@ export function resolveAgentPurposePermission(args: {
     args.purpose !== "meeting-notes" &&
     args.purpose !== "live-transcript" &&
     args.purpose !== "voice-reply" &&
-    args.purpose !== "agent-transport"
+    args.purpose !== "agent-transport" &&
+    args.purpose !== "generated-app-capability"
   )
     return { ok: false, error: "agent_media_purpose_required" }
   if (args.wantsLocalPublish && args.purpose !== "voice-reply")

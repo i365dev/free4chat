@@ -35,6 +35,7 @@ import type {
   RuntimeCapabilityOperation,
   RuntimeCapabilityResult,
 } from "@common/runtimeCapability"
+import { isBoundedRuntimeCapabilityResult } from "@common/runtimeCapability"
 import {
   createSfuEgressSampler,
   SFU_EGRESS_SAMPLE_INTERVAL_MS,
@@ -317,6 +318,24 @@ function isTransientRemoteTrackAdmissionError(
   )
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value)
+}
+
+function isRuntimeCapabilityResultError(
+  value: unknown
+): value is NonNullable<RuntimeCapabilityResult["error"]> {
+  return (
+    value === "unavailable" ||
+    value === "timeout" ||
+    value === "invalid_request" ||
+    value === "controller_error" ||
+    value === "unauthorized" ||
+    value === "duplicate_request" ||
+    value === "busy"
+  )
+}
+
 function summarizeRemoteTrackResponse(response: SfuApiResponse) {
   const tracks = Array.isArray(response.tracks) ? response.tracks : []
   return {
@@ -562,7 +581,6 @@ interface SfuServerMessage {
     | "attachment"
     | "expired"
     | "error"
-    | "runtime-capability-result"
     | "agentActivity"
     | "room-app-unicast"
     | "room-app-unicast-result"
@@ -770,6 +788,9 @@ export function useSfuChatRoom(
       {
         settle: (result: RuntimeCapabilityResult) => void
         timeout: ReturnType<typeof setTimeout>
+        appInstanceId: string
+        bundleRevision: number
+        agentParticipantId: string
       }
     >()
   )
@@ -1021,16 +1042,30 @@ export function useSfuChatRoom(
     return false
   }, [])
 
+  const roomAppChannelKey = useCallback(
+    (participantId: string, lane: RoomAppLane) => `${participantId}:${lane}`,
+    []
+  )
+
   const requestGeneratedAppCapability = useCallback(
     (request: {
       appInstanceId: string
       bundleRevision: number
+      taskRequestId: string
+      agentParticipantId: string
       requestId: string
       capabilityId: string
       operation: RuntimeCapabilityOperation
       action?: string
       args?: Record<string, unknown>
     }): Promise<RuntimeCapabilityResult> => {
+      if (pendingRuntimeCapabilityRequestsRef.current.has(request.requestId))
+        return Promise.resolve({
+          type: "runtime-capability-result",
+          requestId: request.requestId,
+          ok: false,
+          error: "duplicate_request",
+        })
       if (pendingRuntimeCapabilityRequestsRef.current.size >= 4)
         return Promise.resolve({
           type: "runtime-capability-result",
@@ -1047,16 +1082,44 @@ export function useSfuChatRoom(
             ok: false,
             error: "timeout",
           })
-        }, 12_000)
+        }, 8_000)
         pendingRuntimeCapabilityRequestsRef.current.set(request.requestId, {
           settle,
           timeout,
+          appInstanceId: request.appInstanceId,
+          bundleRevision: request.bundleRevision,
+          agentParticipantId: request.agentParticipantId,
+        })
+        const agent = participantMapRef.current.get(request.agentParticipantId)
+        const channel = localRoomAppChannelsRef.current.get("reliable")
+        const agentChannel = remoteRoomAppChannelsRef.current.get(
+          roomAppChannelKey(request.agentParticipantId, "reliable")
+        )
+        const encoded = encodeRoomAppEnvelope({
+          appInstanceId: request.appInstanceId,
+          lane: "reliable",
+          payload: {
+            type: "runtime-capability-request",
+            requestId: request.requestId,
+            appInstanceId: request.appInstanceId,
+            bundleRevision: request.bundleRevision,
+            taskRequestId: request.taskRequestId,
+            agentParticipantId: request.agentParticipantId,
+            capabilityId: request.capabilityId,
+            operation: request.operation,
+            ...(request.action ? { action: request.action } : {}),
+            ...(request.args ? { args: request.args } : {}),
+          },
         })
         if (
-          !sendSocketMessage({
-            type: "generated-app-capability-request",
-            ...request,
-          })
+          !agent ||
+          agent.kind !== "agent" ||
+          !agent.capabilityDataTransport?.ready ||
+          !encoded ||
+          !channel ||
+          channel.readyState !== "open" ||
+          !agentChannel ||
+          agentChannel.readyState !== "open"
         ) {
           clearTimeout(timeout)
           pendingRuntimeCapabilityRequestsRef.current.delete(request.requestId)
@@ -1066,10 +1129,25 @@ export function useSfuChatRoom(
             ok: false,
             error: "unavailable",
           })
+        } else {
+          try {
+            channel.send(encoded)
+          } catch {
+            clearTimeout(timeout)
+            pendingRuntimeCapabilityRequestsRef.current.delete(
+              request.requestId
+            )
+            settle({
+              type: "runtime-capability-result",
+              requestId: request.requestId,
+              ok: false,
+              error: "unavailable",
+            })
+          }
         }
       })
     },
-    [sendSocketMessage]
+    [roomAppChannelKey]
   )
 
   const isCurrentAgentAudioPublication = useCallback(
@@ -1704,11 +1782,6 @@ export function useSfuChatRoom(
     []
   )
 
-  const roomAppChannelKey = useCallback(
-    (participantId: string, lane: RoomAppLane) => `${participantId}:${lane}`,
-    []
-  )
-
   const handleRoomAppChannelMessage = useCallback(
     (sourceParticipantId: string, lane: RoomAppLane, event: MessageEvent) => {
       const envelope = decodeRoomAppEnvelope(event.data)
@@ -1750,6 +1823,48 @@ export function useSfuChatRoom(
           appInstanceId: envelope.appInstanceId,
           protocolType: whiteboardProtocolType(envelope.payload),
         })
+      if (
+        lane === "reliable" &&
+        envelope.payload.type === "runtime-capability-result" &&
+        typeof envelope.payload.requestId === "string"
+      ) {
+        const pending = pendingRuntimeCapabilityRequestsRef.current.get(
+          envelope.payload.requestId
+        )
+        if (
+          !pending ||
+          pending.agentParticipantId !== sourceParticipantId ||
+          pending.appInstanceId !== envelope.appInstanceId ||
+          pending.bundleRevision !== envelope.payload.bundleRevision
+        )
+          return
+        pendingRuntimeCapabilityRequestsRef.current.delete(
+          envelope.payload.requestId
+        )
+        clearTimeout(pending.timeout)
+        const resultValid =
+          envelope.payload.ok !== true ||
+          isBoundedRuntimeCapabilityResult(envelope.payload.result)
+        const ok = envelope.payload.ok === true && resultValid
+        pending.settle({
+          type: "runtime-capability-result",
+          requestId: envelope.payload.requestId,
+          ok,
+          ...(ok
+            ? { result: envelope.payload.result as Record<string, unknown> }
+            : {}),
+          ...(ok
+            ? {}
+            : {
+                error:
+                  resultValid &&
+                  isRuntimeCapabilityResultError(envelope.payload.error)
+                    ? envelope.payload.error
+                    : "controller_error",
+              }),
+        })
+        return
+      }
       const received = { ...envelope, sourceParticipantId }
       for (const listener of roomAppListenersRef.current) listener(received)
     },
@@ -1854,14 +1969,23 @@ export function useSfuChatRoom(
       const pc = peerConnectionRef.current
       const session = sessionRef.current
       const media = participant.media
+      const publisherSessionId =
+        participant.kind === "agent"
+          ? participant.capabilityDataTransport?.sessionId
+          : media?.sessionId
+      const publisherReady =
+        participant.kind === "agent"
+          ? Boolean(participant.capabilityDataTransport?.sessionId)
+          : media?.appDataChannelReady === true
       const key = roomAppChannelKey(participant.id, lane)
       if (
         !roomAppsEnabledRef.current ||
         !pc ||
         !session ||
         participant.id === session.participantId ||
-        participant.kind !== "human" ||
-        !media?.appDataChannelReady ||
+        (participant.kind !== "human" && participant.kind !== "agent") ||
+        !publisherReady ||
+        !publisherSessionId ||
         remoteRoomAppChannelsRef.current.has(key) ||
         remoteRoomAppChannelAttemptsRef.current.has(key) ||
         pc.connectionState !== "connected"
@@ -1873,7 +1997,7 @@ export function useSfuChatRoom(
       const channelAttempt: RemoteRoomAppChannelAttempt = {
         peerConnection: pc,
         subscriberSessionId: session.sessionId,
-        publisherSessionId: media.sessionId,
+        publisherSessionId,
         participantKind: participant.kind,
         lane,
         attempt: attemptKey,
@@ -1892,11 +2016,11 @@ export function useSfuChatRoom(
           participantId: session.participantId,
           token: session.participantToken,
           sessionId: session.sessionId,
-          publisherSessionId: media.sessionId,
+          publisherSessionId,
           dataChannels: [
             {
               location: "remote",
-              sessionId: media.sessionId,
+              sessionId: publisherSessionId,
               dataChannelName: roomAppChannelName(participant.id, lane),
               ordered: lane === "reliable",
               ...(lane === "realtime" ? { maxRetransmits: 0 } : {}),
@@ -1911,8 +2035,11 @@ export function useSfuChatRoom(
           remoteRoomAppChannelAttemptsRef.current.get(key) !== channelAttempt ||
           peerConnectionRef.current !== pc ||
           sessionRef.current?.sessionId !== session.sessionId ||
-          participantMapRef.current.get(participant.id)?.media?.sessionId !==
-            media.sessionId
+          (participantMapRef.current.get(participant.id)?.kind === "agent"
+            ? participantMapRef.current.get(participant.id)
+                ?.capabilityDataTransport?.sessionId
+            : participantMapRef.current.get(participant.id)?.media
+                ?.sessionId) !== publisherSessionId
         )
           throw new Error("SFU Room App data channel became stale")
         const channel = pc.createDataChannel(
@@ -3215,38 +3342,6 @@ export function useSfuChatRoom(
       const message = JSON.parse(event.data) as SfuServerMessage
       if (message.type === "state" && message.state) {
         applyRoomState(message.state)
-      } else if (
-        message.type === "runtime-capability-result" &&
-        typeof message.requestId === "string"
-      ) {
-        const pending = pendingRuntimeCapabilityRequestsRef.current.get(
-          message.requestId
-        )
-        if (!pending) return
-        pendingRuntimeCapabilityRequestsRef.current.delete(message.requestId)
-        clearTimeout(pending.timeout)
-        pending.settle({
-          type: "runtime-capability-result",
-          requestId: message.requestId,
-          ok: message.ok === true,
-          ...(message.ok === true && message.result
-            ? { result: message.result }
-            : {}),
-          ...(message.ok === true
-            ? {}
-            : {
-                error:
-                  message.error === "timeout" ||
-                  message.error === "unavailable" ||
-                  message.error === "invalid_request" ||
-                  message.error === "controller_error" ||
-                  message.error === "unauthorized" ||
-                  message.error === "duplicate_request" ||
-                  message.error === "busy"
-                    ? message.error
-                    : "controller_error",
-              }),
-        })
       } else if (message.type === "room-app-unicast") {
         const envelope = decodeRoomAppUnicastEnvelope(message, roomName)
         if (!envelope) return
@@ -3592,11 +3687,14 @@ export function useSfuChatRoom(
         })
       }
       pendingTaskSessionRequestsRef.current.clear()
-      for (const pending of pendingRuntimeCapabilityRequestsRef.current.values()) {
+      for (const [
+        requestId,
+        pending,
+      ] of pendingRuntimeCapabilityRequestsRef.current) {
         clearTimeout(pending.timeout)
         pending.settle({
           type: "runtime-capability-result",
-          requestId: "",
+          requestId,
           ok: false,
           error: "unavailable",
         })
@@ -4144,7 +4242,9 @@ export function useSfuChatRoom(
       if (
         !roomAppsEnabledRef.current ||
         !roomAppChannelsReadyRef.current ||
-        !isRoomAppInstanceForRoom(roomName, appInstanceId)
+        !isRoomAppInstanceForRoom(roomName, appInstanceId) ||
+        payload.type === "runtime-capability-request" ||
+        payload.type === "runtime-capability-result"
       ) {
         if (lane === "reliable")
           roomAppDiagnostic.record({

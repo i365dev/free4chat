@@ -579,6 +579,8 @@ describe("Origin policy is route-scoped, not global", () => {
 
   const missingOriginAllowed = [
     "agent-session",
+    "agent-capability-session",
+    "agent-capability-ready",
     "agent-room-media",
     "tracks",
     "renegotiate",
@@ -716,6 +718,33 @@ describe("agent-session rate limiting", () => {
       env
     )
     expect(humanRes.status).not.toBe(429)
+  })
+})
+
+describe("Generated App capability participant session", () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it("creates and attaches a no-media session without AGENT_MEDIA_ENABLED", async () => {
+    const actions: string[] = []
+    const fetchMock = vi.fn(async () =>
+      Response.json({ sessionId: "cap-session" })
+    )
+    vi.stubGlobal("fetch", fetchMock)
+    const env = makeEnv({}, (body) => {
+      actions.push(String(body.action))
+      return { status: 200, body: { ok: true } }
+    })
+    const response = await handleSfuRequest(
+      req("agent-capability-session", { body: JSON.stringify(agentBody) }),
+      env
+    )
+    expect(response.status).toBe(200)
+    expect(await json(response)).toEqual({ sessionId: "cap-session" })
+    expect(actions).toEqual([
+      "agent-capability-transport-admit",
+      "agent-capability-transport-attach",
+    ])
+    expect(fetchMock).toHaveBeenCalledOnce()
   })
 })
 
@@ -2399,6 +2428,55 @@ describe("#83 review: Agent datachannel access is bootstrap-only over the shared
     expect(String(fetchMock.mock.calls[0][0])).toContain(
       "/sessions/sess-a/datachannels/establish"
     )
+  })
+
+  it("allows only the Agent's named reliable capability lane without media grants", async () => {
+    const { fetchMock, env } = agentDataChannelEnv()
+    const res = await handleSfuRequest(
+      req("datachannels/new", {
+        ...origin,
+        body: JSON.stringify({
+          ...baseBody,
+          purpose: "generated-app-capability",
+          dataChannels: [
+            {
+              location: "local",
+              dataChannelName: "room-app-reliable-agent-1",
+              ordered: true,
+            },
+          ],
+        }),
+      }),
+      env
+    )
+    expect(res.status).toBe(200)
+    expect(String(fetchMock.mock.calls[0][0])).toContain(
+      "/sessions/sess-a/datachannels/new"
+    )
+  })
+
+  it("rejects unrelated Agent channels on the capability transport before Cloudflare", async () => {
+    const { fetchMock, env } = agentDataChannelEnv()
+    const res = await handleSfuRequest(
+      req("datachannels/new", {
+        ...origin,
+        body: JSON.stringify({
+          ...baseBody,
+          purpose: "generated-app-capability",
+          dataChannels: [
+            {
+              location: "local",
+              dataChannelName: "files-agent-a",
+              ordered: true,
+            },
+          ],
+        }),
+      }),
+      env
+    )
+    expect(res.status).toBe(403)
+    expect((await json(res)).error).toBe("agent_datachannel_shape_forbidden")
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it("close stays available to Agents for cleaning up the established channel", async () => {

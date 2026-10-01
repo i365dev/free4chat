@@ -261,6 +261,13 @@ export interface RoomParticipant {
   // older Runtime, so "Continue session" is simply not offered there.
   runtimeFeatures?: RoomRuntimeFeatures
   media?: RoomMediaState
+  // Current Runtime participant-local App DataChannel session. Session ids
+  // are host routing metadata only and are removed from room_info/MCP views;
+  // generated iframe projections never include them.
+  capabilityDataTransport?: {
+    sessionId: string
+    ready: boolean
+  }
 }
 
 // #111 v1 snapshot descriptor. kind is fixed; snapshotId is server-generated

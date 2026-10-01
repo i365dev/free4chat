@@ -1184,7 +1184,6 @@ func TestDaemonAdapterReplacementRefreshesExistingResidentAndRemovalClearsProjec
 
 	connections := make(chan *websocket.Conn, 1)
 	projections := make(chan map[string]any, 4)
-	capabilityResults := make(chan map[string]any, 2)
 	var mu sync.Mutex
 	initialProjection := map[string]any(nil)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1203,13 +1202,9 @@ func TestDaemonAdapterReplacementRefreshesExistingResidentAndRemovalClearsProjec
 			}
 			connections <- conn
 			for {
-				_, payload, readErr := conn.Read(context.Background())
+				_, _, readErr := conn.Read(context.Background())
 				if readErr != nil {
 					return
-				}
-				var message map[string]any
-				if json.Unmarshal(payload, &message) == nil && message["type"] == "runtime-capability-result" {
-					capabilityResults <- message
 				}
 			}
 		}
@@ -1271,9 +1266,8 @@ func TestDaemonAdapterReplacementRefreshesExistingResidentAndRemovalClearsProjec
 	if err := json.Unmarshal(joined, &view); err != nil || view.InstanceID == "" {
 		t.Fatalf("resident join response was invalid: %s (%v)", joined, err)
 	}
-	var residentSocket *websocket.Conn
 	select {
-	case residentSocket = <-connections:
+	case <-connections:
 	case <-time.After(5 * time.Second):
 		t.Fatal("already-running resident did not open its event socket")
 	}
@@ -1337,25 +1331,6 @@ func TestDaemonAdapterReplacementRefreshesExistingResidentAndRemovalClearsProjec
 		t.Fatalf("Human semantic invoke did not reach replacement Python Adapter: %s (%v)", invoked, err)
 	}
 
-	request, _ := json.Marshal(map[string]any{
-		"type": "runtime-capability-request", "requestId": "daemon-e2e-request",
-		"runtimeHostId": runtimeHostID, "capabilityId": capabilityID, "operation": "observe",
-	})
-	if err := residentSocket.Write(context.Background(), websocket.MessageText, request); err != nil {
-		t.Fatalf("send private resident capability request: %v", err)
-	}
-	select {
-	case response := <-capabilityResults:
-		if response["requestId"] != "daemon-e2e-request" || response["ok"] != true {
-			t.Fatalf("resident request failed: %#v", response)
-		}
-		result, _ := response["result"].(map[string]any)
-		if result["source"] != "current-controller" {
-			t.Fatalf("resident did not reach the current daemon-owned controller: %#v", response)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("resident did not answer the capability request")
-	}
 	listed, err := SendIPC(&IpcRequest{Op: "capability-list"})
 	if err != nil || !strings.Contains(string(listed), capabilityID) || strings.Contains(string(listed), "controller") {
 		t.Fatalf("daemon discovery did not return the sanitized current descriptor: %s (%v)", listed, err)
