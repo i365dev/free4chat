@@ -73,21 +73,15 @@ type Daemon struct {
 // New creates an idle daemon.
 func New() *Daemon {
 	runtimeExecutable, _ := os.Executable()
-	localCapability, capabilityProcess := loadLocalCapabilityAdapter(RuntimeDirectory())
 	d := &Daemon{
 		instances:           make(map[string]*residentInstance),
 		closed:              make(chan struct{}),
 		voiceGate:           voice.NewGate(),
 		hostLog:             NewBoundedLog(RuntimeDirectory()),
 		transcriptProducers: NewTranscriptProducerCoordinator(),
-		localCapability:     localCapability,
-		capabilityProcess:   capabilityProcess,
 		runtimeExecutable:   runtimeExecutable,
 	}
 	d.capabilityHandler = &daemonCapabilityController{daemon: d}
-	if capabilityProcess != nil {
-		d.watchCapabilityProcess(capabilityProcess)
-	}
 	return d
 }
 
@@ -98,9 +92,23 @@ func (d *Daemon) Run() error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
+	release, err := lockDaemon(dir)
+	if err != nil {
+		if errors.Is(err, ErrDaemonAlreadyRunning) {
+			fmt.Fprintf(os.Stderr, "daemon_lock_refused pid=%d ppid=%d version=%s\n", os.Getpid(), os.Getppid(), doctor.Version)
+		}
+		return err
+	}
+	d.hostLog.Appendf("daemon_lock_acquired pid=%d version=%s", os.Getpid(), doctor.Version)
+	d.hostLog.Appendf("daemon_start pid=%d ppid=%d version=%s", os.Getpid(), os.Getppid(), doctor.Version)
+	defer func() {
+		d.hostLog.Appendf("daemon_stop pid=%d version=%s", os.Getpid(), doctor.Version)
+		release()
+	}()
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return err
 	}
+	d.restoreLocalCapabilityAdapter(dir)
 	if err := d.prepareRuntimeExecutable(dir); err != nil {
 		return err
 	}
@@ -148,6 +156,20 @@ func (d *Daemon) Run() error {
 
 	<-d.closed
 	return nil
+}
+
+// restoreLocalCapabilityAdapter must run only after this process owns the
+// RuntimeDirectory singleton lock, because constructing the Adapter starts a
+// child process from persisted local registration.
+func (d *Daemon) restoreLocalCapabilityAdapter(runtimeDir string) {
+	localCapability, capabilityProcess := loadLocalCapabilityAdapter(runtimeDir)
+	d.mu.Lock()
+	d.localCapability = localCapability
+	d.capabilityProcess = capabilityProcess
+	d.mu.Unlock()
+	if capabilityProcess != nil {
+		d.watchCapabilityProcess(capabilityProcess)
+	}
 }
 
 // serve handles exactly one newline-delimited request per connection,

@@ -270,6 +270,122 @@ func startDaemonWithExecutable(t *testing.T, executable string) (*Daemon, string
 	return d, dir
 }
 
+func TestDaemonSingletonProtectsLiveRuntimeState(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "fcagent-singleton-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	t.Setenv("FREE4CHAT_AGENT_DIR", dir)
+	t.Setenv("FREE4CHAT_TEST_DISABLE_NATIVE_CREDENTIAL_STORE", "1")
+
+	// A persisted Adapter that never completes its handshake makes process
+	// startup observable without depending on a real provider or Harness.
+	starts := filepath.Join(dir, "adapter-starts")
+	helper := filepath.Join(dir, "adapter-helper.sh")
+	script := "#!/bin/sh\nprintf 'started\\n' >> '" + starts + "'\nsleep 30\n"
+	if err := os.WriteFile(helper, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := capability.SaveRegistration(dir, capability.Registration{Command: "/bin/sh", Args: []string{helper}}); err != nil {
+		t.Fatal(err)
+	}
+	adapterStarts := func() int {
+		data, _ := os.ReadFile(starts)
+		if len(data) == 0 {
+			return 0
+		}
+		return strings.Count(string(data), "started\n")
+	}
+
+	daemonA := New()
+	doneA := make(chan error, 1)
+	t.Cleanup(func() { daemonA.stopAll() })
+	go func() { doneA <- daemonA.Run() }()
+	select {
+	case runErr := <-doneA:
+		t.Fatalf("daemon A exited during startup: %v", runErr)
+	case <-time.After(200 * time.Millisecond):
+	}
+	waitForSocketUp(t, SocketPath(), 5*time.Second)
+	workspace := filepath.Join(WorkspacesRoot(), "live-resident")
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "sentinel"), []byte("owned by daemon A"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := adapterStarts(); got != 1 {
+		t.Fatalf("daemon A should restore one persisted Adapter, got %d starts", got)
+	}
+	originalSocket, err := os.Stat(SocketPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	daemonB := New()
+	doneB := make(chan error, 1)
+	t.Cleanup(func() { daemonB.stopAll() })
+	go func() { doneB <- daemonB.Run() }()
+	select {
+	case err := <-doneB:
+		if err == nil || !strings.Contains(err.Error(), "already running") {
+			t.Fatalf("second daemon should fail closed with singleton error, got %v", err)
+		}
+	case <-time.After(300 * time.Millisecond):
+		_, workspaceErr := os.Stat(filepath.Join(workspace, "sentinel"))
+		currentSocket, socketErr := os.Stat(SocketPath())
+		_, ipcErr := SendIPC(&IpcRequest{Op: "status"})
+		t.Logf("reproduction: second Run remained live; workspace_removed=%t socket_replaced=%t canonical_ipc_reachable=%t adapter_starts=%d", os.IsNotExist(workspaceErr), socketErr == nil && !os.SameFile(originalSocket, currentSocket), ipcErr == nil, adapterStarts())
+		daemonB.stopAll()
+		select {
+		case <-doneB:
+		case <-time.After(2 * time.Second):
+			t.Fatal("second daemon did not stop after failed singleton assertion")
+		}
+		t.Fatal("second daemon acquired a second listener while daemon A remained alive")
+	}
+
+	if _, err := os.Stat(filepath.Join(workspace, "sentinel")); err != nil {
+		t.Fatalf("second daemon removed daemon A's live workspace: %v", err)
+	}
+	if currentSocket, err := os.Stat(SocketPath()); err != nil || !os.SameFile(originalSocket, currentSocket) {
+		t.Fatalf("second daemon replaced daemon A's canonical socket (stat err %v)", err)
+	}
+	if got := adapterStarts(); got != 1 {
+		t.Fatalf("losing daemon started a duplicate persisted Adapter: starts=%d", got)
+	}
+	if _, err := SendIPC(&IpcRequest{Op: "status"}); err != nil {
+		t.Fatalf("daemon A became unreachable through canonical socket: %v", err)
+	}
+
+	daemonA.stopAll()
+	select {
+	case <-doneA:
+	case <-time.After(2 * time.Second):
+		t.Fatal("daemon A did not stop")
+	}
+	stale := filepath.Join(WorkspacesRoot(), "stale-after-stop")
+	if err := os.MkdirAll(stale, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	daemonC := New()
+	doneC := make(chan error, 1)
+	t.Cleanup(func() { daemonC.stopAll() })
+	go func() { doneC <- daemonC.Run() }()
+	waitForSocketUp(t, SocketPath(), 5*time.Second)
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		daemonC.stopAll()
+		t.Fatalf("later daemon did not clean stale workspaces after ownership release: %v", err)
+	}
+	daemonC.stopAll()
+	select {
+	case <-doneC:
+	case <-time.After(2 * time.Second):
+		t.Fatal("daemon C did not stop")
+	}
+}
+
 func waitForSocketUp(t *testing.T, path string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
