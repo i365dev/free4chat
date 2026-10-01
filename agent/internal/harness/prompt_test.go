@@ -173,13 +173,20 @@ func TestTaskScopedTurnCarriesCompactGeneratedAppAffordance(t *testing.T) {
 	for _, marker := range []string{
 		"[[free4chat:task-output generated-app]]",
 		"[[/free4chat:task-output]]",
-		"Runtime validates and publishes it for this exact Task",
+		"complete self-contained HTML document",
+		"do not JSON-encode it",
+		"one non-empty title, head, and body",
+		"zero or one classic inline script",
+		"Runtime normalizes and validates it for this exact Task",
 		"one bounded Generated Task App",
 		"do not return a second App for the same Task",
 	} {
 		if !strings.Contains(prompt, marker) {
 			t.Fatalf("Task prompt missing generated App marker %q:\n%s", marker, prompt)
 		}
+	}
+	if strings.Contains(prompt, "bundle JSON") || strings.Contains(prompt, `"networkOrigins"`) {
+		t.Fatalf("Task prompt must not expose the internal JSON bundle contract:\n%s", prompt)
 	}
 	roomPrompt := RenderUntrustedRoomTurn(bootstrapPromptInput())
 	if strings.Contains(roomPrompt, "task-output generated-app") {

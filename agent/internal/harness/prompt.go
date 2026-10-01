@@ -329,11 +329,11 @@ func RenderUntrustedRoomTurn(input *types.HarnessTurnInput) string {
 			"Artifacts produced for this Task MUST be published as correlated Task artifacts: "+runtimeCommand+" attach --file <path> --task-request-id "+requestID,
 			"Omit --task-request-id only for an artifact that intentionally belongs to the Room rather than this Task.",
 			"Task App affordance: this Task may return one bounded Generated Task App when that surface is useful. Decide autonomously whether to use it; do not return a second App for the same Task.",
-			"To return it, append this exact final output block after your Human-facing reply. Put one JSON bundle object on the middle line:",
+			"To return it, append this exact final output block after your Human-facing reply. Put one complete self-contained HTML document directly between the markers; do not JSON-encode it or wrap it in a Markdown code fence:",
 			"[[free4chat:task-output generated-app]]",
-			"<Generated Task App bundle JSON>",
+			"<!doctype html><html><head><title>App title</title><style>/* optional inline CSS */</style></head><body><!-- app markup --><script>/* optional app JS */</script></body></html>",
 			"[[/free4chat:task-output]]",
-			"Required bundle fields are version, manifest {title, networkOrigins: []}, html, css, js, and initialState. Keep the complete JSON at or below 48 KiB; the Runtime validates and publishes it for this exact Task.",
+			"HTML V1 requires one non-empty title, head, and body. Use zero or more inline style elements in head and zero or one classic inline script as the final meaningful body child. Do not use external scripts/resources, modules, async/defer, or executable head scripts. Keep the complete HTML at or below 48 KiB; the Runtime normalizes and validates it for this exact Task.",
 			"Task App JavaScript may use the host bridge free4chat.capabilities.observe(capabilityId) and free4chat.capabilities.invoke(capabilityId, action, args). Use only the supplied semantic descriptors; do not include device, Adapter, endpoint, host, queue, or credential details.",
 		)
 	}

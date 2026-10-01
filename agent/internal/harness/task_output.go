@@ -1,9 +1,6 @@
 package harness
 
 import (
-	"bytes"
-	"encoding/json"
-	"io"
 	"strings"
 
 	"github.com/i365dev/free4chat/agent/internal/generatedapp"
@@ -17,8 +14,8 @@ const (
 
 // ParseHarnessTurnResult extracts the one Task-native Generated App result
 // from an ACP text turn, then applies the existing strict Runtime control
-// parsers. ACP's session/prompt result has no portable artifact field, so the
-// output uses a closed, size-bounded block in the standard message text.
+// parsers. The marker payload is ordinary bounded HTML; it is normalized to
+// the existing internal bundle contract before publication.
 func ParseHarnessTurnResult(text, taskRequestID string) types.HarnessTurnResult {
 	original := strings.TrimSpace(text)
 	body := original
@@ -58,20 +55,8 @@ func parseGeneratedAppOutput(text string) (string, map[string]any, bool) {
 		return text, nil, false
 	}
 	encoded := strings.TrimSpace(trimmed[open+len(taskOutputOpen) : len(trimmed)-len(taskOutputClose)])
-	if len(encoded) == 0 || len(encoded) > generatedapp.MaxBundleBytes {
-		return text, nil, false
-	}
-	decoder := json.NewDecoder(bytes.NewBufferString(encoded))
-	decoder.DisallowUnknownFields()
-	var bundle map[string]any
-	if err := decoder.Decode(&bundle); err != nil {
-		return text, nil, false
-	}
-	if err := decoder.Decode(new(any)); err != io.EOF {
-		return text, nil, false
-	}
-	compact, err := json.Marshal(bundle)
-	if err != nil || generatedapp.Validate(compact, bundle) != nil {
+	bundle, err := generatedapp.NormalizeHTML(encoded)
+	if err != nil {
 		return text, nil, false
 	}
 	return strings.TrimSpace(trimmed[:open]), bundle, true

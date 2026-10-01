@@ -43,6 +43,47 @@ lifetime, bounded shared state, and realtime collaboration. In V0 it has no
 general network access. The publication and state disappear when the Room
 expires.
 
+When a Task uses this surface, the Agent returns one complete self-contained
+HTML document between the terminal Task-output markers. It does not serialize
+an internal JSON bundle. The Runtime parses the HTML5 document and normalizes
+it into the existing Generated Room App bundle before the usual validation and
+Task publication.
+
+The V1 source subset requires exactly one non-empty `<title>`, a `<head>`, and
+a `<body>`. Put zero or more inline `<style>` elements in `<head>` and zero or
+one classic inline `<script>` as the final meaningful child of `<body>`. The
+script may be omitted. External scripts, modules, `async`/`defer`, executable
+scripts in `<head>`, external stylesheets, and other external resource
+dependencies are not supported. The Runtime derives the App title from
+`<title>`, uses an empty initial state, and keeps `networkOrigins` empty.
+Author normal markup, CSS, and JavaScript directly; quotes and backslashes do
+not need JSON escaping.
+
+For example, the payload between the markers can be:
+
+```html
+<!doctype html>
+<html>
+<head>
+  <title>Printer</title>
+  <style>body { font: 16px sans-serif; }</style>
+</head>
+<body>
+  <h1>Printer</h1>
+  <p>Status: <span id="status">Loading</span></p>
+  <button id="refresh">Refresh</button>
+  <script>
+    document.querySelector("#refresh").addEventListener("click", async () => {
+      const result = await free4chat.capabilities.observe("printer_status");
+      document.querySelector("#status").textContent = result.ok
+        ? JSON.stringify(result.value)
+        : result.error;
+    });
+  </script>
+</body>
+</html>
+```
+
 It is not general app hosting, a backend runtime, or a way to publish a local
 service. Exact publication commands and protocol limits belong in the
 [CLI reference](../reference/cli) and [MCP Room API](../reference/mcp).
