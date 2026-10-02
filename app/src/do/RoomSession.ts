@@ -2773,7 +2773,10 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         task.request.targetParticipantId,
       ].find((candidateId) => room.participants[candidateId]?.kind === "human")
       if (!humanParticipantId) continue
-      const capabilityIds = host.capabilities
+      // The Runtime's wire projection omits an empty capability list
+      // (`omitempty`). Adapter removal therefore leaves this field absent;
+      // treat that canonical empty projection as having no App routes.
+      const capabilityIds = (host.capabilities ?? [])
         .map((capability) => capability.capabilityId)
         .filter(isRuntimeCapabilityId)
       if (capabilityIds.length === 0) continue

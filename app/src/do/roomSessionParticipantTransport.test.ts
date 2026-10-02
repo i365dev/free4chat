@@ -477,7 +477,12 @@ describe("RoomSession Runtime participant transport association", () => {
     expect(
       session.projectRuntimeParticipantTransportState(room, "resident").routes
     ).toHaveLength(1)
-    room.runtimeHosts[hostId].capabilities = []
+    // The Go Runtime serializes an empty capabilities slice with omitempty,
+    // so the Room projection receives this property as absent on Adapter
+    // removal.
+    expect(
+      Reflect.deleteProperty(room.runtimeHosts[hostId], "capabilities")
+    ).toBe(true)
     expect(
       session.projectRuntimeParticipantTransportState(room, "resident").routes
     ).toHaveLength(0)

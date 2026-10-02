@@ -326,6 +326,39 @@ describe("RoomSession Runtime Host canonical model (#176 Phase A)", () => {
     })
   })
 
+  it("clears the Runtime Host capability projection when the local Adapter is removed", async () => {
+    const room = makeRoomSession(buildStoredRoom())
+    const capabilityHost = {
+      ...VALID_HOST,
+      capabilities: [
+        {
+          capabilityId: "local_fixture",
+          title: "Local fixture",
+          version: "1",
+          observe: true,
+          actions: [],
+        },
+      ],
+    }
+    await room.agentRegister(capabilityHost)
+
+    const updated = await room.control({
+      action: "agent-update-runtime-host",
+      participantId: "agent-new",
+      token: "tok-agent-new",
+      runtimeHost: {
+        runtimeHostId: VALID_HOST.runtimeHostId,
+        speech: VALID_HOST.speech,
+      },
+    })
+
+    expect(updated.status).toBe(200)
+    expect(room.storedRuntimeHosts()[VALID_HOST.runtimeHostId]).toEqual({
+      runtimeHostId: VALID_HOST.runtimeHostId,
+      speech: VALID_HOST.speech,
+    })
+  })
+
   it("garbage-collects host projections when their last Agent departs, keeps shared hosts", async () => {
     const room = makeRoomSession(buildStoredRoom())
     await room.agentRegister(VALID_HOST, "agent-a2")
