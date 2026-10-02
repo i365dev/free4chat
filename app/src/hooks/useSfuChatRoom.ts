@@ -162,6 +162,9 @@ const REMOTE_TRACK_SUBSCRIPTION_RETRY_DELAYS_MS = [
 const REMOTE_TRACK_READY_TIMEOUT_MS = 5000
 const REMOTE_FILE_CHANNEL_OPEN_TIMEOUT_MS = 5000
 const ROOM_APP_CHANNEL_OPEN_TIMEOUT_MS = 5000
+// Runtime capability handlers run for up to eight seconds. Keep four seconds
+// of browser-side grace for the correlated result to cross the DataChannel.
+const RUNTIME_CAPABILITY_REQUEST_TIMEOUT_MS = 12_000
 const ROOM_APP_RETRY_DELAYS_MS = [100, 500, 2000] as const
 
 function agentTextMime(file: File): string | undefined {
@@ -1083,7 +1086,7 @@ export function useSfuChatRoom(
             ok: false,
             error: "timeout",
           })
-        }, 8_000)
+        }, RUNTIME_CAPABILITY_REQUEST_TIMEOUT_MS)
         pendingRuntimeCapabilityRequestsRef.current.set(request.requestId, {
           settle,
           timeout,

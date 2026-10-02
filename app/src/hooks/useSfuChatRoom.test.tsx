@@ -780,6 +780,7 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
     let capabilityResult!: ReturnType<
       typeof result.current.requestGeneratedAppCapability
     >
+    const timeoutSpy = vi.spyOn(globalThis, "setTimeout")
     act(() => {
       capabilityResult = result.current.requestGeneratedAppCapability({
         appInstanceId,
@@ -791,6 +792,10 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
         operation: "observe",
       })
     })
+    expect(timeoutSpy.mock.calls.some(([, delay]) => delay === 12_000)).toBe(
+      true
+    )
+    timeoutSpy.mockRestore()
     const localReliable = FakePeerConnection.dataChannels.find(
       (channel) => channel.label === "room-app-reliable-participant-1"
     )
