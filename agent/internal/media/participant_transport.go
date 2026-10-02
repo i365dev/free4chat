@@ -151,10 +151,14 @@ func (t *RuntimeParticipantTransport) Start(ctx context.Context, projection type
 	if err != nil {
 		return fail(err)
 	}
-	if _, _, err := engine.ApplyRemote(answer); err != nil {
-		return fail(err)
-	}
-	if err := engine.WaitConnected(transportCtx, 30*time.Second); err != nil {
+	if err := completeParticipantDataTransportBootstrap(
+		transportCtx,
+		session,
+		answer,
+		engine.ApplyRemote,
+		rest.Renegotiate,
+		engine.WaitConnected,
+	); err != nil {
 		return fail(err)
 	}
 
@@ -215,6 +219,47 @@ func (t *RuntimeParticipantTransport) Start(ctx context.Context, projection type
 		return fail(err)
 	}
 	return nil
+}
+
+// completeParticipantDataTransportBootstrap follows the established Bridge
+// signaling sequence for either SFU response shape. A remote offer requires a
+// local answer to be renegotiated before the PeerConnection can become ready.
+// Keeping the callbacks limited to these three protocol steps makes their
+// ordering directly testable without adding a transport dependency framework.
+func completeParticipantDataTransportBootstrap(
+	ctx context.Context,
+	session string,
+	remote Description,
+	applyRemote func(Description) (string, *Description, error),
+	renegotiate func(string, Description, Purpose) error,
+	waitConnected func(context.Context, time.Duration) error,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if remote.Type == "offer" {
+		applied, answer, err := applyRemote(remote)
+		if err != nil {
+			return err
+		}
+		if applied != "offer" || answer == nil {
+			return errors.New("missing local answer after participant data remote offer")
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := renegotiate(session, *answer, PurposeGeneratedAppCapability); err != nil {
+			return err
+		}
+	} else {
+		if _, _, err := applyRemote(remote); err != nil {
+			return err
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return waitConnected(ctx, 30*time.Second)
 }
 
 func (t *RuntimeParticipantTransport) receive(label string, payload []byte) {

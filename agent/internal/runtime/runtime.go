@@ -204,6 +204,13 @@ type Options struct {
 	TurnLaneOverride int
 }
 
+// participantDataTransport is the Runtime's narrow lifecycle boundary for its
+// media-free Agent participant DataChannel connection.
+type participantDataTransport interface {
+	Start(context.Context, types.RuntimeParticipantTransportProjection) error
+	Close()
+}
+
 // ResidentRuntime owns exactly one Free4Chat participant across many Harness
 // turns. The capability handle stays strictly inside this object: it never
 // reaches a Harness turn, status payload, or log line.
@@ -336,8 +343,9 @@ type ResidentRuntime struct {
 	resident    types.ResidentEventStream
 
 	mediaController                *media.Controller
-	participantTransport           *media.RuntimeParticipantTransport
+	participantTransport           participantDataTransport
 	participantTransportProjection string
+	participantTransportFactory    func(media.DecodedHandle) participantDataTransport
 	mediaMu                        sync.Mutex
 	// residentMediaStateApplyMu serializes cache changes with their Controller
 	// application. It is held across the apply call so a replay cannot take a
@@ -527,6 +535,9 @@ func NewResidentRuntime(options Options) *ResidentRuntime {
 		taskSessionSessions:  make(map[string]taskSessionSelection),
 		taskSessionProjects:  make(map[string]taskSessionProject),
 		taskSessionPages:     make(map[string]taskSessionPage),
+	}
+	runtime.participantTransportFactory = func(handle media.DecodedHandle) participantDataTransport {
+		return media.NewRuntimeParticipantTransport(options.SiteOrigin, handle, options.CapabilityHandler, runtime.log)
 	}
 	runtime.turnIdleCond = sync.NewCond(&runtime.mu)
 	configurePermissionResponder(runtime)
@@ -1205,10 +1216,22 @@ func (r *ResidentRuntime) setResidentStream(
 		r.mu.Unlock()
 		return false
 	}
+	// Replacing the private Room stream is also a participant-transport
+	// generation boundary. The Room clears its transient ready projection as
+	// soon as the resident socket is replaced, so the next stream must rebuild
+	// the same Runtime-side DataChannel transport even when its routes match.
+	// Detach under the Runtime lock, but do bounded network/Pion teardown only
+	// after releasing every Runtime lock.
+	participantTransport := r.participantTransport
+	r.participantTransport = nil
+	r.participantTransportProjection = ""
 	r.residentMu.Lock()
 	r.resident = stream
 	r.residentMu.Unlock()
 	r.mu.Unlock()
+	if participantTransport != nil {
+		participantTransport.Close()
+	}
 	r.resetActivityLocal()
 	return true
 }
@@ -1355,7 +1378,10 @@ func (r *ResidentRuntime) observeRuntimeParticipantTransport(projection types.Ru
 	if err != nil {
 		return
 	}
-	transport := media.NewRuntimeParticipantTransport(r.options.SiteOrigin, handle, r.options.CapabilityHandler, r.log)
+	transport := r.participantTransportFactory(handle)
+	if transport == nil {
+		return
+	}
 	r.mu.Lock()
 	if r.stopped || r.participantTransportProjection != signature {
 		r.mu.Unlock()

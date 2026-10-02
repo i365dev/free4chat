@@ -3,6 +3,7 @@ package media
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 
@@ -275,3 +276,67 @@ func TestNoMediaPionParticipantDataChannelsCarryReliableRequestAndResult(t *test
 
 func boolPtr(value bool) *bool       { return &value }
 func uint16Ptr(value uint16) *uint16 { return &value }
+
+func TestCompleteParticipantDataTransportBootstrapSupportsAnswerAndOffer(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		remote      Description
+		applyResult string
+		localAnswer *Description
+		wantCalls   []string
+	}{
+		{
+			name:        "SFU answer",
+			remote:      Description{Type: "answer", SDP: "sfu-answer"},
+			applyResult: "answer",
+			wantCalls:   []string{"apply:answer", "wait"},
+		},
+		{
+			name:        "SFU offer",
+			remote:      Description{Type: "offer", SDP: "sfu-offer"},
+			applyResult: "offer",
+			localAnswer: &Description{Type: "answer", SDP: "local-answer"},
+			wantCalls:   []string{"apply:offer", "renegotiate", "wait"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var calls []string
+			ctx := context.Background()
+			err := completeParticipantDataTransportBootstrap(
+				ctx,
+				"participant-session",
+				test.remote,
+				func(remote Description) (string, *Description, error) {
+					calls = append(calls, "apply:"+remote.Type)
+					return test.applyResult, test.localAnswer, nil
+				},
+				func(session string, answer Description, purpose Purpose) error {
+					calls = append(calls, "renegotiate")
+					if test.remote.Type != "offer" {
+						t.Fatal("answer response must not require renegotiation")
+					}
+					if session != "participant-session" || answer != *test.localAnswer || purpose != PurposeGeneratedAppCapability {
+						t.Fatalf("renegotiation = (%q, %+v, %q), want participant session, local answer, generated-app-capability", session, answer, purpose)
+					}
+					return nil
+				},
+				func(_ context.Context, timeout time.Duration) error {
+					calls = append(calls, "wait")
+					if timeout != 30*time.Second {
+						t.Fatalf("connection timeout = %s, want 30s", timeout)
+					}
+					if !reflect.DeepEqual(calls, test.wantCalls) {
+						t.Fatalf("calls before connection wait = %v, want %v", calls, test.wantCalls)
+					}
+					return nil
+				},
+			)
+			if err != nil {
+				t.Fatalf("complete bootstrap: %v", err)
+			}
+			if !reflect.DeepEqual(calls, test.wantCalls) {
+				t.Fatalf("bootstrap calls = %v, want %v", calls, test.wantCalls)
+			}
+		})
+	}
+}
