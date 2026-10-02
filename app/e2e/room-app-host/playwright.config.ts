@@ -75,6 +75,24 @@ export default defineConfig({
       },
     },
     {
+      // Narrow supported phone width for compact Room toolbar geometry.
+      name: "webkit-phone-narrow",
+      grep: /320px phone toolbar controls fit/,
+      use: {
+        ...devices["iPhone 13"],
+        viewport: { width: 320, height: 844 },
+      },
+    },
+    {
+      // Roomier phone width where the full four-control labels fit on one row.
+      name: "webkit-phone-roomy",
+      grep: /phone toolbar controls fit/,
+      use: {
+        ...devices["iPhone 13"],
+        viewport: { width: 520, height: 844 },
+      },
+    },
+    {
       name: "webkit-tablet-portrait",
       use: {
         ...devices["iPad (gen 7)"],

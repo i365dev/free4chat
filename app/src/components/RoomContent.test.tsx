@@ -4758,6 +4758,17 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
           screen.getByTestId("interaction-tab-task-task-live")
         ).toHaveAttribute("aria-selected", "true")
 
+        const taskSurfaceSwitch = screen.getByTestId("room-mobile-overflow")
+        fireEvent.click(taskSurfaceSwitch)
+        expect(screen.getByTestId("room-mobile-sheet")).toBeInTheDocument()
+        expect(taskSurfaceSwitch).toHaveTextContent("Task chat →")
+        expect(taskSurfaceSwitch).toHaveAccessibleName("Open Task chat")
+        fireEvent.click(taskSurfaceSwitch)
+        expect(screen.queryByTestId("room-mobile-sheet")).toBeNull()
+        expect(
+          screen.getByTestId("interaction-tab-task-task-live")
+        ).toHaveAttribute("aria-selected", "true")
+
         fireEvent.click(
           within(screen.getByTestId("generated-room-app-card")).getByRole(
             "button",
@@ -4773,7 +4784,11 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
           residentHost
         )
 
-        fireEvent.click(screen.getByTestId("room-mobile-sheet-close"))
+        const surfaceSwitch = screen.getByTestId("room-mobile-overflow")
+        expect(surfaceSwitch).toHaveTextContent("Task chat →")
+        expect(surfaceSwitch).toHaveAccessibleName("Open Task chat")
+        expect(surfaceSwitch).toHaveAttribute("title", "Open Task chat")
+        fireEvent.click(surfaceSwitch)
         expect(screen.queryByTestId("room-mobile-sheet")).toBeNull()
         expect(
           screen.getByTestId("interaction-tab-task-task-live")
@@ -4791,6 +4806,24 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
           residentHost
         )
         expect(generatedIframe()).toBe(residentIframe)
+
+        fireEvent.keyDown(window, { key: "Escape" })
+        expect(screen.queryByTestId("room-mobile-sheet")).toBeNull()
+        fireEvent.click(screen.getByTestId("interaction-tab-room"))
+        fireEvent.click(screen.getByTestId("room-mobile-overflow"))
+        expect(screen.getByTestId("room-mobile-sheet")).toBeInTheDocument()
+        expect(screen.getByTestId("room-mobile-overflow")).toHaveTextContent(
+          "Room chat →"
+        )
+        expect(screen.getByTestId("room-mobile-overflow")).toHaveAccessibleName(
+          "Open Room chat"
+        )
+        fireEvent.click(screen.getByTestId("room-mobile-overflow"))
+        expect(screen.queryByTestId("room-mobile-sheet")).toBeNull()
+        expect(screen.getByTestId("interaction-tab-room")).toHaveAttribute(
+          "aria-selected",
+          "true"
+        )
       })
 
       it("hides the generated host when Screen becomes the Stage surface", async () => {

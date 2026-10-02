@@ -451,11 +451,137 @@ test("joining warp fills desktop and phone viewports", async ({
   }
 })
 
+test("320px phone toolbar controls fit in a two-row grid", async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== "webkit-phone-narrow")
+  await installMediaShim(page)
+  await openLocalRoom(page, `toolbar-narrow-${Date.now().toString(36)}`)
+  await enterLocalRoom(page, "Alice")
+
+  const toolbar = page.getByTestId("room-header-toolbar")
+  await expect(toolbar).toBeVisible()
+  for (const name of [
+    "Copy link",
+    "Invite Agent",
+    "Live Transcript",
+    "Enable microphone",
+  ]) {
+    await expect(page.getByRole("button", { name })).toBeVisible()
+  }
+  await expect(page.getByRole("button", { name: "Leave" })).toBeVisible()
+  const geometry = await toolbar.evaluate((element) => {
+    const buttons = Array.from(element.children).map((child) => {
+      const { x, y, width, height } = child.getBoundingClientRect()
+      return { x, y, width, height }
+    })
+    return {
+      columns: getComputedStyle(element)
+        .gridTemplateColumns.split(" ")
+        .filter(Boolean).length,
+      buttons,
+      viewportWidth: window.innerWidth,
+      documentWidth: document.documentElement.scrollWidth,
+    }
+  })
+  expect(geometry.columns).toBe(2)
+  expect(geometry.documentWidth).toBeLessThanOrEqual(geometry.viewportWidth)
+  expect(new Set(geometry.buttons.map(({ y }) => Math.round(y))).size).toBe(2)
+  for (let index = 0; index < geometry.buttons.length; index += 1) {
+    for (
+      let otherIndex = index + 1;
+      otherIndex < geometry.buttons.length;
+      otherIndex += 1
+    ) {
+      const first = geometry.buttons[index]
+      const second = geometry.buttons[otherIndex]
+      const overlaps =
+        first.x < second.x + second.width &&
+        first.x + first.width > second.x &&
+        first.y < second.y + second.height &&
+        first.y + first.height > second.y
+      expect(overlaps).toBe(false)
+    }
+  }
+  await page.screenshot({
+    path: testInfo.outputPath("room-layout-320x844.png"),
+  })
+  for (const [buttonName, dialogName] of [
+    ["Invite Agent", "Invite an Agent"],
+    ["Live Transcript", "Live Transcript"],
+  ]) {
+    await page.getByRole("button", { name: buttonName }).click()
+    const dialog = page.getByRole("dialog", { name: dialogName })
+    await expect(dialog).toBeVisible()
+    const bounds = await dialog.boundingBox()
+    expect(bounds).not.toBeNull()
+    expect(bounds!.x).toBeGreaterThanOrEqual(0)
+    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(320)
+    await page.keyboard.press("Escape")
+    await expect(dialog).toHaveCount(0)
+    if (buttonName === "Invite Agent") {
+      await page.getByTestId("room-mobile-overflow").click()
+      await expect(page.getByTestId("room-mobile-sheet")).toBeVisible()
+    }
+  }
+})
+
+test("520px phone toolbar controls fit with full labels on one row", async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== "webkit-phone-roomy")
+  await installMediaShim(page)
+  await openLocalRoom(page, `toolbar-roomy-${Date.now().toString(36)}`)
+  await enterLocalRoom(page, "Alice")
+
+  const toolbar = page.getByTestId("room-header-toolbar")
+  await expect(toolbar).toBeVisible()
+  for (const name of [
+    "Copy link",
+    "Invite Agent",
+    "Live Transcript",
+    "Enable microphone",
+  ]) {
+    await expect(page.getByRole("button", { name })).toBeVisible()
+  }
+  const geometry = await toolbar.evaluate((element) => {
+    const controls = Array.from(element.children).flatMap((child) =>
+      Array.from(child.querySelectorAll("button"))
+    )
+    return {
+      columns: getComputedStyle(element)
+        .gridTemplateColumns.split(" ")
+        .filter(Boolean).length,
+      rows: new Set(
+        controls.map((button) => Math.round(button.getBoundingClientRect().y))
+      ).size,
+      buttons: controls.map((button) => ({
+        width: button.clientWidth,
+        contentWidth: button.scrollWidth,
+      })),
+      viewportWidth: window.innerWidth,
+      documentWidth: document.documentElement.scrollWidth,
+    }
+  })
+  expect(geometry.columns).toBe(4)
+  expect(geometry.rows).toBe(1)
+  expect(geometry.documentWidth).toBeLessThanOrEqual(geometry.viewportWidth)
+  for (const button of geometry.buttons) {
+    expect(button.contentWidth).toBeLessThanOrEqual(button.width)
+  }
+  await page.screenshot({
+    path: testInfo.outputPath("room-layout-520x844.png"),
+  })
+})
+
 test("Room App host contract survives open, fullscreen, exit, hide and reopen", async ({
   page,
   browser,
 }, testInfo) => {
   const profile = testInfo.project.name
+  test.skip(
+    profile === "webkit-phone-narrow" || profile === "webkit-phone-roomy"
+  )
   const roomSlug = `compat-${profile}-${Date.now().toString(36)}`
   const pageErrors: string[] = []
   const consoleErrors: string[] = []
@@ -632,6 +758,31 @@ test("Room App host contract survives open, fullscreen, exit, hide and reopen", 
     await expectNoPageOverflow(page, "joined Room")
   })
 
+  await test.step("390px phone toolbar stays on one row", async () => {
+    if (profile !== "webkit-phone") return
+
+    const toolbar = page.getByTestId("room-header-toolbar")
+    await expect(toolbar).toBeVisible()
+    expect(page.viewportSize()?.width).toBe(390)
+    const roomierColumns = await toolbar.evaluate(
+      (element) =>
+        getComputedStyle(element).gridTemplateColumns.split(" ").filter(Boolean)
+          .length
+    )
+    expect(roomierColumns).toBe(2)
+    for (const name of [
+      "Copy link",
+      "Invite Agent",
+      "Live Transcript",
+      "Enable microphone",
+    ]) {
+      await expect(page.getByRole("button", { name })).toBeVisible()
+    }
+    await page.screenshot({
+      path: testInfo.outputPath("room-layout-390x844.png"),
+    })
+  })
+
   await test.step("phone feature popovers stay above the People sheet", async () => {
     if (isTwoPaneRoom(page)) return
 
@@ -714,10 +865,12 @@ test("Room App host contract survives open, fullscreen, exit, hide and reopen", 
   await test.step("phone Room chat hides and People restores the same Stage", async () => {
     if (isTwoPaneRoom(page)) return
 
+    await expect(page.getByTestId("room-mobile-sheet")).toBeVisible()
+
     // This fixture Room has no Agent, so it cannot create a canonical Task.
     // Task selection's identical "hide Stage, give interaction the viewport"
     // contract is covered by roomMobileComposition's real Task projection.
-    await page.getByTestId("room-mobile-sheet-close").click()
+    await page.getByTestId("room-mobile-overflow").click()
     await expect(page.getByTestId("room-mobile-sheet")).toHaveCount(0)
     await expect(page.getByTestId("room-stage")).toBeHidden()
     await expect(page.getByTestId("interaction-content")).toBeVisible()

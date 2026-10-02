@@ -211,7 +211,7 @@ describe("RoomContent — narrow-screen composition", () => {
       screen.getByTestId("room-stage-participants")
     )
 
-    fireEvent.click(screen.getByTestId("room-mobile-sheet-close"))
+    fireEvent.click(screen.getByTestId("room-mobile-overflow"))
     expect(screen.queryByTestId("room-mobile-sheet")).toBeNull()
     expect(classes(screen.getByTestId("room-stage"))).toContain("hidden")
     expect(screen.getByTestId("room-mobile-overflow")).toHaveTextContent(
@@ -331,7 +331,7 @@ describe("RoomContent — narrow-screen composition", () => {
     expect(classes(stage)).not.toContain("hidden")
   })
 
-  it("keeps secondary Room controls with the people-first surface", () => {
+  it("keeps compact secondary Room controls with the people-first surface", () => {
     window.innerWidth = PHONE_WIDTH
     renderRoom()
 
@@ -343,18 +343,36 @@ describe("RoomContent — narrow-screen composition", () => {
     // The default people-first surface reveals the one existing control row.
     expect(classes(toolbar)).toContain("grid")
     expect(classes(toolbar)).not.toContain("hidden")
+    expect(classes(toolbar)).toContain("grid-cols-2")
+    expect(classes(toolbar)).toContain("min-[520px]:grid-cols-4")
     expect(classes(mobileLeave)).toContain("inline-flex")
     expect(classes(mobileLeave)).not.toContain("hidden")
     expect(screen.getAllByRole("button", { name: "Copy link" })).toHaveLength(1)
+    expect(
+      screen.getByRole("button", { name: "Invite Agent" })
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole("button", { name: "Live Transcript" })
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole("button", { name: "Enable microphone" })
+    ).toBeInTheDocument()
+    expect(screen.getAllByRole("button", { name: "Leave" })).toHaveLength(2)
+    expect(screen.queryByRole("button", { name: "Room chat" })).toBeNull()
+    expect(screen.queryByTestId("room-mobile-sheet-close")).toBeNull()
+    const surfaceSwitch = screen.getByTestId("room-mobile-overflow")
+    expect(surfaceSwitch).toHaveTextContent("Room chat →")
+    expect(surfaceSwitch).toHaveAccessibleName("Open Room chat")
+    expect(surfaceSwitch).toHaveAttribute("title", "Open Room chat")
 
-    // Choosing Room chat hides that secondary chrome while preserving its DOM.
-    fireEvent.click(screen.getByTestId("room-mobile-sheet-close"))
+    // The header surface switch owns navigation out of the people sheet.
+    fireEvent.click(screen.getByTestId("room-mobile-overflow"))
     expect(classes(toolbar)).toContain("hidden")
     expect(classes(toolbar)).toContain("md:grid")
     expect(classes(mobileLeave)).toContain("hidden")
   })
 
-  it("closes the sheet with Escape and with its own close control", () => {
+  it("closes the sheet with Escape and the header surface switch", () => {
     window.innerWidth = PHONE_WIDTH
     renderRoom()
 
@@ -373,7 +391,7 @@ describe("RoomContent — narrow-screen composition", () => {
 
     fireEvent.click(screen.getByTestId("room-mobile-overflow"))
     expect(screen.getByTestId("room-mobile-sheet")).toBeInTheDocument()
-    fireEvent.click(screen.getByTestId("room-mobile-sheet-close"))
+    fireEvent.click(screen.getByTestId("room-mobile-overflow"))
     expect(screen.queryByTestId("room-mobile-sheet")).toBeNull()
     // The panel itself is never unmounted by closing the sheet.
     expect(screen.getByTestId("room-stage")).toBeInTheDocument()

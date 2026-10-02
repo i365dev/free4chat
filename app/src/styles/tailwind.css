@@ -1565,6 +1565,20 @@ html {
   .room-shell--live .room-header-toolbar > div > button {
     min-height: 34px;
   }
+  .room-shell--live .room-header-toolbar {
+    position: relative;
+  }
+  .room-shell--live .room-header-toolbar > div {
+    position: static;
+  }
+  .room-shell--live .room-header-toolbar .room-feature-popover {
+    top: calc(100% + 0.25rem);
+    right: 0;
+    left: 0;
+    width: 100%;
+    max-width: 100%;
+    transform: none;
+  }
   .room-shell--live [data-testid="room-mobile-sheet"] {
     background: #05100b;
   }

@@ -1989,6 +1989,9 @@ export default function RoomContent({
   // region instead of being trapped behind a closed sheet.
   const mobileSheetVisible =
     mobileRoomSheetOpen && !isMd && !isStageAppFullscreen
+  const mobileSheetReturnTask = taskProjections.find(
+    (task) => task.requestId === mobileSheetReturnInteraction
+  )
   const stagePanelVisible = mobileSheetVisible || isStageAppFullscreen
   // Decorative sky belongs to the participant scene only. Screen share,
   // resident Room Apps, generated Task Apps and Task Live View keep their own
@@ -2016,11 +2019,23 @@ export default function RoomContent({
     if (!mobileSheetVisible) return
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return
+      setMobileSheetReturnInteraction(null)
       setMobileRoomSheetOpen(false)
     }
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
   }, [mobileSheetVisible])
+
+  // Saved generated-App return targets must not survive navigation to another
+  // interaction while the people/Stage sheet is open.
+  useEffect(() => {
+    if (
+      mobileSheetReturnInteraction &&
+      activeInteraction !== mobileSheetReturnInteraction
+    ) {
+      setMobileSheetReturnInteraction(null)
+    }
+  }, [activeInteraction, mobileSheetReturnInteraction])
 
   useEffect(() => {
     // A Room App is a large visual surface like screen share, so it gets the
@@ -2484,18 +2499,45 @@ export default function RoomContent({
             aria-expanded={mobileSheetVisible}
             aria-label={
               mobileSheetVisible
-                ? "Open Room chat"
+                ? mobileSheetReturnTask
+                  ? "Open Task chat"
+                  : "Open Room chat"
                 : "Return to people and Stage"
             }
             title={
               mobileSheetVisible
-                ? "Open Room chat"
+                ? mobileSheetReturnTask
+                  ? "Open Task chat"
+                  : "Open Room chat"
                 : "Return to people and Stage"
             }
-            onClick={() => setMobileRoomSheetOpen((open) => !open)}
+            onClick={() => {
+              if (mobileSheetVisible) {
+                const returnToTask = taskProjections.some(
+                  (task) => task.requestId === mobileSheetReturnInteraction
+                )
+                setActiveInteraction(
+                  returnToTask && mobileSheetReturnInteraction
+                    ? mobileSheetReturnInteraction
+                    : "room"
+                )
+                setMobileSheetReturnInteraction(null)
+                setMobileRoomSheetOpen(false)
+              } else {
+                const activeTask = taskProjections.find(
+                  (task) => task.requestId === activeInteraction
+                )
+                setMobileSheetReturnInteraction(activeTask?.requestId ?? null)
+                setMobileRoomSheetOpen(true)
+              }
+            }}
             className="room-mobile-surface-switch shrink-0 rounded-md border border-gray-700 bg-gray-800 px-2.5 py-1 text-xs text-gray-300 hover:bg-gray-700 md:hidden"
           >
-            {mobileSheetVisible ? "Room chat →" : "← People & Stage"}
+            {mobileSheetVisible
+              ? mobileSheetReturnTask
+                ? "Task chat →"
+                : "Room chat →"
+              : "← People & Stage"}
           </button>
           <button
             type="button"
@@ -2523,7 +2565,7 @@ export default function RoomContent({
             data-testid="room-header-toolbar"
             className={`${
               mobileSheetVisible ? "grid" : "hidden md:grid"
-            } room-header-toolbar grid-cols-3 gap-2 lg:flex lg:items-center`}
+            } room-header-toolbar grid-cols-2 gap-1 min-[520px]:grid-cols-4 lg:flex lg:items-center`}
           >
             <button
               type="button"
@@ -2687,34 +2729,10 @@ export default function RoomContent({
           }
         >
           {mobileSheetVisible && (
-            <div className="flex flex-none items-center justify-between gap-2 border-b border-gray-800 bg-gray-950/80 px-3 py-2">
-              <span className="min-w-0 truncate text-xs uppercase tracking-wide text-gray-400">
+            <div className="flex flex-none items-center border-b border-gray-800 bg-gray-950/80 px-3 py-1.5">
+              <span className="min-w-0 truncate text-[11px] uppercase tracking-wide text-gray-400">
                 People in this Room
               </span>
-              <button
-                type="button"
-                data-testid="room-mobile-sheet-close"
-                onClick={() => {
-                  const returnToTask = taskProjections.some(
-                    (task) => task.requestId === mobileSheetReturnInteraction
-                  )
-                  setActiveInteraction(
-                    returnToTask && mobileSheetReturnInteraction
-                      ? mobileSheetReturnInteraction
-                      : "room"
-                  )
-                  setMobileSheetReturnInteraction(null)
-                  setMobileRoomSheetOpen(false)
-                }}
-                aria-label={
-                  mobileSheetReturnInteraction
-                    ? "Return to Task chat"
-                    : "Open Room chat"
-                }
-                className="shrink-0 rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700"
-              >
-                {mobileSheetReturnInteraction ? "Task chat" : "Room chat"}
-              </button>
             </div>
           )}
           {/* Room App focus mode is an ordinary Room layout state, not a
