@@ -101,7 +101,10 @@ describe("RoomSession Runtime participant transport association", () => {
     })
 
   const readySession = (room: any) => {
-    const session = new RoomSession({} as never, {} as never) as any
+    const session = new RoomSession(
+      {} as never,
+      { ROOM_APPS_ENABLED: "true" } as never
+    ) as any
     session.loadRoom = async () => room
     session.isExpired = () => false
     session.saveRoom = vi.fn(async () => undefined)
@@ -111,7 +114,10 @@ describe("RoomSession Runtime participant transport association", () => {
   }
 
   it("projects only the originating Task Agent, current Host, capability IDs, and ready Human sources", () => {
-    const session = new RoomSession({} as never, {} as never) as any
+    const session = new RoomSession(
+      {} as never,
+      { ROOM_APPS_ENABLED: "true" } as never
+    ) as any
     const state = session.projectRuntimeParticipantTransportState(
       makeRoom(),
       "resident"
@@ -135,8 +141,22 @@ describe("RoomSession Runtime participant transport association", () => {
     )
   })
 
+  it("does not project Generated App routes or Human sources when Room Apps are disabled", () => {
+    const session = new RoomSession(
+      {} as never,
+      { ROOM_APPS_ENABLED: "false" } as never
+    ) as any
+
+    expect(
+      session.projectRuntimeParticipantTransportState(makeRoom(), "resident")
+    ).toEqual({ routes: [], sources: [] })
+  })
+
   it("keeps source-backed Human routes when another Human disconnects or loses App readiness", () => {
-    const session = new RoomSession({} as never, {} as never) as any
+    const session = new RoomSession(
+      {} as never,
+      { ROOM_APPS_ENABLED: "true" } as never
+    ) as any
     const room: any = makeRoom()
     room.participants.bob = {
       id: "bob",
@@ -288,6 +308,7 @@ describe("RoomSession Runtime participant transport association", () => {
     room.liveTranscript = { active: false }
     room.participants.resident.connectionNonce = "resident-nonce"
     const session = readySession(room)
+    session.ctx.getWebSockets = () => []
     const publicResponse = await session.fetch(
       new Request("https://room/control", {
         method: "POST",
@@ -327,7 +348,10 @@ describe("RoomSession Runtime participant transport association", () => {
   })
 
   it("authorizes only the authenticated Human in the current Task/App Agent pair", async () => {
-    const session = new RoomSession({} as never, {} as never) as any
+    const session = new RoomSession(
+      {} as never,
+      { ROOM_APPS_ENABLED: "true" } as never
+    ) as any
     const room: any = makeRoom()
     room.participants.bob = {
       id: "bob",
@@ -420,7 +444,10 @@ describe("RoomSession Runtime participant transport association", () => {
   })
 
   it("does not accept capability operation payloads through the Human Room WebSocket", async () => {
-    const session = new RoomSession({} as never, {} as never) as any
+    const session = new RoomSession(
+      {} as never,
+      { ROOM_APPS_ENABLED: "true" } as never
+    ) as any
     const room = makeRoom()
     session.loadRoom = async () => room
     session.isExpired = () => false
@@ -455,7 +482,10 @@ describe("RoomSession Runtime participant transport association", () => {
   })
 
   it("keeps a live originating App route after Task completion and closes on Adapter capability loss", () => {
-    const session = new RoomSession({} as never, {} as never) as any
+    const session = new RoomSession(
+      {} as never,
+      { ROOM_APPS_ENABLED: "true" } as never
+    ) as any
     const room = makeRoom()
     room.messages.push({
       id: "task-complete",
@@ -489,7 +519,10 @@ describe("RoomSession Runtime participant transport association", () => {
   })
 
   it("does not expose the Runtime session identifier through participant info", () => {
-    const session = new RoomSession({} as never, {} as never) as any
+    const session = new RoomSession(
+      {} as never,
+      { ROOM_APPS_ENABLED: "true" } as never
+    ) as any
     const participant = {
       id: "resident",
       token: "secret",

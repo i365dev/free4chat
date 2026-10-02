@@ -2749,6 +2749,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     room: RoomRecord,
     participantId: string
   ): RuntimeParticipantTransportProjection {
+    if (this.env.ROOM_APPS_ENABLED !== "true")
+      return { routes: [], sources: [] }
     const agent = room.participants[participantId]
     if (agent?.kind !== "agent" || !agent.connected)
       return { routes: [], sources: [] }
