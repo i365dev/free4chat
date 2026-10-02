@@ -364,6 +364,60 @@ func (p RuntimeCapabilityProjection) Valid() bool {
 	return err == nil && len(wire) <= 1024
 }
 
+// AllowsRequest checks a bounded capability operation against the exact
+// semantic descriptor currently advertised by the local Runtime. A capability
+// ID alone does not authorize observe or invoke.
+func (p RuntimeCapabilityProjection) AllowsRequest(request ResidentCapabilityRequest) bool {
+	if !p.Valid() || request.CapabilityID != p.CapabilityID || !request.Valid() {
+		return false
+	}
+	switch request.Operation {
+	case ResidentCapabilityObserve:
+		return p.Observe
+	case ResidentCapabilityInvoke:
+		for _, action := range p.Actions {
+			if action.Name != request.Action {
+				continue
+			}
+			if request.Args == nil {
+				return false
+			}
+			for name := range request.Args {
+				if _, ok := action.Input.Properties[name]; !ok {
+					return false
+				}
+			}
+			for _, name := range action.Input.Required {
+				if _, ok := request.Args[name]; !ok {
+					return false
+				}
+			}
+			for name, value := range request.Args {
+				switch action.Input.Properties[name] {
+				case "string":
+					if _, ok := value.(string); !ok {
+						return false
+					}
+				case "number":
+					switch value.(type) {
+					case float64, float32, int, int32, int64, uint, uint32, uint64, json.Number:
+					default:
+						return false
+					}
+				case "boolean":
+					if _, ok := value.(bool); !ok {
+						return false
+					}
+				default:
+					return false
+				}
+			}
+			return true
+		}
+	}
+	return false
+}
+
 func validCapabilityText(value string, max int) bool {
 	if value == "" || len([]rune(value)) > max || strings.TrimSpace(value) != value || runtimeCapabilityURLPattern.MatchString(value) {
 		return false
@@ -1311,6 +1365,10 @@ type WaitResult struct {
 	// RoomApps is populated by the private resident event stream with current,
 	// bounded App discovery metadata. The public MCP contract is unchanged.
 	RoomApps []RoomAppProjection `json:"-"`
+	// RuntimeParticipantTransport is a private, bounded control-plane association for
+	// direct participant DataChannels. It contains no operation payloads and
+	// is excluded from the public Room/MCP projection.
+	RuntimeParticipantTransport RuntimeParticipantTransportProjection `json:"-"`
 	// RuntimeHosts (#176 Phase A): one coarse readiness projection per
 	// Runtime Host id present in the Room, shared by all same-host Agents.
 	RuntimeHosts map[string]RuntimeHostProjection
@@ -1336,9 +1394,84 @@ type WaitResult struct {
 	// never be answered into it. Like the other private frames it carries no
 	// cursor and never reaches the public wait_for_events projection.
 	TaskExecutionResync bool `json:"-"`
-	// CapabilityRequest is a private Room-to-Runtime control frame. It is never
-	// a Room event, task, Harness prompt, or public MCP result.
-	CapabilityRequest *ResidentCapabilityRequest `json:"-"`
+}
+
+// RuntimeParticipantTransportProjection is control-plane state only. Request and
+// result payloads travel over participant DataChannels, never through the
+// resident event stream or RoomSession RPC relay.
+type RuntimeParticipantTransportProjection struct {
+	Routes  []RuntimeParticipantTransportRoute  `json:"routes"`
+	Sources []RuntimeParticipantTransportSource `json:"sources"`
+}
+
+type RuntimeParticipantTransportRoute struct {
+	AppInstanceID      string   `json:"appInstanceId"`
+	BundleRevision     int64    `json:"bundleRevision"`
+	TaskRequestID      string   `json:"taskRequestId"`
+	AgentParticipantID string   `json:"agentParticipantId"`
+	HumanParticipantID string   `json:"humanParticipantId"`
+	RuntimeHostID      string   `json:"runtimeHostId"`
+	CapabilityIDs      []string `json:"capabilityIds"`
+}
+
+type RuntimeParticipantTransportSource struct {
+	ParticipantID string `json:"participantId"`
+	SessionID     string `json:"sessionId"`
+}
+
+var (
+	participantTransportAppIDPattern       = regexp.MustCompile(`^generated:[A-Za-z0-9_-]{1,64}$`)
+	participantTransportParticipantPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+	participantTransportSessionPattern     = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
+)
+
+func (p RuntimeParticipantTransportProjection) Valid() bool {
+	if len(p.Routes) > 8 || len(p.Sources) > 32 {
+		return false
+	}
+	routes := make(map[string]struct{}, len(p.Routes))
+	for _, route := range p.Routes {
+		if !participantTransportAppIDPattern.MatchString(route.AppInstanceID) ||
+			route.BundleRevision < 1 || route.TaskRequestID == "" ||
+			!validCapabilityText(route.TaskRequestID, MaxResidentTaskRequestID) ||
+			!participantTransportParticipantPattern.MatchString(route.AgentParticipantID) ||
+			!participantTransportParticipantPattern.MatchString(route.HumanParticipantID) ||
+			!ValidRuntimeHostID(route.RuntimeHostID) ||
+			len(route.CapabilityIDs) == 0 || len(route.CapabilityIDs) > 8 {
+			return false
+		}
+		if _, exists := routes[route.AppInstanceID]; exists {
+			return false
+		}
+		routes[route.AppInstanceID] = struct{}{}
+		seenCapabilities := make(map[string]struct{}, len(route.CapabilityIDs))
+		for _, id := range route.CapabilityIDs {
+			if !runtimeCapabilityIDPattern.MatchString(id) {
+				return false
+			}
+			if _, exists := seenCapabilities[id]; exists {
+				return false
+			}
+			seenCapabilities[id] = struct{}{}
+		}
+	}
+	sources := make(map[string]struct{}, len(p.Sources))
+	for _, source := range p.Sources {
+		if !participantTransportParticipantPattern.MatchString(source.ParticipantID) ||
+			!participantTransportSessionPattern.MatchString(source.SessionID) {
+			return false
+		}
+		if _, exists := sources[source.ParticipantID]; exists {
+			return false
+		}
+		sources[source.ParticipantID] = struct{}{}
+	}
+	for _, route := range p.Routes {
+		if _, exists := sources[route.HumanParticipantID]; !exists {
+			return false
+		}
+	}
+	return true
 }
 
 type ResidentCapabilityOperation string
@@ -1348,8 +1481,8 @@ const (
 	ResidentCapabilityInvoke  ResidentCapabilityOperation = "invoke"
 )
 
-// ResidentCapabilityRequest is delivered only on the authenticated private
-// resident transport and remains outside Room chat and Harness cognition.
+// ResidentCapabilityRequest is delivered only on the bounded participant
+// DataChannel transport and remains outside Room chat and Harness cognition.
 type ResidentCapabilityRequest struct {
 	RequestID     string                      `json:"requestId"`
 	RuntimeHostID string                      `json:"runtimeHostId"`
@@ -1377,32 +1510,6 @@ func (r ResidentCapabilityRequest) Valid() bool {
 	default:
 		return false
 	}
-}
-
-// ResidentCapabilityResult is correlated on the same current resident socket.
-// Errors are closed and never include local endpoint or controller details.
-type ResidentCapabilityResult struct {
-	Request ResidentCapabilityRequest `json:"-"`
-	OK      bool                      `json:"ok"`
-	Result  map[string]any            `json:"result,omitempty"`
-	Error   string                    `json:"error,omitempty"`
-}
-
-func (r ResidentCapabilityResult) Valid() bool {
-	if !r.Request.Valid() {
-		return false
-	}
-	if r.OK {
-		if r.Result == nil || r.Error != "" {
-			return false
-		}
-		if !safeCapabilityResultValue(r.Result, 0) {
-			return false
-		}
-		wire, err := json.Marshal(r.Result)
-		return err == nil && len(wire) <= 16*1024
-	}
-	return r.Result == nil && (r.Error == "unavailable" || r.Error == "invalid_request" || r.Error == "controller_error" || r.Error == "timeout")
 }
 
 func safeCapabilityResultValue(value any, depth int) bool {
@@ -1441,6 +1548,16 @@ func safeCapabilityResultValue(value any, depth int) bool {
 	default:
 		return false
 	}
+}
+
+// ResidentCapabilityResultPayloadValid enforces the bounded semantic result
+// contract before Runtime sends a value to any participant DataChannel.
+func ResidentCapabilityResultPayloadValid(value map[string]any) bool {
+	if value == nil || !safeCapabilityResultValue(value, 0) {
+		return false
+	}
+	wire, err := json.Marshal(value)
+	return err == nil && len(wire) <= 16*1024
 }
 
 // ResidentTaskControlKind is the closed set of private resident control
@@ -1822,13 +1939,6 @@ type ResidentEventStream interface {
 	Heartbeat(context.Context, int64) error
 	SendSessionResult(context.Context, ResidentSessionResult) error
 	Close() error
-}
-
-// ResidentCapabilityEventStream is the additive RPC extension for the same
-// resident WebSocket. The built-in client implements it; older injected test
-// and compatibility streams remain valid and fail this optional seam closed.
-type ResidentCapabilityEventStream interface {
-	SendCapabilityResult(context.Context, ResidentCapabilityResult) error
 }
 
 // ResidentCapabilityController is the narrow Runtime-local integration seam.

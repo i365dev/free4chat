@@ -701,6 +701,248 @@ describe("RoomSession expiry cleanup", () => {
     expect(current.participants.agent.connected).toBe(false)
   })
 
+  it("publishes transport invalidation before a connected resident replacement can reattach", async () => {
+    const NativeResponse = Response
+    class UpgradeResponse extends NativeResponse {
+      constructor(
+        body?: BodyInit | null,
+        init?: ResponseInit & { webSocket?: unknown }
+      ) {
+        if (init?.status === 101) {
+          super(null, { status: 200 })
+          Object.defineProperty(this, "status", { value: 101 })
+          ;(this as unknown as { webSocket?: unknown }).webSocket =
+            init.webSocket
+          return
+        }
+        super(body, init)
+      }
+    }
+    vi.stubGlobal("Response", UpgradeResponse)
+
+    const room = agentEventRoom()
+    const hostId = "11111111-2222-3333-4444-555555555555"
+    const appInstanceId = "generated:123e4567-e89b-12d3-a456-426614174000"
+    room.participants.agent.connected = false
+    room.participants.agent.runtimeHostId = hostId
+    room.participants.human.media = {
+      sessionId: "human-sfu-session",
+      appDataChannelReady: true,
+      muted: false,
+      fileChannelReady: true,
+      tracks: [],
+    }
+    room.runtimeHosts = {
+      [hostId]: {
+        runtimeHostId: hostId,
+        speech: { stt: false, tts: false },
+        capabilities: [
+          {
+            capabilityId: "printer_status",
+            title: "Printer status",
+            version: "1",
+            observe: true,
+            actions: [],
+          },
+        ],
+      },
+    }
+    room.messages = [
+      {
+        id: "task-message",
+        peerId: "human",
+        name: "Human",
+        kind: "human",
+        type: "action",
+        actionType: "collab",
+        createdAt: Date.now(),
+        sequence: 1,
+        collab: {
+          kind: "request",
+          requestId: "task-origin",
+          fromParticipantId: "human",
+          targetParticipantId: "agent",
+          summary: "Check device status",
+        },
+      },
+    ]
+    room.nextMessageSequence = 1
+    room.generatedApps = {
+      [appInstanceId]: {
+        appInstanceId,
+        taskRequestId: "task-origin",
+        title: "Status",
+        bundleBytes: 100,
+        bundleRevision: 2,
+        stateRevision: 0,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      },
+    }
+
+    const store = new Map<string, unknown>([["room", room]])
+    const humanSocket = new TestAgentEventSocket()
+    const sockets: TestAgentEventSocket[] = [humanSocket]
+    const tags = new Map<TestAgentEventSocket, string[]>()
+    const ctx = {
+      storage: {
+        get: async (key: string) => store.get(key),
+        put: async (key: string, value: unknown) => void store.set(key, value),
+        delete: async (keys: string | string[]) => {
+          for (const key of Array.isArray(keys) ? keys : [keys])
+            store.delete(key)
+        },
+        list: async () => new Map(),
+        setAlarm: async () => undefined,
+        deleteAlarm: async () => undefined,
+        getAlarm: async () => undefined,
+        deleteAll: async () => store.clear(),
+      },
+      getWebSockets: (tag?: string) =>
+        tag === undefined
+          ? sockets
+          : sockets.filter((socket) => tags.get(socket)?.includes(tag)),
+      acceptWebSocket: vi.fn(
+        (socket: TestAgentEventSocket, socketTags: string[]) => {
+          sockets.push(socket)
+          tags.set(socket, socketTags)
+        }
+      ),
+    }
+    const session = new RoomSession(
+      ctx as never,
+      { SFU_ROOM: {}, ROOM_APPS_ENABLED: "true" } as never
+    )
+    const first = {
+      0: new TestAgentEventSocket(),
+      1: new TestAgentEventSocket(),
+    }
+    const replacement = {
+      0: new TestAgentEventSocket(),
+      1: new TestAgentEventSocket(),
+    }
+    stubWebSocketPairs(first, replacement)
+    const request = () =>
+      new Request("https://room/agent-events", {
+        method: "GET",
+        headers: {
+          Upgrade: "websocket",
+          "X-Room-Participant-Id": "agent",
+          Authorization: "Bearer agent-token",
+          "X-Room-Cursor": "0",
+        },
+      })
+    const connect = () =>
+      (
+        session as unknown as {
+          handleAgentEventConnection: (request: Request) => Promise<Response>
+        }
+      ).handleAgentEventConnection(request())
+    const transportRequest = (action: string, sessionId: string) =>
+      new Request("https://room/control", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action,
+          participantId: "agent",
+          token: "agent-token",
+          sessionId,
+          ...(action.endsWith("ready") ? { ready: true } : {}),
+        }),
+      })
+
+    // A normal first resident connection still broadcasts Agent presence once.
+    expect((await connect()).status).toBe(101)
+    expect(humanSocket.sent).toHaveLength(1)
+    expect(
+      JSON.parse(humanSocket.sent[0]).state.participants.find(
+        (participant: { id: string }) => participant.id === "agent"
+      ).connected
+    ).toBe(true)
+
+    expect(
+      (
+        await session.fetch(
+          transportRequest(
+            "agent-participant-data-transport-attach",
+            "session-old"
+          )
+        )
+      ).status
+    ).toBe(200)
+    expect(
+      (
+        await session.fetch(
+          transportRequest(
+            "agent-participant-data-transport-ready",
+            "session-old"
+          )
+        )
+      ).status
+    ).toBe(200)
+    expect(
+      (store.get("room") as RoomRecord).participants.agent
+        .participantDataTransport
+    ).toEqual({ sessionId: "session-old", ready: true })
+    humanSocket.sent.length = 0
+
+    // Replacing a connected resident invalidates and broadcasts the old
+    // transport while preserving Agent presence.
+    expect((await connect()).status).toBe(101)
+    expect(first[1].closed).toContainEqual({ code: 4000, reason: "Replaced" })
+    let current = store.get("room") as RoomRecord
+    expect(current.participants.agent.connected).toBe(true)
+    expect(current.participants.agent.participantDataTransport).toBeUndefined()
+    expect(humanSocket.sent).toHaveLength(1)
+    const invalidatedState = JSON.parse(humanSocket.sent[0]).state
+    expect(
+      invalidatedState.participants.find(
+        (participant: { id: string }) => participant.id === "agent"
+      )
+    ).toMatchObject({ connected: true })
+    expect(
+      invalidatedState.participants.find(
+        (participant: { id: string }) => participant.id === "agent"
+      )
+    ).not.toHaveProperty("participantDataTransport")
+
+    // The replacement Runtime can attach and ready its new session normally.
+    expect(
+      (
+        await session.fetch(
+          transportRequest(
+            "agent-participant-data-transport-attach",
+            "session-fresh"
+          )
+        )
+      ).status
+    ).toBe(200)
+    expect(
+      (
+        await session.fetch(
+          transportRequest(
+            "agent-participant-data-transport-ready",
+            "session-fresh"
+          )
+        )
+      ).status
+    ).toBe(200)
+    current = store.get("room") as RoomRecord
+    expect(current.participants.agent.participantDataTransport).toEqual({
+      sessionId: "session-fresh",
+      ready: true,
+    })
+
+    // A late close from the replaced socket cannot clear fresh state.
+    await session.webSocketClose(first[1] as never, 4000, "Replaced", true)
+    current = store.get("room") as RoomRecord
+    expect(current.participants.agent.connected).toBe(true)
+    expect(current.participants.agent.participantDataTransport).toEqual({
+      sessionId: "session-fresh",
+      ready: true,
+    })
+  })
+
   // #406: the primary Room record now has its own serialized-byte budget, so a
   // multi-megabyte resident envelope can no longer be produced by any stored
   // state (the platform's own 128 KiB value limit made the old fixture

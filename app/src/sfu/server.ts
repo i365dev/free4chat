@@ -4,6 +4,10 @@ import {
   type AdmissionRateLimiter,
 } from "../common/admissionLimit"
 import { isAllowedOrigin } from "../common/origin"
+import {
+  isParticipantDirectReliableChannelForAgent,
+  participantDirectReliableChannelName,
+} from "../common/participantDataChannel"
 import { realtimeBaseUrl } from "../common/realtimeUrl"
 import {
   resolveSfuAppSecret,
@@ -101,6 +105,8 @@ function trackObjects(value: unknown): Array<Record<string, unknown>> | null {
 // Origin, since there's no demonstrated non-browser caller for them.
 const MISSING_ORIGIN_ALLOWED_ROUTES = new Set([
   "agent-session",
+  "agent-participant-data-session",
+  "agent-participant-data-ready",
   "agent-room-media",
   "agent-track-active",
   "tracks",
@@ -683,6 +689,76 @@ export async function handleSfuRequest(
     return json({ sessionId: session.sessionId })
   }
 
+  if (route === "agent-participant-data-session") {
+    if (request.method !== "POST")
+      return json({ error: "method_not_allowed" }, 405)
+    if (
+      !(await checkRateLimit(
+        request,
+        env,
+        "sfu:rl:agent-participant-data-session"
+      ))
+    )
+      return json({ error: "rate_limited" }, 429)
+    const body = await readBody(request)
+    if (!body) return badRequest("invalid_json")
+    const room = typeof body.room === "string" ? body.room : ""
+    const participantId =
+      typeof body.participantId === "string" ? body.participantId : ""
+    const token = typeof body.token === "string" ? body.token : ""
+    if (!room || !participantId || !token) return badRequest("missing_session")
+    // This is a participant data transport for an already-published Task App.
+    // Admission derives the exact Task/Agent/Host/capability association from
+    // Room state and deliberately does not depend on AGENT_MEDIA_ENABLED.
+    const admitted = await roomControl(env, room, {
+      action: "agent-participant-data-transport-admit",
+      participantId,
+      token,
+    })
+    if (!admitted.ok) return admitted
+    const upstream = await realtimeRequest(env, "/sessions/new", {
+      method: "POST",
+    })
+    if (!upstream.ok) return json({ error: "sfu_session_failed" }, 502)
+    const session = (await upstream.json()) as { sessionId?: string }
+    if (!session.sessionId) return json({ error: "sfu_session_invalid" }, 502)
+    const attached = await roomControl(env, room, {
+      action: "agent-participant-data-transport-attach",
+      participantId,
+      token,
+      sessionId: session.sessionId,
+    })
+    if (!attached.ok) return attached
+    return json({ sessionId: session.sessionId })
+  }
+
+  if (route === "agent-participant-data-ready") {
+    if (request.method !== "POST")
+      return json({ error: "method_not_allowed" }, 405)
+    const body = await readBody(request)
+    if (!body) return badRequest("invalid_json")
+    const room = typeof body.room === "string" ? body.room : ""
+    const participantId =
+      typeof body.participantId === "string" ? body.participantId : ""
+    const token = typeof body.token === "string" ? body.token : ""
+    const sessionId = typeof body.sessionId === "string" ? body.sessionId : ""
+    if (
+      !room ||
+      !participantId ||
+      !token ||
+      !sessionId ||
+      typeof body.ready !== "boolean"
+    )
+      return badRequest("invalid_transport_state")
+    return roomControl(env, room, {
+      action: "agent-participant-data-transport-ready",
+      participantId,
+      token,
+      sessionId,
+      ready: body.ready,
+    })
+  }
+
   if (route === "agent-room-media") {
     if (request.method !== "POST")
       return json({ error: "method_not_allowed" }, 405)
@@ -1171,6 +1247,87 @@ export async function handleSfuRequest(
     const sessionId = typeof body.sessionId === "string" ? body.sessionId : ""
     if (!room || !participantId || !token || !sessionId)
       return badRequest("missing_session")
+
+    if (body.transport === "participant-direct-reliable") {
+      if (route !== "datachannels/new")
+        return json({ error: "participant_direct_transport_forbidden" }, 403)
+      const channels = Array.isArray(body.dataChannels) ? body.dataChannels : []
+      if (!channels.length || channels.length > 32)
+        return badRequest("invalid_data_channel")
+      const authorizedChannels: Array<Record<string, unknown>> = []
+      for (const value of channels) {
+        if (!value || typeof value !== "object" || Array.isArray(value))
+          return badRequest("invalid_data_channel")
+        const channel = value as Record<string, unknown>
+        const peerParticipantId =
+          typeof channel.peerParticipantId === "string"
+            ? channel.peerParticipantId
+            : ""
+        const dataChannelName =
+          typeof channel.dataChannelName === "string"
+            ? channel.dataChannelName
+            : ""
+        let direction: "publish" | "subscribe"
+        let peerSessionId: string | undefined
+        if (
+          channel.location === "local" &&
+          channel.ordered === true &&
+          dataChannelName ===
+            participantDirectReliableChannelName(
+              participantId,
+              peerParticipantId
+            )
+        ) {
+          direction = "publish"
+        } else if (
+          channel.location === "remote" &&
+          channel.ordered === true &&
+          channel.waitForAck === true &&
+          channel.canReply === true &&
+          typeof channel.sessionId === "string" &&
+          isParticipantDirectReliableChannelForAgent(
+            dataChannelName,
+            peerParticipantId
+          )
+        ) {
+          direction = "subscribe"
+          peerSessionId = channel.sessionId
+        } else {
+          return json(
+            { error: "participant_direct_channel_shape_forbidden" },
+            403
+          )
+        }
+        const pairAuthorization = await roomControl(env, room, {
+          action: "authorize-participant-direct-datachannel",
+          participantId,
+          token,
+          sessionId,
+          peerParticipantId,
+          ...(peerSessionId ? { peerSessionId } : {}),
+          dataChannelName,
+          direction,
+        })
+        if (!pairAuthorization.ok) return pairAuthorization
+        const upstreamChannel = { ...channel }
+        delete upstreamChannel.peerParticipantId
+        authorizedChannels.push(upstreamChannel)
+      }
+      const upstream = await realtimeRequest(
+        env,
+        `/sessions/${encodeURIComponent(sessionId)}/datachannels/new`,
+        {
+          method: "POST",
+          body: JSON.stringify({ dataChannels: authorizedChannels }),
+        }
+      )
+      const responseBody = await upstream.text()
+      return new Response(responseBody, {
+        status: upstream.status,
+        headers: { "Content-Type": "application/json" },
+      })
+    }
+
     const auth = await authorize(
       env,
       room,
@@ -1198,8 +1355,9 @@ export async function handleSfuRequest(
       kind?: string
     }
     if (dataChannelCallerKind === "agent") {
-      if (route === "datachannels/new")
+      if (route === "datachannels/new") {
         return json({ error: "agent_datachannel_forbidden" }, 403)
+      }
       if (
         route === "datachannels/establish" &&
         !isServerEventsDataChannel(body.dataChannel)

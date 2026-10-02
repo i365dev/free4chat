@@ -78,6 +78,7 @@ import {
   participantsBucket,
   withAnalyticsRoomId,
 } from "../common/utils"
+import { initialTaskAgentParticipantId } from "../do/taskScope"
 import { useSfuChatRoom, type RoomMicState } from "../hooks/useSfuChatRoom"
 import { useTurnstile } from "../hooks/useTurnstile"
 import type { TaskExecutionProjection } from "../room/types"
@@ -658,6 +659,16 @@ export default function RoomContent({
       name: participant.name,
       kind: participant.kind,
     }))
+  )
+  // Generated Task routing uses the same canonical identity projection as
+  // Room Apps. In particular, LOCAL_PEER_ID has already been translated to
+  // effectiveLocalParticipantId here, and the local Human is omitted if that
+  // canonical id is unavailable.
+  const roomAppParticipantsById = Object.fromEntries(
+    roomAppParticipants.map((participant) => [
+      participant.participantId,
+      { id: participant.participantId, kind: participant.kind },
+    ])
   )
   const roomAppSelf = roomAppParticipants.find(
     (participant) => participant.participantId === effectiveLocalParticipantId
@@ -2941,6 +2952,20 @@ export default function RoomContent({
               {roomAppSelf &&
                 Object.values(generatedAppDocuments).map((document) => {
                   const publication = document.publication
+                  const originatingTask = taskProjections.find(
+                    (task) => task.requestId === publication.taskRequestId
+                  )
+                  const originatingAgentParticipantId = originatingTask
+                    ? initialTaskAgentParticipantId(
+                        {
+                          fromParticipantId:
+                            originatingTask.createdByParticipantId,
+                          targetParticipantId:
+                            originatingTask.targetParticipantId,
+                        },
+                        roomAppParticipantsById
+                      )
+                    : undefined
                   // Stage ownership, not the raw selection: the generated Task
                   // App is visible only while it owns the Stage, so a curated
                   // selection hides it instead of stacking beside it.
@@ -2974,6 +2999,10 @@ export default function RoomContent({
                         app={app}
                         appInstanceId={publication.appInstanceId}
                         generatedAppBundleRevision={publication.bundleRevision}
+                        generatedAppTaskRequestId={publication.taskRequestId}
+                        generatedAppAgentParticipantId={
+                          originatingAgentParticipantId
+                        }
                         requestGeneratedCapability={
                           requestGeneratedAppCapability
                         }

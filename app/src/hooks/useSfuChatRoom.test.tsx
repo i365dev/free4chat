@@ -2,6 +2,7 @@ import { act, renderHook, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { useSfuChatRoom } from "./useSfuChatRoom"
+import { participantDirectReliableChannelName } from "../common/participantDataChannel"
 import {
   EMPTY_ROOM_APP_CATALOG,
   roomAppInstanceId,
@@ -630,6 +631,215 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
     )
     expect(result.current.roomAppsEnabled).toBe(false)
     expect(result.current.error).toBe("")
+    unmount()
+  })
+
+  it("subscribes the private Agent-Human reliable lane and carries capability requests and results there", async () => {
+    const appInstanceId = "generated:123e4567-e89b-12d3-a456-426614174000"
+    const dataChannelCalls: Array<Record<string, unknown>> = []
+    fetchMock.mockImplementation(
+      (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString()
+        if (url.endsWith("/api/sfu/session"))
+          return jsonResponse({
+            participantId: "participant-1",
+            participantToken: "participant-token",
+            sessionId: "session-1",
+            expiresAt: Date.now() + 60 * 60 * 1000,
+            roomAppsEnabled: true,
+          })
+        if (url.endsWith("/api/sfu/datachannels/establish"))
+          return jsonResponse({})
+        if (url.endsWith("/api/sfu/datachannels/new")) {
+          const body = JSON.parse(String(init?.body ?? "{}")) as Record<
+            string,
+            unknown
+          >
+          dataChannelCalls.push(body)
+          const channels = Array.isArray(body.dataChannels)
+            ? body.dataChannels
+            : []
+          return jsonResponse({
+            dataChannels: channels.map((_, index) => ({ id: 20 + index })),
+          })
+        }
+        if (url.endsWith("/api/sfu/tracks"))
+          return localTrackResponse(init) ?? jsonResponse({})
+        return jsonResponse({})
+      }
+    )
+
+    const { result, unmount } = renderHook(() =>
+      useSfuChatRoom("agent-data-lane", "alice", "audio", {})
+    )
+    await waitFor(() => expect(lastFakeWebSocket).not.toBeNull())
+    act(() => lastFakeWebSocket?.onopen?.())
+    const sendAgentState = (ready: boolean) =>
+      act(() =>
+        lastFakeWebSocket?.onmessage?.({
+          data: JSON.stringify({
+            type: "state",
+            state: {
+              createdAt: 1,
+              expiresAt: Date.now() + 60 * 60 * 1000,
+              participants: [
+                {
+                  id: "participant-1",
+                  name: "Alice",
+                  kind: "human",
+                  connected: true,
+                  joinedAt: 1,
+                  lastSeenAt: 1,
+                  media: {
+                    sessionId: "session-1",
+                    muted: false,
+                    fileChannelReady: false,
+                    appDataChannelReady: true,
+                    tracks: [],
+                  },
+                },
+                {
+                  id: "agent-a",
+                  name: "Agent",
+                  kind: "agent",
+                  connected: true,
+                  joinedAt: 1,
+                  lastSeenAt: 1,
+                  participantDataTransport: {
+                    sessionId: "agent-data-session",
+                    ready,
+                  },
+                },
+              ],
+              messages: [],
+              attachments: [],
+              generatedApps: {
+                [appInstanceId]: {
+                  appInstanceId,
+                  taskRequestId: "task-a",
+                  title: "Status",
+                  bundleBytes: 100,
+                  bundleRevision: 3,
+                  stateRevision: 0,
+                  createdAt: 1,
+                  updatedAt: 1,
+                },
+              },
+              liveTranscript: { active: false },
+              liveTranscriptSegments: [],
+              meetingNotes: { active: false },
+              meetingNotesMediaAvailable: false,
+              agentVoice: {},
+              agentVoiceMediaAvailable: false,
+              roomAppsEnabled: true,
+            },
+          }),
+        })
+      )
+    sendAgentState(false)
+    expect(
+      dataChannelCalls.some(
+        (call) => call.publisherSessionId === "agent-data-session"
+      )
+    ).toBe(false)
+    sendAgentState(true)
+
+    const directChannelName = participantDirectReliableChannelName(
+      "agent-a",
+      "participant-1"
+    )
+    await waitFor(() =>
+      expect(
+        dataChannelCalls.some(
+          (call) =>
+            call.transport === "participant-direct-reliable" &&
+            Array.isArray(call.dataChannels) &&
+            (call.dataChannels[0] as { dataChannelName?: string })
+              .dataChannelName === directChannelName
+        )
+      ).toBe(true)
+    )
+    const directSubscription = dataChannelCalls.find(
+      (call) => call.transport === "participant-direct-reliable"
+    )
+    expect(directSubscription?.dataChannels).toEqual([
+      expect.objectContaining({
+        location: "remote",
+        peerParticipantId: "agent-a",
+        dataChannelName: directChannelName,
+        ordered: true,
+        waitForAck: true,
+        canReply: true,
+      }),
+    ])
+    const agentSubscriber = FakePeerConnection.dataChannels.find(
+      (channel) => channel.label === `${directChannelName}-subscriber`
+    )
+    expect(agentSubscriber).toBeDefined()
+
+    let capabilityResult!: ReturnType<
+      typeof result.current.requestGeneratedAppCapability
+    >
+    const timeoutSpy = vi.spyOn(globalThis, "setTimeout")
+    act(() => {
+      capabilityResult = result.current.requestGeneratedAppCapability({
+        appInstanceId,
+        bundleRevision: 3,
+        taskRequestId: "task-a",
+        agentParticipantId: "agent-a",
+        requestId: "request-1",
+        capabilityId: "printer_status",
+        operation: "observe",
+      })
+    })
+    expect(timeoutSpy.mock.calls.some(([, delay]) => delay === 12_000)).toBe(
+      true
+    )
+    timeoutSpy.mockRestore()
+    const localReliable = FakePeerConnection.dataChannels.find(
+      (channel) => channel.label === "room-app-reliable-participant-1"
+    )
+    await waitFor(() =>
+      expect(agentSubscriber?.send.mock.calls.length).toBeGreaterThanOrEqual(2)
+    )
+    expect(localReliable?.send).not.toHaveBeenCalled()
+    const outbound = agentSubscriber?.send.mock.calls
+      .filter(([wire]) => wire !== "ack")
+      .map(([wire]) => JSON.parse(String(wire)))
+      .find((message) => message.payload?.type === "runtime-capability-request")
+    expect(outbound).toBeDefined()
+    expect(outbound.payload.type).toBe("runtime-capability-request")
+    expect(
+      lastFakeWebSocket?.send.mock.calls.some(([wire]) =>
+        String(wire).includes("runtime-capability-request")
+      )
+    ).toBe(false)
+
+    act(() =>
+      agentSubscriber?.emit("message", {
+        data: JSON.stringify({
+          protocolVersion: 1,
+          appInstanceId,
+          lane: "reliable",
+          payload: {
+            type: "runtime-capability-result",
+            requestId: "request-1",
+            appInstanceId,
+            bundleRevision: 3,
+            taskRequestId: "task-a",
+            agentParticipantId: "agent-a",
+            capabilityId: "printer_status",
+            operation: "observe",
+            ok: true,
+            result: { state: "ready", acceptingJobs: true },
+          },
+        }),
+      })
+    )
+    await expect(capabilityResult!).resolves.toMatchObject({
+      ok: true,
+      result: { state: "ready", acceptingJobs: true },
+    })
     unmount()
   })
 

@@ -57,9 +57,13 @@ interface RoomAppHostProps {
   }) => boolean
   sharedState?: { revision: number; state: Record<string, unknown> }
   generatedAppBundleRevision?: number
+  generatedAppTaskRequestId?: string
+  generatedAppAgentParticipantId?: string
   requestGeneratedCapability?: (request: {
     appInstanceId: string
     bundleRevision: number
+    taskRequestId: string
+    agentParticipantId: string
     requestId: string
     capabilityId: string
     operation: RuntimeCapabilityOperation
@@ -116,6 +120,8 @@ export default function RoomAppHost({
   respondAgentRequest = NO_ROOM_APP_AGENT_RESPONSE,
   sharedState,
   generatedAppBundleRevision,
+  generatedAppTaskRequestId,
+  generatedAppAgentParticipantId,
   requestGeneratedCapability,
   sendGeneratedState,
   subscribeGeneratedState,
@@ -300,6 +306,8 @@ export default function RoomAppHost({
         if (
           app.source !== "generated" ||
           message.bundleRevision !== generatedBundleRevision ||
+          !generatedAppTaskRequestId ||
+          !generatedAppAgentParticipantId ||
           !requestGeneratedCapability
         ) {
           post({
@@ -315,7 +323,11 @@ export default function RoomAppHost({
           })
           return
         }
-        void requestGeneratedCapability(message).then(
+        void requestGeneratedCapability({
+          ...message,
+          taskRequestId: generatedAppTaskRequestId,
+          agentParticipantId: generatedAppAgentParticipantId,
+        }).then(
           (result) => {
             if (readyRef.current)
               post({
@@ -425,6 +437,8 @@ export default function RoomAppHost({
     participants,
     post,
     requestGeneratedCapability,
+    generatedAppTaskRequestId,
+    generatedAppAgentParticipantId,
     respondAgentRequest,
     self,
     setAgentHostReady,

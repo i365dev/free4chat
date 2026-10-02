@@ -122,6 +122,33 @@ func TestResidentEventStreamUsesHeadersAndDecodesEnvelope(t *testing.T) {
 	}
 }
 
+func TestResidentEventStreamRejectsCapabilityOperationFrames(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Errorf("accept resident stream: %v", err)
+			return
+		}
+		payload := []byte(`{"type":"runtime-capability-request","requestId":"request-a","capabilityId":"printer_status","operation":"observe"}`)
+		_ = conn.Write(context.Background(), websocket.MessageText, payload)
+	}))
+	t.Cleanup(server.Close)
+
+	client := New(server.URL + "/mcp")
+	stream, err := client.OpenResidentEventStream(
+		context.Background(), residentHandle("room-1", "agent-1", "private-token"), 0,
+	)
+	if err != nil {
+		t.Fatalf("open resident stream: %v", err)
+	}
+	defer stream.Close()
+	if _, err := stream.Receive(context.Background()); err == nil {
+		t.Fatal("resident event transport accepted a per-operation capability frame")
+	} else if protocolErr, ok := err.(*Error); !ok || protocolErr.Code != CodeToolError {
+		t.Fatalf("unexpected rejection for obsolete capability frame: %v", err)
+	}
+}
+
 func TestParseResidentRoomAppsFailsClosed(t *testing.T) {
 	entries := []json.RawMessage{
 		json.RawMessage(`{"appInstanceId":"test-app:0123abcd","appId":"test-app","title":"Test App","source":"curated","callable":false,"unavailableReason":"ambiguous_host"}`),
@@ -646,41 +673,6 @@ func TestResidentEventStreamDecodesPrivateSessionControl(t *testing.T) {
 		cancel.SessionControl.Kind != types.ResidentSessionControlCancel ||
 		cancel.SessionControl.TaskRequestID != "req-A-0001" {
 		t.Fatalf("private session cancel control mismatch: %+v", cancel.SessionControl)
-	}
-}
-
-func TestResidentEventStreamDecodesPrivateCapabilityRequest(t *testing.T) {
-	wait, err := receiveResidentFrame(t, map[string]any{
-		"type":          "runtime-capability-request",
-		"requestId":     "human-request-1",
-		"runtimeHostId": "host-route-1",
-		"capabilityId":  "fixture",
-		"operation":     "invoke",
-		"action":        "set-state",
-		"args":          map[string]any{"value": "on"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if wait.CapabilityRequest == nil || !wait.CapabilityRequest.Valid() {
-		t.Fatalf("private capability request not decoded: %+v", wait)
-	}
-	if wait.CapabilityRequest.RequestID != "human-request-1" || wait.CapabilityRequest.Operation != types.ResidentCapabilityInvoke || wait.CapabilityRequest.Args["value"] != "on" {
-		t.Fatalf("request correlation or args changed: %+v", wait.CapabilityRequest)
-	}
-	if len(wait.Events) != 0 || wait.Cursor != 0 {
-		t.Fatalf("capability request leaked into room event state: %+v", wait)
-	}
-	if _, err := receiveResidentFrame(t, map[string]any{
-		"type":          "runtime-capability-request",
-		"requestId":     "bad",
-		"runtimeHostId": "host-route-1",
-		"capabilityId":  "fixture",
-		"operation":     "invoke",
-		"action":        "set-state",
-		"args":          map[string]any{"value": strings.Repeat("x", 9000)},
-	}); err == nil {
-		t.Fatal("oversized args must be rejected")
 	}
 }
 

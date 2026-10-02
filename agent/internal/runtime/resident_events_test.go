@@ -7,7 +7,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -17,22 +16,20 @@ import (
 )
 
 type residentTestStream struct {
-	mu                sync.Mutex
-	results           chan types.WaitResult
-	closed            chan struct{}
-	closeOnce         sync.Once
-	heartbeats        chan int64
-	sessionResults    []types.ResidentSessionResult
-	capabilityResults chan types.ResidentCapabilityResult
-	receiveErr        error
+	mu             sync.Mutex
+	results        chan types.WaitResult
+	closed         chan struct{}
+	closeOnce      sync.Once
+	heartbeats     chan int64
+	sessionResults []types.ResidentSessionResult
+	receiveErr     error
 }
 
 func newResidentTestStream() *residentTestStream {
 	return &residentTestStream{
-		results:           make(chan types.WaitResult, 4),
-		closed:            make(chan struct{}),
-		heartbeats:        make(chan int64, 16),
-		capabilityResults: make(chan types.ResidentCapabilityResult, 4),
+		results:    make(chan types.WaitResult, 4),
+		closed:     make(chan struct{}),
+		heartbeats: make(chan int64, 16),
 	}
 }
 
@@ -58,66 +55,6 @@ func (s *residentTestStream) SendSessionResult(_ context.Context, result types.R
 	s.sessionResults = append(s.sessionResults, result)
 	s.mu.Unlock()
 	return nil
-}
-
-func (s *residentTestStream) SendCapabilityResult(_ context.Context, result types.ResidentCapabilityResult) error {
-	select {
-	case s.capabilityResults <- result:
-		return nil
-	case <-s.closed:
-		return errors.New("resident test stream closed")
-	}
-}
-
-type testRuntimeCapabilityController struct {
-	calls chan types.ResidentCapabilityRequest
-}
-
-func (c *testRuntimeCapabilityController) DescribeCapabilities() []types.RuntimeCapabilityProjection {
-	return nil
-}
-
-func (c *testRuntimeCapabilityController) HandleCapabilityRequest(_ context.Context, request types.ResidentCapabilityRequest) (map[string]any, error) {
-	c.calls <- request
-	return map[string]any{"value": "fixture-state"}, nil
-}
-
-func TestRuntimeCapabilityRPCUsesLocalCallbackWithoutHarnessTurn(t *testing.T) {
-	stream := newResidentTestStream()
-	controller := &testRuntimeCapabilityController{calls: make(chan types.ResidentCapabilityRequest, 1)}
-	rt := &ResidentRuntime{options: Options{CapabilityHandler: controller}}
-	rt.residentMu.Lock()
-	rt.resident = stream
-	rt.residentMu.Unlock()
-	request := &types.ResidentCapabilityRequest{
-		RequestID:     "human-request-1",
-		RuntimeHostID: "host-route-1",
-		CapabilityID:  "fixture",
-		Operation:     types.ResidentCapabilityObserve,
-	}
-	outcome, wake := rt.applyResidentFrame(stream, types.WaitResult{CapabilityRequest: request}, nil)
-	if outcome != residentFrameApplied || wake {
-		t.Fatalf("capability request must be consumed as direct control, got outcome=%v wake=%v", outcome, wake)
-	}
-	select {
-	case got := <-controller.calls:
-		if !reflect.DeepEqual(got, *request) {
-			t.Fatalf("request changed at local callback: %+v", got)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("local capability callback was not invoked")
-	}
-	select {
-	case result := <-stream.capabilityResults:
-		if !result.OK || result.Request.RequestID != request.RequestID || result.Result["value"] != "fixture-state" {
-			t.Fatalf("wrong correlated local result: %+v", result)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("Runtime did not return the correlated result on the same stream")
-	}
-	if rt.cursor != 0 {
-		t.Fatalf("direct control must not advance Room event cursor: %d", rt.cursor)
-	}
 }
 
 func (s *residentTestStream) Heartbeat(ctx context.Context, cursor int64) error {
@@ -196,7 +133,7 @@ func (c *residentTestClient) residentOpenSnapshot() (int, []int64, []string) {
 	return c.openCount, append([]int64(nil), c.openCursors...), append([]string(nil), c.openParticIDs...)
 }
 
-func TestResidentRuntimeUsesEventStreamAndSparseLeaseHeartbeat(t *testing.T) {
+func TestResidentRuntimeUsesEventStreamAndControlProjectionsDoNotWakeHarness(t *testing.T) {
 	stream := newResidentTestStream()
 	client := &residentTestClient{
 		fakeClient: &fakeClient{},
@@ -226,11 +163,29 @@ func TestResidentRuntimeUsesEventStreamAndSparseLeaseHeartbeat(t *testing.T) {
 			MediaAvailable: true,
 			MeetingNotes:   types.ResidentMeetingNotesState{Active: true, StartedAt: 7},
 		},
+		RuntimeParticipantTransport: types.RuntimeParticipantTransportProjection{
+			Routes: []types.RuntimeParticipantTransportRoute{{
+				AppInstanceID:      "generated:123e4567-e89b-12d3-a456-426614174000",
+				BundleRevision:     1,
+				TaskRequestID:      "task-origin",
+				AgentParticipantID: "agent-a",
+				HumanParticipantID: "human-a",
+				RuntimeHostID:      "11111111-2222-3333-4444-555555555555",
+				CapabilityIDs:      []string{"printer_status"},
+			}},
+			Sources: []types.RuntimeParticipantTransportSource{{ParticipantID: "human-a", SessionID: "human-session"}},
+		},
 		Cursor: 0, ExpiresAt: time.Now().Add(time.Hour).UnixMilli(),
 	}
 	time.Sleep(50 * time.Millisecond)
 	if got := adapter.sessionsInt(); got != 0 {
-		t.Fatalf("media-only resident state must not wake Harness, turns=%d", got)
+		t.Fatalf("media or participant transport control state must not wake Harness, turns=%d", got)
+	}
+	rt.mu.Lock()
+	transport := rt.participantTransport
+	rt.mu.Unlock()
+	if transport != nil {
+		t.Fatal("Runtime without a local capability handler must fail closed")
 	}
 	stream.results <- types.WaitResult{
 		Events: []types.RoomEvent{roomEvent(1, true)},

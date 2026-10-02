@@ -558,7 +558,7 @@ export function decodeRoomAppClientMessage(
     )
       return null
     const response = {
-      type: "generated-app-capability-request",
+      type: "runtime-capability-request",
       requestId: value.requestId,
       appInstanceId,
       bundleRevision: value.bundleRevision,

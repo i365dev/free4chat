@@ -413,6 +413,25 @@ describe("MCP admission throttle and pre-DO Room probe guard", () => {
     ).toEqual(runtimeHost)
   })
 
+  it("forwards an empty Runtime Host capability projection when an Adapter is removed", async () => {
+    const { callTool, roomBodies } = harness({})
+    const runtimeHost = {
+      runtimeHostId: "host-capability-123456",
+      speech: { stt: false, tts: false },
+    }
+
+    const result = await callTool("update_runtime_host", {
+      participantHandle: encodeForgedHandle("room-capability-123456"),
+      runtimeHost,
+    })
+
+    expect(result).not.toHaveProperty("error")
+    expect(
+      roomBodies.find(({ body }) => body.action === "agent-update-runtime-host")
+        ?.body.runtimeHost
+    ).toEqual(runtimeHost)
+  })
+
   it("rejects an abusive room_info probe before the Durable Object is contacted", async () => {
     const { keys, limiter } = fakeLimiter(false)
     const { callTool, roomCalls } = harness({

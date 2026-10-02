@@ -2,11 +2,13 @@ package runtime
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/i365dev/free4chat/agent/internal/media"
 	"github.com/i365dev/free4chat/agent/internal/types"
 )
 
@@ -173,6 +175,186 @@ func TestResidentStreamOwnershipFollowsInstallAndClear(t *testing.T) {
 	rt.clearResidentStream(streamB)
 	if rt.isCurrentResidentStream(streamB) {
 		t.Fatal("a cleared stream must not stay current")
+	}
+}
+
+type reconnectParticipantCapabilityHandler struct{}
+
+func (reconnectParticipantCapabilityHandler) DescribeCapabilities() []types.RuntimeCapabilityProjection {
+	return []types.RuntimeCapabilityProjection{{CapabilityID: "printer_status", Title: "Status", Version: "1", Observe: true, Actions: []types.RuntimeCapabilityAction{}}}
+}
+
+func (reconnectParticipantCapabilityHandler) HandleCapabilityRequest(context.Context, types.ResidentCapabilityRequest) (map[string]any, error) {
+	return map[string]any{"status": "ready"}, nil
+}
+
+type reconnectParticipantTransport struct {
+	started     chan struct{}
+	startDone   chan struct{}
+	allowReturn chan struct{}
+	startErr    error
+	startOnce   sync.Once
+	returnOnce  sync.Once
+	closeOnce   sync.Once
+	closed      chan struct{}
+	mu          sync.Mutex
+	closeCalls  int
+}
+
+func newReconnectParticipantTransport(blockStart bool) *reconnectParticipantTransport {
+	transport := &reconnectParticipantTransport{
+		started:   make(chan struct{}),
+		startDone: make(chan struct{}),
+		closed:    make(chan struct{}),
+	}
+	if blockStart {
+		transport.allowReturn = make(chan struct{})
+		transport.startErr = errors.New("stale participant transport start")
+	}
+	return transport
+}
+
+func (t *reconnectParticipantTransport) Start(context.Context, types.RuntimeParticipantTransportProjection) error {
+	t.startOnce.Do(func() { close(t.started) })
+	defer close(t.startDone)
+	if t.allowReturn != nil {
+		<-t.allowReturn
+	}
+	return t.startErr
+}
+
+func (t *reconnectParticipantTransport) Close() {
+	t.mu.Lock()
+	t.closeCalls++
+	first := t.closeCalls == 1
+	t.mu.Unlock()
+	if first {
+		t.closeOnce.Do(func() { close(t.closed) })
+	}
+}
+
+func (t *reconnectParticipantTransport) closeCallCount() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.closeCalls
+}
+
+func (t *reconnectParticipantTransport) allowStartReturn() {
+	if t.allowReturn != nil {
+		t.returnOnce.Do(func() { close(t.allowReturn) })
+	}
+}
+
+func TestResidentStreamReplacementRebuildsSameParticipantTransportProjection(t *testing.T) {
+	rt, adapter := newResidentFenceRuntime(t)
+	rt.options.CapabilityHandler = reconnectParticipantCapabilityHandler{}
+	rt.options.SiteOrigin = "https://example.invalid"
+	rt.mu.Lock()
+	rt.participantID = "agent-a"
+	rt.participantHandle = base64.RawURLEncoding.EncodeToString([]byte(`{"room":"room","participantId":"agent-a","participantToken":"test-token"}`))
+	rt.mu.Unlock()
+	oldTransport := newReconnectParticipantTransport(true)
+	newTransport := newReconnectParticipantTransport(false)
+	defer func() {
+		oldTransport.allowStartReturn()
+		select {
+		case <-oldTransport.started:
+			<-oldTransport.startDone
+		default:
+		}
+		rt.Stop()
+	}()
+	factories := []*reconnectParticipantTransport{oldTransport, newTransport}
+	rt.participantTransportFactory = func(media.DecodedHandle) participantDataTransport {
+		if len(factories) == 0 {
+			t.Fatal("replacement projection created more than one fresh transport")
+		}
+		transport := factories[0]
+		factories = factories[1:]
+		return transport
+	}
+
+	projection := types.RuntimeParticipantTransportProjection{
+		Routes: []types.RuntimeParticipantTransportRoute{{
+			AppInstanceID:      "generated:123e4567-e89b-12d3-a456-426614174000",
+			BundleRevision:     1,
+			TaskRequestID:      "task-origin",
+			AgentParticipantID: "agent-a",
+			HumanParticipantID: "human-a",
+			RuntimeHostID:      "11111111-2222-3333-4444-555555555555",
+			CapabilityIDs:      []string{"printer_status"},
+		}},
+		Sources: []types.RuntimeParticipantTransportSource{{ParticipantID: "human-a", SessionID: "human-session"}},
+	}
+	result := types.WaitResult{RuntimeParticipantTransport: projection}
+	streamA := newResidentTestStream()
+	defer streamA.Close()
+	if !rt.setResidentStream(streamA) {
+		t.Fatal("initial resident stream was not installed")
+	}
+	if outcome, wake := rt.applyResidentFrame(streamA, result, nil); outcome != residentFrameApplied || wake {
+		t.Fatalf("initial projection result = (%v, %v), want applied without Harness wake", outcome, wake)
+	}
+	select {
+	case <-oldTransport.started:
+	case <-time.After(time.Second):
+		t.Fatal("initial participant transport did not start")
+	}
+	rt.mu.Lock()
+	initial := rt.participantTransport
+	rt.mu.Unlock()
+	if initial != oldTransport {
+		t.Fatal("Runtime did not retain the transport for the initial projection")
+	}
+
+	streamB := newResidentTestStream()
+	if !rt.setResidentStream(streamB) {
+		t.Fatal("replacement resident stream was not installed")
+	}
+	select {
+	case <-oldTransport.closed:
+	case <-time.After(time.Second):
+		t.Fatal("resident stream replacement did not close the old participant transport")
+	}
+	rt.mu.Lock()
+	if rt.participantTransport != nil || rt.participantTransportProjection != "" {
+		rt.mu.Unlock()
+		t.Fatal("resident stream replacement retained the old transport or projection signature")
+	}
+	rt.mu.Unlock()
+
+	if outcome, wake := rt.applyResidentFrame(streamB, result, nil); outcome != residentFrameApplied || wake {
+		t.Fatalf("replayed projection result = (%v, %v), want applied without Harness wake", outcome, wake)
+	}
+	select {
+	case <-newTransport.started:
+	case <-time.After(time.Second):
+		t.Fatal("same projection on the replacement stream did not start a fresh participant transport")
+	}
+
+	// Let the stale asynchronous Start fail only after the fresh transport is
+	// installed. Its completion must not clear or replace the new generation.
+	oldTransport.allowStartReturn()
+	select {
+	case <-oldTransport.startDone:
+	case <-time.After(time.Second):
+		t.Fatal("stale participant transport Start did not finish")
+	}
+	waitFor(t, time.Second, func() bool { return oldTransport.closeCallCount() >= 2 }, "stale participant transport failure cleanup")
+	rt.mu.Lock()
+	current, signature := rt.participantTransport, rt.participantTransportProjection
+	rt.mu.Unlock()
+	if current != newTransport || signature == "" {
+		t.Fatal("stale Start completion cleared or replaced the fresh participant transport")
+	}
+	if len(factories) != 0 {
+		t.Fatalf("created %d participant transports, want exactly initial and fresh", 2-len(factories))
+	}
+	_, turns := adapter.scopedRunSnapshot()
+	for scope, runs := range turns {
+		if len(runs) != 0 {
+			t.Fatalf("participant transport projection created Harness turns for %q: %v", scope, runs)
+		}
 	}
 }
 

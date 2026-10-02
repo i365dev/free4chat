@@ -31,6 +31,11 @@ const (
 
 const roomScope = "room"
 
+const (
+	participantTransportRetryInitialDelay = 250 * time.Millisecond
+	participantTransportRetryMaxDelay     = 4 * time.Second
+)
+
 var errTaskTextUnsupported = errors.New("task-scoped text transport is unavailable")
 
 // logicalSessionState is Runtime-local cognition state for one logical
@@ -175,9 +180,10 @@ type Options struct {
 	// Room-selected Live Transcript Runtime Host. Nil disables the optional
 	// producer path fail-closed while preserving text and legacy media.
 	TranscriptProducers media.LiveTranscriptCoordinator
-	// CapabilityHandler is the Runtime-local seam for bounded capability RPCs
-	// initiated by Generated Task Apps. It is independent of Harness execution
-	// and never enters a Harness prompt. Nil fails closed.
+	// CapabilityHandler is the Runtime-local seam for bounded capability calls
+	// initiated by Generated Task Apps over the participant DataChannel. It is
+	// independent of Harness execution and never enters a Harness prompt. Nil
+	// fails closed.
 	CapabilityHandler types.ResidentCapabilityController
 	// TaskSessionContinuation is the launcher-registry PRODUCT policy for
 	// continuing an existing native Harness session from the Room Start Task
@@ -201,6 +207,13 @@ type Options struct {
 	// exists only so the bounded-concurrency cost probe can be reproduced
 	// against a real Runtime; it is never a product control.
 	TurnLaneOverride int
+}
+
+// participantDataTransport is the Runtime's narrow lifecycle boundary for its
+// media-free Agent participant DataChannel connection.
+type participantDataTransport interface {
+	Start(context.Context, types.RuntimeParticipantTransportProjection) error
+	Close()
 }
 
 // ResidentRuntime owns exactly one Free4Chat participant across many Harness
@@ -334,8 +347,15 @@ type ResidentRuntime struct {
 	residentMu  sync.Mutex
 	resident    types.ResidentEventStream
 
-	mediaController *media.Controller
-	mediaMu         sync.Mutex
+	mediaController                *media.Controller
+	participantTransport           participantDataTransport
+	participantTransportProjection string
+	participantTransportGeneration uint64
+	participantTransportRetryTimer *time.Timer
+	participantTransportRetryCount int
+	participantTransportRetryDelay func(attempt int) time.Duration
+	participantTransportFactory    func(media.DecodedHandle) participantDataTransport
+	mediaMu                        sync.Mutex
 	// residentMediaStateApplyMu serializes cache changes with their Controller
 	// application. It is held across the apply call so a replay cannot take a
 	// stale snapshot, yield to revocation, and then re-enable media afterward.
@@ -524,6 +544,9 @@ func NewResidentRuntime(options Options) *ResidentRuntime {
 		taskSessionSessions:  make(map[string]taskSessionSelection),
 		taskSessionProjects:  make(map[string]taskSessionProject),
 		taskSessionPages:     make(map[string]taskSessionPage),
+	}
+	runtime.participantTransportFactory = func(handle media.DecodedHandle) participantDataTransport {
+		return media.NewRuntimeParticipantTransport(options.SiteOrigin, handle, options.CapabilityHandler, runtime.log)
 	}
 	runtime.turnIdleCond = sync.NewCond(&runtime.mu)
 	configurePermissionResponder(runtime)
@@ -1147,15 +1170,6 @@ func (r *ResidentRuntime) applyResidentFrame(
 		r.dispatchSessionControl(stream, result.SessionControl)
 		return residentFrameApplied, false
 	}
-	if result.CapabilityRequest != nil {
-		if !r.isCurrentResidentStream(stream) {
-			return residentFrameDropped, false
-		}
-		// Human capability calls are deterministic control requests. Dispatch
-		// them separately from Task scheduling and Harness turn admission.
-		r.dispatchCapabilityRequest(stream, result.CapabilityRequest)
-		return residentFrameApplied, false
-	}
 	if result.TaskControl != nil {
 		if !r.isCurrentResidentStream(stream) {
 			return residentFrameDropped, false
@@ -1203,53 +1217,6 @@ func (r *ResidentRuntime) applyResidentFrame(
 	return residentFrameApplied, wake
 }
 
-func (r *ResidentRuntime) dispatchCapabilityRequest(
-	stream types.ResidentEventStream,
-	request *types.ResidentCapabilityRequest,
-) {
-	if request == nil || !request.Valid() {
-		return
-	}
-	writer, ok := stream.(types.ResidentCapabilityEventStream)
-	if !ok {
-		return
-	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		defer cancel()
-		response := types.ResidentCapabilityResult{Request: *request}
-		handler := r.options.CapabilityHandler
-		if handler == nil {
-			response.Error = "unavailable"
-		} else {
-			result, err := handler.HandleCapabilityRequest(ctx, *request)
-			if err != nil {
-				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-					response.Error = "timeout"
-				} else {
-					response.Error = "controller_error"
-				}
-			} else {
-				response.OK = true
-				response.Result = result
-			}
-		}
-		if !response.Valid() {
-			response.OK = false
-			response.Result = nil
-			response.Error = "controller_error"
-		}
-		if !r.isCurrentResidentStream(stream) {
-			return
-		}
-		if err := writer.SendCapabilityResult(ctx, response); err != nil {
-			r.log("runtime_capability_result_failed", map[string]string{
-				"operation": string(request.Operation),
-			})
-		}
-	}()
-}
-
 func (r *ResidentRuntime) setResidentStream(
 	stream types.ResidentEventStream,
 ) bool {
@@ -1258,10 +1225,28 @@ func (r *ResidentRuntime) setResidentStream(
 		r.mu.Unlock()
 		return false
 	}
+	// Replacing the private Room stream is also a participant-transport
+	// generation boundary. The Room clears its transient ready projection as
+	// soon as the resident socket is replaced, so the next stream must rebuild
+	// the same Runtime-side DataChannel transport even when its routes match.
+	// Detach under the Runtime lock, but do bounded network/Pion teardown only
+	// after releasing every Runtime lock.
+	r.participantTransportGeneration++
+	if r.participantTransportRetryTimer != nil {
+		r.participantTransportRetryTimer.Stop()
+		r.participantTransportRetryTimer = nil
+	}
+	r.participantTransportRetryCount = 0
+	participantTransport := r.participantTransport
+	r.participantTransport = nil
+	r.participantTransportProjection = ""
 	r.residentMu.Lock()
 	r.resident = stream
 	r.residentMu.Unlock()
 	r.mu.Unlock()
+	if participantTransport != nil {
+		participantTransport.Close()
+	}
 	r.resetActivityLocal()
 	return true
 }
@@ -1345,6 +1330,7 @@ func (r *ResidentRuntime) advanceFromWait(result types.WaitResult) {
 	// processed outside the Runtime event queue so a grant transition never
 	// wakes or creates a Harness turn.
 	r.observeResidentMediaState(result.MediaState)
+	r.observeRuntimeParticipantTransport(result.RuntimeParticipantTransport)
 
 	// Deduplicate within the envelope as well as against the prior transport
 	// receipt boundary. This map is intentionally envelope-local: the monotonic
@@ -1373,6 +1359,133 @@ func (r *ResidentRuntime) advanceFromWait(result types.WaitResult) {
 		r.cursor = result.Cursor
 	}
 	r.mu.Unlock()
+}
+
+// observeRuntimeParticipantTransport consumes Room state out of band. It never enters
+// the Harness event queue and never starts a Harness turn.
+func (r *ResidentRuntime) observeRuntimeParticipantTransport(projection types.RuntimeParticipantTransportProjection) {
+	encoded, err := json.Marshal(projection)
+	if err != nil {
+		return
+	}
+	signature := string(encoded)
+	r.mu.Lock()
+	if r.stopped {
+		r.mu.Unlock()
+		return
+	}
+	if signature == r.participantTransportProjection {
+		r.mu.Unlock()
+		return
+	}
+	r.participantTransportGeneration++
+	generation := r.participantTransportGeneration
+	if r.participantTransportRetryTimer != nil {
+		r.participantTransportRetryTimer.Stop()
+		r.participantTransportRetryTimer = nil
+	}
+	r.participantTransportRetryCount = 0
+	old := r.participantTransport
+	r.participantTransport = nil
+	r.participantTransportProjection = signature
+	handleText := r.participantHandle
+	r.mu.Unlock()
+	if old != nil {
+		old.Close()
+	}
+	if len(projection.Routes) == 0 || !projection.Valid() || r.options.CapabilityHandler == nil || r.options.SiteOrigin == "" {
+		return
+	}
+	r.startRuntimeParticipantTransport(projection, signature, generation, handleText)
+}
+
+func (r *ResidentRuntime) startRuntimeParticipantTransport(
+	projection types.RuntimeParticipantTransportProjection,
+	signature string,
+	generation uint64,
+	handleText string,
+) {
+	r.mu.Lock()
+	if r.stopped || r.participantTransportGeneration != generation ||
+		r.participantTransportProjection != signature || r.participantTransport != nil {
+		r.mu.Unlock()
+		return
+	}
+	factory := r.participantTransportFactory
+	r.mu.Unlock()
+	if factory == nil {
+		return
+	}
+	handle, err := media.DecodeParticipantHandle(handleText)
+	if err != nil {
+		return
+	}
+	transport := factory(handle)
+	if transport == nil {
+		return
+	}
+	r.mu.Lock()
+	if r.stopped || r.participantTransportGeneration != generation ||
+		r.participantTransportProjection != signature || r.participantTransport != nil {
+		r.mu.Unlock()
+		transport.Close()
+		return
+	}
+	r.participantTransport = transport
+	r.mu.Unlock()
+	go func() {
+		if err := transport.Start(context.Background(), projection); err != nil {
+			r.log("runtime_participant_transport_unavailable", map[string]string{"reason": "transport_setup_failed"})
+			transport.Close()
+			r.mu.Lock()
+			if r.participantTransport == transport && !r.stopped &&
+				r.participantTransportGeneration == generation &&
+				r.participantTransportProjection == signature {
+				r.participantTransport = nil
+				r.scheduleRuntimeParticipantTransportRetryLocked(projection, signature, generation, handleText)
+			}
+			r.mu.Unlock()
+		}
+	}()
+}
+
+func (r *ResidentRuntime) scheduleRuntimeParticipantTransportRetryLocked(
+	projection types.RuntimeParticipantTransportProjection,
+	signature string,
+	generation uint64,
+	handleText string,
+) {
+	if r.stopped || r.participantTransportGeneration != generation ||
+		r.participantTransportProjection != signature || r.participantTransport != nil ||
+		r.participantTransportRetryTimer != nil {
+		return
+	}
+	r.participantTransportRetryCount++
+	attempt := r.participantTransportRetryCount
+	delay := participantTransportRetryInitialDelay
+	for i := 1; i < attempt && delay < participantTransportRetryMaxDelay; i++ {
+		delay *= 2
+	}
+	if delay > participantTransportRetryMaxDelay {
+		delay = participantTransportRetryMaxDelay
+	}
+	if r.participantTransportRetryDelay != nil {
+		delay = r.participantTransportRetryDelay(attempt)
+	}
+	if delay <= 0 {
+		delay = time.Millisecond
+	}
+	r.participantTransportRetryTimer = time.AfterFunc(delay, func() {
+		r.mu.Lock()
+		if r.stopped || r.participantTransportGeneration != generation ||
+			r.participantTransportProjection != signature || r.participantTransport != nil {
+			r.mu.Unlock()
+			return
+		}
+		r.participantTransportRetryTimer = nil
+		r.mu.Unlock()
+		r.startRuntimeParticipantTransport(projection, signature, generation, handleText)
+	})
 }
 
 func (r *ResidentRuntime) acceptEvent(event types.RoomEvent) {
@@ -2534,6 +2647,12 @@ func (r *ResidentRuntime) beginStop(lastError string) bool {
 	r.cleanupOnce.Do(func() {
 		r.mu.Lock()
 		r.stopped = true
+		r.participantTransportGeneration++
+		if r.participantTransportRetryTimer != nil {
+			r.participantTransportRetryTimer.Stop()
+			r.participantTransportRetryTimer = nil
+		}
+		r.participantTransportRetryCount = 0
 		r.admissionsClosed = true
 		r.state = StateStopped
 		if lastError != "" {
@@ -2557,6 +2676,20 @@ func (r *ResidentRuntime) beginStop(lastError string) bool {
 // releaseResources mirrors the Node cleanupResources ordering: media first
 // (bounded teardown), then the lease, then Harness/client.
 func (r *ResidentRuntime) releaseResources() {
+	r.mu.Lock()
+	r.participantTransportGeneration++
+	if r.participantTransportRetryTimer != nil {
+		r.participantTransportRetryTimer.Stop()
+		r.participantTransportRetryTimer = nil
+	}
+	r.participantTransportRetryCount = 0
+	participantTransport := r.participantTransport
+	r.participantTransport = nil
+	r.participantTransportProjection = ""
+	r.mu.Unlock()
+	if participantTransport != nil {
+		participantTransport.Close()
+	}
 	r.residentMediaStateApplyMu.Lock()
 	defer r.residentMediaStateApplyMu.Unlock()
 	r.mediaMu.Lock()

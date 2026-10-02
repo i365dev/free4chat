@@ -56,16 +56,21 @@ func TestRuntimeCapabilityProjectionAndRpcBounds(t *testing.T) {
 	}
 
 	request.Args = map[string]any{"value": "on"}
-	result := ResidentCapabilityResult{Request: request, OK: true, Result: map[string]any{"state": "on"}}
-	if !result.Valid() {
-		t.Fatal("bounded semantic result rejected")
+	transportProjection := RuntimeParticipantTransportProjection{
+		Routes: []RuntimeParticipantTransportRoute{{
+			AppInstanceID:  "generated:123e4567-e89b-12d3-a456-426614174000",
+			BundleRevision: 2, TaskRequestID: "task-origin", AgentParticipantID: "agent-a",
+			HumanParticipantID: "human-a",
+			RuntimeHostID:      "host-route-1", CapabilityIDs: []string{"fixture"},
+		}},
+		Sources: []RuntimeParticipantTransportSource{{ParticipantID: "human-a", SessionID: "human-session-1"}},
 	}
-	result.Result = map[string]any{"credential": "secret"}
-	if result.Valid() {
-		t.Fatal("credential entered the Human result")
+	if !transportProjection.Valid() {
+		t.Fatal("bounded participant transport association rejected")
 	}
-	result.Result = map[string]any{"state": strings.Repeat("x", 17*1024)}
-	if result.Valid() {
-		t.Fatal("oversized capability result accepted")
+	transportProjection.Sources[0].SessionID = "https://local.invalid/session"
+	if transportProjection.Valid() {
+		t.Fatal("unbounded session metadata accepted")
 	}
+
 }

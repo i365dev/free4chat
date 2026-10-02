@@ -62,8 +62,8 @@ function connectedAgent(
  * Agent after the original endpoint disconnects.
  */
 export function initialTaskAgentParticipantId(
-  request: CollabEvent,
-  participants: Record<string, RoomParticipant>
+  request: Pick<CollabEvent, "fromParticipantId" | "targetParticipantId">,
+  participants: Record<string, Pick<RoomParticipant, "id" | "kind">>
 ): string | undefined {
   const target = participants[request.targetParticipantId]
   if (!target) return undefined
