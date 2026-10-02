@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -90,6 +91,54 @@ func TestRuntimeParticipantTransportUsesBoundedParticipantFrames(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("Runtime did not return the bounded result on its participant lane")
+	}
+}
+
+func TestRuntimeParticipantTransportReturnsBoundedErrorForEnvelopeOversizeResult(t *testing.T) {
+	channel := &capabilityTestChannel{payloads: make(chan []byte, 1)}
+	transport := NewRuntimeParticipantTransport("https://example.invalid", DecodedHandle{ParticipantID: "agent-a"}, nil, nil)
+	route := types.RuntimeParticipantTransportRoute{
+		AppInstanceID:  "generated:123e4567-e89b-12d3-a456-426614174000",
+		BundleRevision: 2, TaskRequestID: "task-a", AgentParticipantID: "agent-a",
+		HumanParticipantID: "human-a", RuntimeHostID: "host-route-1",
+		CapabilityIDs: []string{"printer_status"},
+	}
+	request := capabilityFrame{
+		RequestID: "request-a", CapabilityID: "printer_status",
+		Operation: types.ResidentCapabilityObserve,
+	}
+	largeResult := map[string]any{
+		"items": []any{
+			strings.Repeat("a", 4000),
+			strings.Repeat("b", 4000),
+			strings.Repeat("c", 4000),
+			strings.Repeat("d", 4000),
+		},
+	}
+	if !types.ResidentCapabilityResultPayloadValid(largeResult) {
+		t.Fatal("test result must satisfy the documented semantic payload limit")
+	}
+	transport.sendResult(channel, route, request, "", largeResult)
+
+	select {
+	case wire := <-channel.payloads:
+		if len(wire) > capabilityPayloadLimit {
+			t.Fatalf("sent envelope has %d bytes, over the %d-byte limit", len(wire), capabilityPayloadLimit)
+		}
+		var envelope roomAppEnvelope
+		var result capabilityFrame
+		if err := json.Unmarshal(wire, &envelope); err != nil {
+			t.Fatalf("decode result envelope: %v", err)
+		}
+		if err := json.Unmarshal(envelope.Payload, &result); err != nil {
+			t.Fatalf("decode capability result: %v", err)
+		}
+		if result.Type != capabilityResultFrame || result.RequestID != request.RequestID ||
+			result.OK || result.Error != "controller_error" || result.Result != nil {
+			t.Fatalf("oversize result did not become a bounded correlated error: %+v", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("oversize success was silently dropped instead of returning a bounded failure")
 	}
 }
 

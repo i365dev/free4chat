@@ -464,11 +464,27 @@ func (t *RuntimeParticipantTransport) sendResult(out reliableParticipantDataChan
 	} else {
 		result.OK = true
 	}
-	payload, err := json.Marshal(result)
+	encode := func() ([]byte, error) {
+		payload, err := json.Marshal(result)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(roomAppEnvelope{ProtocolVersion: 1, AppInstanceID: route.AppInstanceID, Lane: "reliable", Payload: payload})
+	}
+	wire, err := encode()
 	if err != nil {
 		return
 	}
-	wire, err := json.Marshal(roomAppEnvelope{ProtocolVersion: 1, AppInstanceID: route.AppInstanceID, Lane: "reliable", Payload: payload})
+	if len(wire) > capabilityPayloadLimit && failure == "" {
+		// The semantic payload limit does not include the Runtime capability
+		// frame or Room App envelope. Preserve the request correlation with a
+		// bounded failure frame instead of silently dropping an oversized
+		// successful result and making the browser time out.
+		result.OK = false
+		result.Result = nil
+		result.Error = "controller_error"
+		wire, err = encode()
+	}
 	if err != nil || len(wire) > capabilityPayloadLimit || !out.Ready() {
 		return
 	}
