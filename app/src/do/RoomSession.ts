@@ -4093,6 +4093,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       }
     }
     const wasConnected = participant.connected
+    const hadParticipantDataTransport =
+      participant.participantDataTransport !== undefined
     // A reconnect is a fresh transient-activity boundary. Do not replay a
     // state that belonged to the replaced resident socket.
     this.clearAgentActivitiesForParticipant(participant.id)
@@ -4113,6 +4115,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       connectionNonce,
       cursor: Math.min(cursor, room.nextMessageSequence),
     } satisfies AgentEventSocketAttachment)
+    // A replacement invalidates the old Runtime Pion session even though
+    // Agent presence stays connected. Publish that transport removal before
+    // the replacement resident receives its initial snapshot and can attach a
+    // fresh transport. Preserve the ordinary disconnected → connected
+    // presence broadcast, which is still sent after the initial event push.
+    if (wasConnected && hadParticipantDataTransport)
+      await this.broadcastState(room, server)
     this.pushAgentEventSocket(room, server, true)
     if (!wasConnected) await this.broadcastState(room, server)
     return new Response(null, { status: 101, webSocket: client })
