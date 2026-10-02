@@ -735,6 +735,7 @@ describe("RoomSession expiry cleanup", () => {
     room.runtimeHosts = {
       [hostId]: {
         runtimeHostId: hostId,
+        speech: { stt: false, tts: false },
         capabilities: [
           {
             capabilityId: "printer_status",
