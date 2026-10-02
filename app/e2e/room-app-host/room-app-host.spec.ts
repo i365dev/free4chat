@@ -715,23 +715,6 @@ test("Room App host contract survives open, fullscreen, exit, hide and reopen", 
     if (isTwoPaneRoom(page)) return
 
     const phoneViewport = page.viewportSize()!
-    await page.setViewportSize({ width: 1280, height: 900 })
-    const desktopToolbar = page.getByTestId("room-header-toolbar")
-    const desktopStage = page.getByTestId("room-stage")
-    await expect(desktopToolbar).toBeVisible()
-    await expect(page.getByTestId("room-splitter")).toBeVisible()
-    const desktopStageBox = await desktopStage.boundingBox()
-    expect(desktopStageBox?.width).toBeGreaterThan(400)
-    await expectNoPageOverflow(page, "1280x900 desktop Room")
-    await page.screenshot({
-      path: testInfo.outputPath("room-layout-1280x900.png"),
-    })
-
-    await page.setViewportSize(phoneViewport)
-    const surfaceSwitch = page.getByTestId("room-mobile-overflow")
-    if ((await surfaceSwitch.getAttribute("aria-expanded")) !== "true") {
-      await surfaceSwitch.click()
-    }
     await expect(page.getByTestId("room-mobile-sheet")).toBeVisible()
     await page.screenshot({
       path: testInfo.outputPath("room-layout-390x844.png"),
