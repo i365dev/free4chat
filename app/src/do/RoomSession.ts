@@ -2731,6 +2731,14 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
   }
 
+  private publicAgentEvents<
+    T extends { participantTransport: RuntimeParticipantTransportProjection }
+  >(result: T) {
+    const { participantTransport: _participantTransport, ...publicResult } =
+      result
+    return publicResult
+  }
+
   /**
    * Private control-plane association for Runtime participant DataChannels.
    * Operation payloads never use the RoomSession DO; this snapshot only binds
@@ -2979,7 +2987,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         this.finishWaiter(
           waiter,
           this.json({
-            ...result,
+            ...this.publicAgentEvents(result),
             participants: rosterProjection(room.participants),
             runtimeHosts: projectRuntimeHosts(room.runtimeHosts),
           })
@@ -4175,7 +4183,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       if (hold.mode !== "held") {
         this.agentWaiters.delete(participant.id)
         return this.json({
-          ...result,
+          ...this.publicAgentEvents(result),
           // Compact participant/capability projection (#106 Phase A): lets a
           // resident Harness answer "who here can potentially do X" without
           // dumping the full room state into every turn.
@@ -4212,7 +4220,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
               }
               resolve(
                 this.json({
-                  ...this.agentEvents(current, participant.id, request.cursor),
+                  ...this.publicAgentEvents(
+                    this.agentEvents(current, participant.id, request.cursor)
+                  ),
                   participants: rosterProjection(current.participants),
                   runtimeHosts: projectRuntimeHosts(current.runtimeHosts),
                   longPoll: "held",

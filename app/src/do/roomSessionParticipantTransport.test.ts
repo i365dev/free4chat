@@ -278,6 +278,54 @@ describe("RoomSession Runtime participant transport association", () => {
     ).toBe(false)
   })
 
+  it("keeps Human SFU session IDs on the private resident envelope only", async () => {
+    const room: any = makeRoom()
+    room.expiresAt = Date.now() + 60_000
+    room.nextMessageSequence = 1
+    room.attachments = []
+    room.meetingNotes = { active: false }
+    room.agentVoice = {}
+    room.liveTranscript = { active: false }
+    room.participants.resident.connectionNonce = "resident-nonce"
+    const session = readySession(room)
+    const publicResponse = await session.fetch(
+      new Request("https://room/control", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "agent-wait",
+          participantId: "resident",
+          token: "resident-token",
+          cursor: 2,
+          timeoutSeconds: 0,
+        }),
+      })
+    )
+    const publicBody = await publicResponse.json()
+    expect(publicBody).not.toHaveProperty("participantTransport")
+    expect(JSON.stringify(publicBody)).not.toContain("owner-session")
+
+    const send = vi.fn()
+    const socket = {
+      deserializeAttachment: () => ({
+        kind: "agent-event",
+        participantId: "resident",
+        connectionNonce: "resident-nonce",
+        cursor: 0,
+      }),
+      serializeAttachment: vi.fn(),
+      close: vi.fn(),
+      send,
+    } as unknown as WebSocket
+    session.pushAgentEventSocket(room, socket, true)
+
+    expect(send).toHaveBeenCalledOnce()
+    const privateEnvelope = JSON.parse(send.mock.calls[0][0])
+    expect(privateEnvelope.participantTransport.sources).toEqual([
+      { participantId: "owner", sessionId: "owner-session" },
+    ])
+  })
+
   it("authorizes only the authenticated Human in the current Task/App Agent pair", async () => {
     const session = new RoomSession({} as never, {} as never) as any
     const room: any = makeRoom()
