@@ -717,7 +717,7 @@ test("Room App host contract survives open, fullscreen, exit, hide and reopen", 
     // This fixture Room has no Agent, so it cannot create a canonical Task.
     // Task selection's identical "hide Stage, give interaction the viewport"
     // contract is covered by roomMobileComposition's real Task projection.
-    await page.getByTestId("room-mobile-sheet-close").click()
+    await page.getByTestId("room-mobile-overflow").click()
     await expect(page.getByTestId("room-mobile-sheet")).toHaveCount(0)
     await expect(page.getByTestId("room-stage")).toBeHidden()
     await expect(page.getByTestId("interaction-content")).toBeVisible()
