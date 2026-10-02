@@ -25,6 +25,7 @@ vi.mock("../hooks/useSfuChatRoom", () => ({
   useSfuChatRoom: (...args: unknown[]) => mockUseSfuChatRoom(...args),
 }))
 
+import { LOCAL_PEER_ID } from "@common/consts"
 import type { Message } from "@common/types"
 import { trackAnalyticsEvent } from "@common/utils"
 
@@ -2435,7 +2436,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     }
 
     const localParticipant = {
-      peerId: "local-peer",
+      peerId: LOCAL_PEER_ID,
       name: "Alice",
       kind: "human",
       room: "test-room",
@@ -4688,6 +4689,120 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         })
         return { frameWindow, port }
       }
+
+      it.each([
+        {
+          name: "Human to Agent Task",
+          fromParticipantId: "human-local",
+          targetParticipantId: "agent-a",
+          sourceKind: "human" as const,
+          includeRemoteHuman: false,
+        },
+        {
+          name: "Agent to remote Human Task",
+          fromParticipantId: "agent-a",
+          targetParticipantId: "human-b",
+          sourceKind: "agent" as const,
+          includeRemoteHuman: true,
+        },
+        {
+          name: "Agent to local Human Task with canonical target identity",
+          fromParticipantId: "agent-a",
+          targetParticipantId: "human-local",
+          sourceKind: "agent" as const,
+          includeRemoteHuman: false,
+        },
+      ])(
+        "routes a Generated App capability request to the originating Agent for $name",
+        async (scenario) => {
+          const remoteAgent = {
+            peerId: "agent-a",
+            name: "Agent A",
+            kind: "agent",
+            room: "test-room",
+            connected: true,
+          }
+          const remoteHuman = {
+            peerId: "human-b",
+            name: "Bob",
+            kind: "human",
+            room: "test-room",
+            muteState: false,
+          }
+          const taskRequest: Message = {
+            ...taskRequestMessage,
+            peerId: scenario.sourceKind === "human" ? LOCAL_PEER_ID : "agent-a",
+            name: scenario.sourceKind === "human" ? "Alice" : "Agent A",
+            kind: scenario.sourceKind,
+            collab: {
+              requestId: "task-live",
+              kind: "request",
+              fromParticipantId: scenario.fromParticipantId,
+              targetParticipantId: scenario.targetParticipantId,
+              summary: "Counter",
+            },
+          }
+          const requestGeneratedAppCapability = vi.fn(
+            async (request: { requestId: string }) => ({
+              type: "runtime-capability-result" as const,
+              requestId: request.requestId,
+              ok: true,
+              result: { status: "ready" },
+            })
+          )
+          const participants = [
+            localParticipant,
+            remoteAgent,
+            ...(scenario.includeRemoteHuman ? [remoteHuman] : []),
+          ]
+          renderBothAppRoom({
+            participants,
+            messages: [taskRequest],
+            requestGeneratedAppCapability,
+          })
+
+          await openGeneratedStage()
+          const { port } = loadGeneratedApp()
+          act(() => {
+            port.emit({
+              type: "capabilityRequest",
+              appInstanceId: GENERATED_APP_ID,
+              bundleRevision: generatedPublication.bundleRevision,
+              requestId: "capability-request-1",
+              capabilityId: "printer_status",
+              operation: "observe",
+            })
+          })
+
+          await waitFor(() =>
+            expect(requestGeneratedAppCapability).toHaveBeenCalledWith(
+              expect.objectContaining({
+                appInstanceId: GENERATED_APP_ID,
+                bundleRevision: generatedPublication.bundleRevision,
+                taskRequestId: "task-live",
+                agentParticipantId: "agent-a",
+                requestId: "capability-request-1",
+                capabilityId: "printer_status",
+                operation: "observe",
+              })
+            )
+          )
+          await waitFor(() =>
+            expect(port.postMessage).toHaveBeenCalledWith(
+              expect.objectContaining({
+                type: "capability_result",
+                appInstanceId: GENERATED_APP_ID,
+                requestId: "capability-request-1",
+                result: expect.objectContaining({
+                  type: "runtime-capability-result",
+                  requestId: "capability-request-1",
+                  ok: true,
+                }),
+              })
+            )
+          )
+        }
+      )
 
       /** Selects the curated App through the real Stage strip/launcher path. */
       async function selectCuratedApp(appId = "test-app-1") {

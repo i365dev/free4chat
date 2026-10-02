@@ -660,6 +660,16 @@ export default function RoomContent({
       kind: participant.kind,
     }))
   )
+  // Generated Task routing uses the same canonical identity projection as
+  // Room Apps. In particular, LOCAL_PEER_ID has already been translated to
+  // effectiveLocalParticipantId here, and the local Human is omitted if that
+  // canonical id is unavailable.
+  const roomAppParticipantsById = Object.fromEntries(
+    roomAppParticipants.map((participant) => [
+      participant.participantId,
+      { id: participant.participantId, kind: participant.kind },
+    ])
+  )
   const roomAppSelf = roomAppParticipants.find(
     (participant) => participant.participantId === effectiveLocalParticipantId
   )
@@ -2953,15 +2963,7 @@ export default function RoomContent({
                           targetParticipantId:
                             originatingTask.targetParticipantId,
                         },
-                        Object.fromEntries(
-                          participants.map((participant) => [
-                            participant.peerId,
-                            {
-                              id: participant.peerId,
-                              kind: participant.kind,
-                            },
-                          ])
-                        )
+                        roomAppParticipantsById
                       )
                     : undefined
                   // Stage ownership, not the raw selection: the generated Task
