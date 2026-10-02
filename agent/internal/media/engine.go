@@ -264,6 +264,15 @@ func (c *ParticipantDataChannel) Send(payload []byte) error {
 	return c.channel.Send(payload)
 }
 
+// SendText sends a JSON Room App envelope as a WebRTC text frame so browser
+// RTCDataChannel consumers receive event.data as a string.
+func (c *ParticipantDataChannel) SendText(payload string) error {
+	if c == nil || c.channel == nil || c.channel.ReadyState() != webrtc.DataChannelStateOpen {
+		return errors.New("datachannel_unavailable")
+	}
+	return c.channel.SendText(payload)
+}
+
 func (c *ParticipantDataChannel) Ready() bool {
 	return c != nil && c.channel != nil && c.channel.ReadyState() == webrtc.DataChannelStateOpen
 }

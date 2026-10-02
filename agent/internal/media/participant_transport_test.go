@@ -16,8 +16,8 @@ import (
 type capabilityTestChannel struct{ payloads chan []byte }
 
 func (c *capabilityTestChannel) Ready() bool { return true }
-func (c *capabilityTestChannel) Send(payload []byte) error {
-	c.payloads <- append([]byte(nil), payload...)
+func (c *capabilityTestChannel) SendText(payload string) error {
+	c.payloads <- []byte(payload)
 	return nil
 }
 
@@ -286,8 +286,11 @@ func TestRuntimeParticipantTransportEnforcesCurrentDescriptorBeforeDispatch(t *t
 	}
 }
 
-func TestNoMediaPionPairwiseReliableChannelsIsolateRequestAndResult(t *testing.T) {
-	type channelMessage struct{ label, payload string }
+func TestNoMediaPionPairwiseReliableChannelsDeliverTextResultOnlyToRequestingHuman(t *testing.T) {
+	type channelMessage struct {
+		label, payload string
+		isString       bool
+	}
 	engineMessages := make(chan channelMessage, 4)
 	engine := NewEngine(EngineEvents{OnDataChannelMessage: func(label string, payload []byte) {
 		engineMessages <- channelMessage{label: label, payload: string(payload)}
@@ -325,10 +328,10 @@ func TestNoMediaPionPairwiseReliableChannelsIsolateRequestAndResult(t *testing.T
 	}
 	peerMessages := make(chan channelMessage, 4)
 	peerHumanAChannel.OnMessage(func(eventMessage webrtc.DataChannelMessage) {
-		peerMessages <- channelMessage{label: humanALabel, payload: string(eventMessage.Data)}
+		peerMessages <- channelMessage{label: humanALabel, payload: string(eventMessage.Data), isString: eventMessage.IsString}
 	})
 	peerHumanBChannel.OnMessage(func(eventMessage webrtc.DataChannelMessage) {
-		peerMessages <- channelMessage{label: humanBLabel, payload: string(eventMessage.Data)}
+		peerMessages <- channelMessage{label: humanBLabel, payload: string(eventMessage.Data), isString: eventMessage.IsString}
 	})
 	offer, err := engine.GatherCompleteOffer()
 	if err != nil {
@@ -360,7 +363,7 @@ func TestNoMediaPionPairwiseReliableChannelsIsolateRequestAndResult(t *testing.T
 		}
 	}
 	request := []byte(`{"protocolVersion":1,"appInstanceId":"generated:123e4567-e89b-12d3-a456-426614174000","lane":"reliable","payload":{"type":"runtime-capability-request","requestId":"request-a"}}`)
-	if err := peerHumanAChannel.Send(request); err != nil {
+	if err := peerHumanAChannel.SendText(string(request)); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -371,14 +374,28 @@ func TestNoMediaPionPairwiseReliableChannelsIsolateRequestAndResult(t *testing.T
 	case <-ctx.Done():
 		t.Fatal("request did not reach the Runtime Pion DataChannel")
 	}
-	result := []byte(`{"protocolVersion":1,"appInstanceId":"generated:123e4567-e89b-12d3-a456-426614174000","lane":"reliable","payload":{"type":"runtime-capability-result","requestId":"request-a"}}`)
-	if err := humanAChannel.Send(result); err != nil {
-		t.Fatal(err)
+	appInstanceID := "generated:123e4567-e89b-12d3-a456-426614174000"
+	route := types.RuntimeParticipantTransportRoute{
+		AppInstanceID: appInstanceID, BundleRevision: 2, TaskRequestID: "task-a",
+		AgentParticipantID: "agent-a", HumanParticipantID: "human-a",
+		CapabilityIDs: []string{"fixture_status"},
 	}
+	transport := NewRuntimeParticipantTransport("https://example.invalid", DecodedHandle{ParticipantID: "agent-a"}, nil, nil)
+	transport.sendResult(humanAChannel, route, capabilityFrame{
+		RequestID: "request-a", CapabilityID: "fixture_status", Operation: types.ResidentCapabilityObserve,
+	}, "", map[string]any{"state": "ready", "counter": 1})
 	select {
 	case got := <-peerMessages:
-		if got.label != humanALabel || got.payload != string(result) {
-			t.Fatalf("result used the wrong private Human channel: %+v", got)
+		var envelope roomAppEnvelope
+		var frame capabilityFrame
+		if err := json.Unmarshal([]byte(got.payload), &envelope); err != nil {
+			t.Fatalf("Runtime result was not JSON text: %v", err)
+		}
+		if err := json.Unmarshal(envelope.Payload, &frame); err != nil {
+			t.Fatalf("Runtime result had an invalid envelope payload: %v", err)
+		}
+		if got.label != humanALabel || !got.isString || envelope.ProtocolVersion != 1 || envelope.AppInstanceID != appInstanceID || envelope.Lane != "reliable" || frame.Type != capabilityResultFrame || frame.RequestID != "request-a" || frame.BundleRevision != 2 || frame.Result["counter"] != float64(1) {
+			t.Fatalf("result was not a text frame on the requesting Human's private channel: %+v", got)
 		}
 	case <-ctx.Done():
 		t.Fatal("result did not return on the Human A pair channel")

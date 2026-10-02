@@ -65,7 +65,7 @@ type roomAppEnvelope struct {
 
 type reliableParticipantDataChannel interface {
 	Ready() bool
-	Send([]byte) error
+	SendText(string) error
 }
 
 // RuntimeParticipantTransport owns a media-free Pion connection for the
@@ -488,7 +488,11 @@ func (t *RuntimeParticipantTransport) sendResult(out reliableParticipantDataChan
 	if err != nil || len(wire) > capabilityPayloadLimit || !out.Ready() {
 		return
 	}
-	if err := out.Send(wire); err != nil {
+	// Room App envelopes are JSON text frames. Browser consumers decode
+	// RTCDataChannel messages from event.data as strings; Pion's Send([]byte)
+	// emits binary frames and arrives in the browser as an ArrayBuffer, which
+	// the Room App envelope decoder correctly rejects.
+	if err := out.SendText(string(wire)); err != nil {
 		t.log("runtime_participant_result_failed", map[string]string{"source": request.AgentID})
 	}
 }
