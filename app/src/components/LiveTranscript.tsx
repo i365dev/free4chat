@@ -262,6 +262,7 @@ export function LiveTranscriptSegments({
   const latestSequence = ordered[ordered.length - 1]?.sequence
   const listRef = useRef<HTMLOListElement>(null)
   const nearBottomRef = useRef(true)
+  const [expanded, setExpanded] = useState(false)
   const [showNew, setShowNew] = useState(false)
 
   useEffect(() => {
@@ -273,7 +274,7 @@ export function LiveTranscriptSegments({
     } else {
       setShowNew(true)
     }
-  }, [ordered.length, latestSequence])
+  }, [expanded, ordered.length, latestSequence])
 
   const onScroll = () => {
     const list = listRef.current
@@ -295,27 +296,61 @@ export function LiveTranscriptSegments({
 
   return (
     <section
-      className="mx-4 mt-1 flex flex-none flex-col rounded border border-emerald-700/40 bg-emerald-950/20 px-4 py-2"
+      className="mx-4 mt-1 flex flex-none flex-col rounded border border-emerald-700/40 bg-emerald-950/20 px-3 py-1.5"
       aria-label="Live Transcript"
     >
-      <h2 className="text-sm font-medium text-emerald-100">Live Transcript</h2>
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="text-xs font-medium text-emerald-100">
+          Live Transcript
+        </h2>
+        <button
+          type="button"
+          aria-expanded={expanded}
+          aria-controls="live-transcript-segments"
+          onClick={() => {
+            if (expanded) {
+              nearBottomRef.current = true
+              setShowNew(false)
+            }
+            setExpanded((current) => !current)
+          }}
+          className="shrink-0 rounded border border-emerald-700/50 px-2 py-0.5 text-xs text-emerald-200 hover:bg-emerald-900/40"
+        >
+          {expanded ? "Collapse" : "Expand"}
+        </button>
+      </div>
       <ol
         ref={listRef}
+        id="live-transcript-segments"
         onScroll={onScroll}
-        className="mt-1 max-h-40 space-y-1 overflow-y-auto text-sm text-gray-200"
+        className={`mt-1 overflow-y-auto text-sm text-gray-200 ${
+          expanded ? "max-h-40 space-y-1" : "max-h-16 space-y-0.5"
+        }`}
         aria-live="polite"
       >
-        {ordered.map((segment) => (
-          <li
-            key={segment.segmentId}
-            data-testid={`live-transcript-${segment.sequence}`}
-          >
-            <span className="font-medium text-emerald-200">
-              {segment.speaker}:{" "}
-            </span>
-            <span>{segment.text}</span>
-          </li>
-        ))}
+        {ordered.map((segment, index) => {
+          const previous = ordered[index - 1]
+          const startsSpeakerRun =
+            !previous ||
+            previous.participantId !== segment.participantId ||
+            previous.speaker !== segment.speaker
+
+          return (
+            <li
+              key={segment.segmentId}
+              data-testid={`live-transcript-${segment.sequence}`}
+              data-segment-id={segment.segmentId}
+              className={startsSpeakerRun ? undefined : "pl-4"}
+            >
+              {startsSpeakerRun && (
+                <span className="font-medium text-emerald-200">
+                  {segment.speaker}:{" "}
+                </span>
+              )}
+              <span>{segment.text}</span>
+            </li>
+          )
+        })}
       </ol>
       {showNew && (
         <button

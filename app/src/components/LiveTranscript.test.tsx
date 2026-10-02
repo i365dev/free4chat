@@ -335,6 +335,104 @@ describe("Room-wide Live Transcript UI (#177 PR3 / #236 header simplification)",
     ])
   })
 
+  it("starts compact and supports explicit expansion and collapse", () => {
+    render(
+      <LiveTranscriptSegments
+        segments={[
+          {
+            segmentId: "one",
+            epoch: 1,
+            sequence: 1,
+            participantId: "human-a",
+            speaker: "Alice",
+            text: "latest context",
+            createdAt: 1,
+          },
+        ]}
+      />
+    )
+
+    const list = screen.getByRole("list")
+    const toggle = screen.getByRole("button", { name: "Expand" })
+    expect(toggle).toHaveAttribute("aria-expanded", "false")
+    expect(list.className).toContain("max-h-16")
+    fireEvent.click(toggle)
+    expect(screen.getByRole("button", { name: "Collapse" })).toHaveAttribute(
+      "aria-expanded",
+      "true"
+    )
+    expect(list.className).toContain("max-h-40")
+    fireEvent.click(screen.getByRole("button", { name: "Collapse" }))
+    expect(screen.getByRole("button", { name: "Expand" })).toHaveAttribute(
+      "aria-expanded",
+      "false"
+    )
+    expect(list.className).toContain("max-h-16")
+    expect(screen.getByText("latest context")).toBeInTheDocument()
+  })
+
+  it("groups consecutive committed segments by speaker while preserving each identity and order", () => {
+    render(
+      <LiveTranscriptSegments
+        segments={[
+          {
+            segmentId: "alice-1",
+            epoch: 1,
+            sequence: 1,
+            participantId: "human-a",
+            speaker: "Alice",
+            text: "first",
+            createdAt: 1,
+          },
+          {
+            segmentId: "alice-2",
+            epoch: 1,
+            sequence: 2,
+            participantId: "human-a",
+            speaker: "Alice",
+            text: "second",
+            createdAt: 2,
+          },
+          {
+            segmentId: "bob-1",
+            epoch: 1,
+            sequence: 3,
+            participantId: "human-b",
+            speaker: "Bob",
+            text: "third",
+            createdAt: 3,
+          },
+          {
+            segmentId: "alice-3",
+            epoch: 1,
+            sequence: 4,
+            participantId: "human-a",
+            speaker: "Alice",
+            text: "fourth",
+            createdAt: 4,
+          },
+        ]}
+      />
+    )
+
+    const rows = screen.getAllByTestId(/live-transcript-/)
+    expect(rows.map((row) => row.textContent)).toEqual([
+      "Alice: first",
+      "second",
+      "Bob: third",
+      "Alice: fourth",
+    ])
+    expect(rows.map((row) => row.dataset.segmentId)).toEqual([
+      "alice-1",
+      "alice-2",
+      "bob-1",
+      "alice-3",
+    ])
+    expect(rows[1]).toHaveClass("pl-4")
+    expect(rows[2]).not.toHaveClass("pl-4")
+    expect(rows[3]).not.toHaveClass("pl-4")
+  })
+
   it("follows the newest committed segment when the viewer is near the bottom", () => {
     const { container, rerender } = render(
       <LiveTranscriptSegments
@@ -351,6 +449,7 @@ describe("Room-wide Live Transcript UI (#177 PR3 / #236 header simplification)",
         ]}
       />
     )
+    fireEvent.click(screen.getByRole("button", { name: "Expand" }))
     const list = container.querySelector("ol")!
     Object.defineProperties(list, {
       clientHeight: { configurable: true, value: 40 },
@@ -400,6 +499,7 @@ describe("Room-wide Live Transcript UI (#177 PR3 / #236 header simplification)",
         ]}
       />
     )
+    fireEvent.click(screen.getByRole("button", { name: "Expand" }))
     const list = container.querySelector("ol")!
     Object.defineProperties(list, {
       clientHeight: { configurable: true, value: 40 },

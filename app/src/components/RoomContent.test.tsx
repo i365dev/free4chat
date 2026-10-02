@@ -4773,7 +4773,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
           residentHost
         )
 
-        fireEvent.click(screen.getByTestId("room-mobile-sheet-close"))
+        fireEvent.click(screen.getByTestId("room-mobile-overflow"))
         expect(screen.queryByTestId("room-mobile-sheet")).toBeNull()
         expect(
           screen.getByTestId("interaction-tab-task-task-live")

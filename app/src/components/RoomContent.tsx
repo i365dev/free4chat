@@ -2492,7 +2492,22 @@ export default function RoomContent({
                 ? "Open Room chat"
                 : "Return to people and Stage"
             }
-            onClick={() => setMobileRoomSheetOpen((open) => !open)}
+            onClick={() => {
+              if (mobileSheetVisible) {
+                const returnToTask = taskProjections.some(
+                  (task) => task.requestId === mobileSheetReturnInteraction
+                )
+                setActiveInteraction(
+                  returnToTask && mobileSheetReturnInteraction
+                    ? mobileSheetReturnInteraction
+                    : "room"
+                )
+                setMobileSheetReturnInteraction(null)
+                setMobileRoomSheetOpen(false)
+              } else {
+                setMobileRoomSheetOpen(true)
+              }
+            }}
             className="room-mobile-surface-switch shrink-0 rounded-md border border-gray-700 bg-gray-800 px-2.5 py-1 text-xs text-gray-300 hover:bg-gray-700 md:hidden"
           >
             {mobileSheetVisible ? "Room chat →" : "← People & Stage"}
@@ -2523,7 +2538,7 @@ export default function RoomContent({
             data-testid="room-header-toolbar"
             className={`${
               mobileSheetVisible ? "grid" : "hidden md:grid"
-            } room-header-toolbar grid-cols-3 gap-2 lg:flex lg:items-center`}
+            } room-header-toolbar grid-cols-4 gap-1 lg:flex lg:items-center`}
           >
             <button
               type="button"
@@ -2687,34 +2702,10 @@ export default function RoomContent({
           }
         >
           {mobileSheetVisible && (
-            <div className="flex flex-none items-center justify-between gap-2 border-b border-gray-800 bg-gray-950/80 px-3 py-2">
-              <span className="min-w-0 truncate text-xs uppercase tracking-wide text-gray-400">
+            <div className="flex flex-none items-center border-b border-gray-800 bg-gray-950/80 px-3 py-1.5">
+              <span className="min-w-0 truncate text-[11px] uppercase tracking-wide text-gray-400">
                 People in this Room
               </span>
-              <button
-                type="button"
-                data-testid="room-mobile-sheet-close"
-                onClick={() => {
-                  const returnToTask = taskProjections.some(
-                    (task) => task.requestId === mobileSheetReturnInteraction
-                  )
-                  setActiveInteraction(
-                    returnToTask && mobileSheetReturnInteraction
-                      ? mobileSheetReturnInteraction
-                      : "room"
-                  )
-                  setMobileSheetReturnInteraction(null)
-                  setMobileRoomSheetOpen(false)
-                }}
-                aria-label={
-                  mobileSheetReturnInteraction
-                    ? "Return to Task chat"
-                    : "Open Room chat"
-                }
-                className="shrink-0 rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700"
-              >
-                {mobileSheetReturnInteraction ? "Task chat" : "Room chat"}
-              </button>
             </div>
           )}
           {/* Room App focus mode is an ordinary Room layout state, not a
