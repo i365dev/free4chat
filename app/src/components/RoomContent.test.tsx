@@ -4773,7 +4773,11 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
           residentHost
         )
 
-        fireEvent.click(screen.getByTestId("room-mobile-overflow"))
+        const surfaceSwitch = screen.getByTestId("room-mobile-overflow")
+        expect(surfaceSwitch).toHaveTextContent("Task chat →")
+        expect(surfaceSwitch).toHaveAccessibleName("Open Task chat")
+        expect(surfaceSwitch).toHaveAttribute("title", "Open Task chat")
+        fireEvent.click(surfaceSwitch)
         expect(screen.queryByTestId("room-mobile-sheet")).toBeNull()
         expect(
           screen.getByTestId("interaction-tab-task-task-live")

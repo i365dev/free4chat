@@ -418,10 +418,11 @@ describe("Room-wide Live Transcript UI (#177 PR3 / #236 header simplification)",
     const rows = screen.getAllByTestId(/live-transcript-/)
     expect(rows.map((row) => row.textContent)).toEqual([
       "Alice: first",
-      "second",
+      "Alice: second",
       "Bob: third",
       "Alice: fourth",
     ])
+    expect(rows[1].querySelector(".sr-only")).toHaveTextContent("Alice:")
     expect(rows.map((row) => row.dataset.segmentId)).toEqual([
       "alice-1",
       "alice-2",

@@ -347,6 +347,9 @@ export function LiveTranscriptSegments({
                   {segment.speaker}:{" "}
                 </span>
               )}
+              {!startsSpeakerRun && (
+                <span className="sr-only">{segment.speaker}: </span>
+              )}
               <span>{segment.text}</span>
             </li>
           )

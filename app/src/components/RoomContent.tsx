@@ -1989,6 +1989,9 @@ export default function RoomContent({
   // region instead of being trapped behind a closed sheet.
   const mobileSheetVisible =
     mobileRoomSheetOpen && !isMd && !isStageAppFullscreen
+  const mobileSheetReturnTask = taskProjections.find(
+    (task) => task.requestId === mobileSheetReturnInteraction
+  )
   const stagePanelVisible = mobileSheetVisible || isStageAppFullscreen
   // Decorative sky belongs to the participant scene only. Screen share,
   // resident Room Apps, generated Task Apps and Task Live View keep their own
@@ -2484,12 +2487,16 @@ export default function RoomContent({
             aria-expanded={mobileSheetVisible}
             aria-label={
               mobileSheetVisible
-                ? "Open Room chat"
+                ? mobileSheetReturnTask
+                  ? "Open Task chat"
+                  : "Open Room chat"
                 : "Return to people and Stage"
             }
             title={
               mobileSheetVisible
-                ? "Open Room chat"
+                ? mobileSheetReturnTask
+                  ? "Open Task chat"
+                  : "Open Room chat"
                 : "Return to people and Stage"
             }
             onClick={() => {
@@ -2510,7 +2517,11 @@ export default function RoomContent({
             }}
             className="room-mobile-surface-switch shrink-0 rounded-md border border-gray-700 bg-gray-800 px-2.5 py-1 text-xs text-gray-300 hover:bg-gray-700 md:hidden"
           >
-            {mobileSheetVisible ? "Room chat →" : "← People & Stage"}
+            {mobileSheetVisible
+              ? mobileSheetReturnTask
+                ? "Task chat →"
+                : "Room chat →"
+              : "← People & Stage"}
           </button>
           <button
             type="button"
@@ -2538,7 +2549,7 @@ export default function RoomContent({
             data-testid="room-header-toolbar"
             className={`${
               mobileSheetVisible ? "grid" : "hidden md:grid"
-            } room-header-toolbar grid-cols-4 gap-1 lg:flex lg:items-center`}
+            } room-header-toolbar grid-cols-2 gap-1 min-[360px]:grid-cols-4 lg:flex lg:items-center`}
           >
             <button
               type="button"

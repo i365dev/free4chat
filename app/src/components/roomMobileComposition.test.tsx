@@ -343,7 +343,8 @@ describe("RoomContent — narrow-screen composition", () => {
     // The default people-first surface reveals the one existing control row.
     expect(classes(toolbar)).toContain("grid")
     expect(classes(toolbar)).not.toContain("hidden")
-    expect(classes(toolbar)).toContain("grid-cols-4")
+    expect(classes(toolbar)).toContain("grid-cols-2")
+    expect(classes(toolbar)).toContain("min-[360px]:grid-cols-4")
     expect(classes(mobileLeave)).toContain("inline-flex")
     expect(classes(mobileLeave)).not.toContain("hidden")
     expect(screen.getAllByRole("button", { name: "Copy link" })).toHaveLength(1)
@@ -359,6 +360,10 @@ describe("RoomContent — narrow-screen composition", () => {
     expect(screen.getAllByRole("button", { name: "Leave" })).toHaveLength(2)
     expect(screen.queryByRole("button", { name: "Room chat" })).toBeNull()
     expect(screen.queryByTestId("room-mobile-sheet-close")).toBeNull()
+    const surfaceSwitch = screen.getByTestId("room-mobile-overflow")
+    expect(surfaceSwitch).toHaveTextContent("Room chat →")
+    expect(surfaceSwitch).toHaveAccessibleName("Open Room chat")
+    expect(surfaceSwitch).toHaveAttribute("title", "Open Room chat")
 
     // The header surface switch owns navigation out of the people sheet.
     fireEvent.click(screen.getByTestId("room-mobile-overflow"))
