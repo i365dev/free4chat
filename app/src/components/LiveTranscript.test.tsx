@@ -371,6 +371,47 @@ describe("Room-wide Live Transcript UI (#177 PR3 / #236 header simplification)",
     expect(screen.getByText("latest context")).toBeInTheDocument()
   })
 
+  it("does not announce a new transcript when only expanding the list", () => {
+    const { container } = render(
+      <LiveTranscriptSegments
+        segments={[
+          {
+            segmentId: "one",
+            epoch: 1,
+            sequence: 1,
+            participantId: "human-a",
+            speaker: "Alice",
+            text: "first",
+            createdAt: 1,
+          },
+          {
+            segmentId: "two",
+            epoch: 1,
+            sequence: 2,
+            participantId: "human-a",
+            speaker: "Alice",
+            text: "second",
+            createdAt: 2,
+          },
+        ]}
+      />
+    )
+
+    const list = container.querySelector("ol")!
+    Object.defineProperties(list, {
+      clientHeight: { configurable: true, value: 20 },
+      scrollHeight: { configurable: true, value: 100 },
+    })
+    list.scrollTop = 0
+    fireEvent.scroll(list)
+    fireEvent.click(screen.getByRole("button", { name: "Expand" }))
+
+    expect(
+      screen.queryByRole("button", { name: /New transcript/i })
+    ).not.toBeInTheDocument()
+    expect(list.scrollTop).toBe(0)
+  })
+
   it("groups consecutive committed segments by speaker while preserving each identity and order", () => {
     render(
       <LiveTranscriptSegments

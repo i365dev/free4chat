@@ -506,6 +506,72 @@ test("320px phone toolbar controls fit in a two-row grid", async ({
   await page.screenshot({
     path: testInfo.outputPath("room-layout-320x844.png"),
   })
+  for (const [buttonName, dialogName] of [
+    ["Invite Agent", "Invite an Agent"],
+    ["Live Transcript", "Live Transcript"],
+  ]) {
+    await page.getByRole("button", { name: buttonName }).click()
+    const dialog = page.getByRole("dialog", { name: dialogName })
+    await expect(dialog).toBeVisible()
+    const bounds = await dialog.boundingBox()
+    expect(bounds).not.toBeNull()
+    expect(bounds!.x).toBeGreaterThanOrEqual(0)
+    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(320)
+    await page.keyboard.press("Escape")
+    await expect(dialog).toHaveCount(0)
+    if (buttonName === "Invite Agent") {
+      await page.getByTestId("room-mobile-overflow").click()
+      await expect(page.getByTestId("room-mobile-sheet")).toBeVisible()
+    }
+  }
+})
+
+test("520px phone toolbar controls fit with full labels on one row", async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== "webkit-phone-roomy")
+  await installMediaShim(page)
+  await openLocalRoom(page, `toolbar-roomy-${Date.now().toString(36)}`)
+  await enterLocalRoom(page, "Alice")
+
+  const toolbar = page.getByTestId("room-header-toolbar")
+  await expect(toolbar).toBeVisible()
+  for (const name of [
+    "Copy link",
+    "Invite Agent",
+    "Live Transcript",
+    "Enable microphone",
+  ]) {
+    await expect(page.getByRole("button", { name })).toBeVisible()
+  }
+  const geometry = await toolbar.evaluate((element) => {
+    const controls = Array.from(element.children).flatMap((child) =>
+      Array.from(child.querySelectorAll("button"))
+    )
+    return {
+      columns: getComputedStyle(element)
+        .gridTemplateColumns.split(" ")
+        .filter(Boolean).length,
+      rows: new Set(
+        controls.map((button) => Math.round(button.getBoundingClientRect().y))
+      ).size,
+      buttons: controls.map((button) => ({
+        width: button.clientWidth,
+        contentWidth: button.scrollWidth,
+      })),
+      viewportWidth: window.innerWidth,
+      documentWidth: document.documentElement.scrollWidth,
+    }
+  })
+  expect(geometry.columns).toBe(4)
+  expect(geometry.rows).toBe(1)
+  expect(geometry.documentWidth).toBeLessThanOrEqual(geometry.viewportWidth)
+  for (const button of geometry.buttons) {
+    expect(button.contentWidth).toBeLessThanOrEqual(button.width)
+  }
+  await page.screenshot({
+    path: testInfo.outputPath("room-layout-520x844.png"),
+  })
 })
 
 test("Room App host contract survives open, fullscreen, exit, hide and reopen", async ({
@@ -513,7 +579,9 @@ test("Room App host contract survives open, fullscreen, exit, hide and reopen", 
   browser,
 }, testInfo) => {
   const profile = testInfo.project.name
-  test.skip(profile === "webkit-phone-narrow")
+  test.skip(
+    profile === "webkit-phone-narrow" || profile === "webkit-phone-roomy"
+  )
   const roomSlug = `compat-${profile}-${Date.now().toString(36)}`
   const pageErrors: string[] = []
   const consoleErrors: string[] = []
@@ -701,7 +769,15 @@ test("Room App host contract survives open, fullscreen, exit, hide and reopen", 
         getComputedStyle(element).gridTemplateColumns.split(" ").filter(Boolean)
           .length
     )
-    expect(roomierColumns).toBe(4)
+    expect(roomierColumns).toBe(2)
+    for (const name of [
+      "Copy link",
+      "Invite Agent",
+      "Live Transcript",
+      "Enable microphone",
+    ]) {
+      await expect(page.getByRole("button", { name })).toBeVisible()
+    }
     await page.screenshot({
       path: testInfo.outputPath("room-layout-390x844.png"),
     })

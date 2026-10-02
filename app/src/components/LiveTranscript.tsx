@@ -274,7 +274,15 @@ export function LiveTranscriptSegments({
     } else {
       setShowNew(true)
     }
-  }, [expanded, ordered.length, latestSequence])
+  }, [ordered.length, latestSequence])
+
+  // Expansion changes only the list viewport, never the transcript. Keep the
+  // latest row in view when the viewer was already following, without
+  // announcing that a new transcript arrived for a layout-only change.
+  useEffect(() => {
+    const list = listRef.current
+    if (list && nearBottomRef.current) list.scrollTop = list.scrollHeight
+  }, [expanded])
 
   const onScroll = () => {
     const list = listRef.current

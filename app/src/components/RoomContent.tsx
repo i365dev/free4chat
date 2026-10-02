@@ -2019,11 +2019,23 @@ export default function RoomContent({
     if (!mobileSheetVisible) return
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return
+      setMobileSheetReturnInteraction(null)
       setMobileRoomSheetOpen(false)
     }
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
   }, [mobileSheetVisible])
+
+  // Saved generated-App return targets must not survive navigation to another
+  // interaction while the people/Stage sheet is open.
+  useEffect(() => {
+    if (
+      mobileSheetReturnInteraction &&
+      activeInteraction !== mobileSheetReturnInteraction
+    ) {
+      setMobileSheetReturnInteraction(null)
+    }
+  }, [activeInteraction, mobileSheetReturnInteraction])
 
   useEffect(() => {
     // A Room App is a large visual surface like screen share, so it gets the
@@ -2512,6 +2524,10 @@ export default function RoomContent({
                 setMobileSheetReturnInteraction(null)
                 setMobileRoomSheetOpen(false)
               } else {
+                const activeTask = taskProjections.find(
+                  (task) => task.requestId === activeInteraction
+                )
+                setMobileSheetReturnInteraction(activeTask?.requestId ?? null)
                 setMobileRoomSheetOpen(true)
               }
             }}
@@ -2549,7 +2565,7 @@ export default function RoomContent({
             data-testid="room-header-toolbar"
             className={`${
               mobileSheetVisible ? "grid" : "hidden md:grid"
-            } room-header-toolbar grid-cols-2 gap-1 min-[360px]:grid-cols-4 lg:flex lg:items-center`}
+            } room-header-toolbar grid-cols-2 gap-1 min-[520px]:grid-cols-4 lg:flex lg:items-center`}
           >
             <button
               type="button"

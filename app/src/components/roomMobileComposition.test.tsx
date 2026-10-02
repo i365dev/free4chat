@@ -344,7 +344,7 @@ describe("RoomContent — narrow-screen composition", () => {
     expect(classes(toolbar)).toContain("grid")
     expect(classes(toolbar)).not.toContain("hidden")
     expect(classes(toolbar)).toContain("grid-cols-2")
-    expect(classes(toolbar)).toContain("min-[360px]:grid-cols-4")
+    expect(classes(toolbar)).toContain("min-[520px]:grid-cols-4")
     expect(classes(mobileLeave)).toContain("inline-flex")
     expect(classes(mobileLeave)).not.toContain("hidden")
     expect(screen.getAllByRole("button", { name: "Copy link" })).toHaveLength(1)
