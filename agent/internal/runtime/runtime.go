@@ -31,6 +31,11 @@ const (
 
 const roomScope = "room"
 
+const (
+	participantTransportRetryInitialDelay = 250 * time.Millisecond
+	participantTransportRetryMaxDelay     = 4 * time.Second
+)
+
 var errTaskTextUnsupported = errors.New("task-scoped text transport is unavailable")
 
 // logicalSessionState is Runtime-local cognition state for one logical
@@ -345,6 +350,10 @@ type ResidentRuntime struct {
 	mediaController                *media.Controller
 	participantTransport           participantDataTransport
 	participantTransportProjection string
+	participantTransportGeneration uint64
+	participantTransportRetryTimer *time.Timer
+	participantTransportRetryCount int
+	participantTransportRetryDelay func(attempt int) time.Duration
 	participantTransportFactory    func(media.DecodedHandle) participantDataTransport
 	mediaMu                        sync.Mutex
 	// residentMediaStateApplyMu serializes cache changes with their Controller
@@ -1222,6 +1231,12 @@ func (r *ResidentRuntime) setResidentStream(
 	// the same Runtime-side DataChannel transport even when its routes match.
 	// Detach under the Runtime lock, but do bounded network/Pion teardown only
 	// after releasing every Runtime lock.
+	r.participantTransportGeneration++
+	if r.participantTransportRetryTimer != nil {
+		r.participantTransportRetryTimer.Stop()
+		r.participantTransportRetryTimer = nil
+	}
+	r.participantTransportRetryCount = 0
 	participantTransport := r.participantTransport
 	r.participantTransport = nil
 	r.participantTransportProjection = ""
@@ -1363,6 +1378,13 @@ func (r *ResidentRuntime) observeRuntimeParticipantTransport(projection types.Ru
 		r.mu.Unlock()
 		return
 	}
+	r.participantTransportGeneration++
+	generation := r.participantTransportGeneration
+	if r.participantTransportRetryTimer != nil {
+		r.participantTransportRetryTimer.Stop()
+		r.participantTransportRetryTimer = nil
+	}
+	r.participantTransportRetryCount = 0
 	old := r.participantTransport
 	r.participantTransport = nil
 	r.participantTransportProjection = signature
@@ -1374,16 +1396,37 @@ func (r *ResidentRuntime) observeRuntimeParticipantTransport(projection types.Ru
 	if len(projection.Routes) == 0 || !projection.Valid() || r.options.CapabilityHandler == nil || r.options.SiteOrigin == "" {
 		return
 	}
+	r.startRuntimeParticipantTransport(projection, signature, generation, handleText)
+}
+
+func (r *ResidentRuntime) startRuntimeParticipantTransport(
+	projection types.RuntimeParticipantTransportProjection,
+	signature string,
+	generation uint64,
+	handleText string,
+) {
+	r.mu.Lock()
+	if r.stopped || r.participantTransportGeneration != generation ||
+		r.participantTransportProjection != signature || r.participantTransport != nil {
+		r.mu.Unlock()
+		return
+	}
+	factory := r.participantTransportFactory
+	r.mu.Unlock()
+	if factory == nil {
+		return
+	}
 	handle, err := media.DecodeParticipantHandle(handleText)
 	if err != nil {
 		return
 	}
-	transport := r.participantTransportFactory(handle)
+	transport := factory(handle)
 	if transport == nil {
 		return
 	}
 	r.mu.Lock()
-	if r.stopped || r.participantTransportProjection != signature {
+	if r.stopped || r.participantTransportGeneration != generation ||
+		r.participantTransportProjection != signature || r.participantTransport != nil {
 		r.mu.Unlock()
 		transport.Close()
 		return
@@ -1395,15 +1438,54 @@ func (r *ResidentRuntime) observeRuntimeParticipantTransport(projection types.Ru
 			r.log("runtime_participant_transport_unavailable", map[string]string{"reason": "transport_setup_failed"})
 			transport.Close()
 			r.mu.Lock()
-			if r.participantTransport == transport {
+			if r.participantTransport == transport && !r.stopped &&
+				r.participantTransportGeneration == generation &&
+				r.participantTransportProjection == signature {
 				r.participantTransport = nil
-				// A later Room envelope with the same projection should retry
-				// setup after a transient signaling or DataChannel failure.
-				r.participantTransportProjection = ""
+				r.scheduleRuntimeParticipantTransportRetryLocked(projection, signature, generation, handleText)
 			}
 			r.mu.Unlock()
 		}
 	}()
+}
+
+func (r *ResidentRuntime) scheduleRuntimeParticipantTransportRetryLocked(
+	projection types.RuntimeParticipantTransportProjection,
+	signature string,
+	generation uint64,
+	handleText string,
+) {
+	if r.stopped || r.participantTransportGeneration != generation ||
+		r.participantTransportProjection != signature || r.participantTransport != nil ||
+		r.participantTransportRetryTimer != nil {
+		return
+	}
+	r.participantTransportRetryCount++
+	attempt := r.participantTransportRetryCount
+	delay := participantTransportRetryInitialDelay
+	for i := 1; i < attempt && delay < participantTransportRetryMaxDelay; i++ {
+		delay *= 2
+	}
+	if delay > participantTransportRetryMaxDelay {
+		delay = participantTransportRetryMaxDelay
+	}
+	if r.participantTransportRetryDelay != nil {
+		delay = r.participantTransportRetryDelay(attempt)
+	}
+	if delay <= 0 {
+		delay = time.Millisecond
+	}
+	r.participantTransportRetryTimer = time.AfterFunc(delay, func() {
+		r.mu.Lock()
+		if r.stopped || r.participantTransportGeneration != generation ||
+			r.participantTransportProjection != signature || r.participantTransport != nil {
+			r.mu.Unlock()
+			return
+		}
+		r.participantTransportRetryTimer = nil
+		r.mu.Unlock()
+		r.startRuntimeParticipantTransport(projection, signature, generation, handleText)
+	})
 }
 
 func (r *ResidentRuntime) acceptEvent(event types.RoomEvent) {
@@ -2565,6 +2647,12 @@ func (r *ResidentRuntime) beginStop(lastError string) bool {
 	r.cleanupOnce.Do(func() {
 		r.mu.Lock()
 		r.stopped = true
+		r.participantTransportGeneration++
+		if r.participantTransportRetryTimer != nil {
+			r.participantTransportRetryTimer.Stop()
+			r.participantTransportRetryTimer = nil
+		}
+		r.participantTransportRetryCount = 0
 		r.admissionsClosed = true
 		r.state = StateStopped
 		if lastError != "" {
@@ -2589,6 +2677,12 @@ func (r *ResidentRuntime) beginStop(lastError string) bool {
 // (bounded teardown), then the lease, then Harness/client.
 func (r *ResidentRuntime) releaseResources() {
 	r.mu.Lock()
+	r.participantTransportGeneration++
+	if r.participantTransportRetryTimer != nil {
+		r.participantTransportRetryTimer.Stop()
+		r.participantTransportRetryTimer = nil
+	}
+	r.participantTransportRetryCount = 0
 	participantTransport := r.participantTransport
 	r.participantTransport = nil
 	r.participantTransportProjection = ""

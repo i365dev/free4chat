@@ -5,6 +5,7 @@ import { participantDirectReliableChannelName } from "../common/participantDataC
 
 const hostId = "host-capability-1"
 const appInstanceId = "generated:123e4567-e89b-12d3-a456-426614174000"
+const appInstanceIdB = "generated:123e4567-e89b-12d3-a456-426614174001"
 
 function makeRoom() {
   return {
@@ -86,6 +87,29 @@ function makeRoom() {
 }
 
 describe("RoomSession Runtime participant transport association", () => {
+  const readyRequest = (sessionId: string, ready: boolean) =>
+    new Request("https://room/control", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "agent-participant-data-transport-ready",
+        participantId: "resident",
+        token: "resident-token",
+        sessionId,
+        ready,
+      }),
+    })
+
+  const readySession = (room: any) => {
+    const session = new RoomSession({} as never, {} as never) as any
+    session.loadRoom = async () => room
+    session.isExpired = () => false
+    session.saveRoom = vi.fn(async () => undefined)
+    session.scheduleNextAlarm = vi.fn(async () => undefined)
+    session.broadcastState = vi.fn(async () => undefined)
+    return session
+  }
+
   it("projects only the originating Task Agent, current Host, capability IDs, and ready Human sources", () => {
     const session = new RoomSession({} as never, {} as never) as any
     const state = session.projectRuntimeParticipantTransportState(
@@ -109,6 +133,149 @@ describe("RoomSession Runtime participant transport association", () => {
     expect(JSON.stringify(state)).not.toMatch(
       /runtime-capability-(request|result)|requestId|operation|args/
     )
+  })
+
+  it("keeps source-backed Human routes when another Human disconnects or loses App readiness", () => {
+    const session = new RoomSession({} as never, {} as never) as any
+    const room: any = makeRoom()
+    room.participants.bob = {
+      id: "bob",
+      token: "bob-token",
+      name: "Bob",
+      kind: "human",
+      connected: true,
+      joinedAt: 1,
+      lastSeenAt: 1,
+      media: {
+        sessionId: "bob-session",
+        appDataChannelReady: true,
+        muted: false,
+        fileChannelReady: true,
+        tracks: [],
+      },
+    }
+    room.messages.push({
+      id: "task-message-bob",
+      peerId: "bob",
+      name: "Bob",
+      kind: "human",
+      type: "action",
+      actionType: "collab",
+      createdAt: 2,
+      sequence: 2,
+      collab: {
+        kind: "request",
+        requestId: "task-bob",
+        fromParticipantId: "bob",
+        targetParticipantId: "resident",
+        summary: "Check another device",
+      },
+    })
+    room.generatedApps[appInstanceIdB] = {
+      appInstanceId: appInstanceIdB,
+      taskRequestId: "task-bob",
+      title: "Bob status",
+      bundleBytes: 100,
+      bundleRevision: 1,
+      stateRevision: 0,
+      createdAt: 2,
+      updatedAt: 2,
+    }
+
+    const project = () =>
+      session.projectRuntimeParticipantTransportState(room, "resident")
+    const bothReady = project()
+    expect(
+      bothReady.routes.map((route: any) => route.humanParticipantId)
+    ).toEqual(["owner", "bob"])
+    expect(
+      bothReady.sources.map((source: any) => source.participantId)
+    ).toEqual(["owner", "bob"])
+
+    room.participants.bob.connected = false
+    expect(project()).toEqual({
+      routes: [expect.objectContaining({ humanParticipantId: "owner" })],
+      sources: [{ participantId: "owner", sessionId: "owner-session" }],
+    })
+
+    room.participants.bob.connected = true
+    room.participants.bob.media.appDataChannelReady = false
+    expect(project()).toEqual({
+      routes: [expect.objectContaining({ humanParticipantId: "owner" })],
+      sources: [{ participantId: "owner", sessionId: "owner-session" }],
+    })
+
+    room.participants.bob.media.appDataChannelReady = true
+    expect(
+      project().routes.map((route: any) => route.humanParticipantId)
+    ).toEqual(["owner", "bob"])
+  })
+
+  it("accepts ready=false for the current session after the last route disappears", async () => {
+    const room: any = makeRoom()
+    room.participants.resident.participantDataTransport = {
+      sessionId: "agent-session",
+      ready: true,
+    }
+    room.generatedApps = {}
+    const session = readySession(room)
+
+    const response = await session.fetch(readyRequest("agent-session", false))
+
+    expect(response.status).toBe(200)
+    expect(room.participants.resident.participantDataTransport.ready).toBe(
+      false
+    )
+    expect(session.broadcastState).toHaveBeenCalledOnce()
+  })
+
+  it("accepts ready=false when the final Human source disappears", async () => {
+    const room: any = makeRoom()
+    room.participants.resident.participantDataTransport = {
+      sessionId: "agent-session",
+      ready: true,
+    }
+    room.participants.owner.media.appDataChannelReady = false
+    const session = readySession(room)
+
+    const response = await session.fetch(readyRequest("agent-session", false))
+
+    expect(response.status).toBe(200)
+    expect(room.participants.resident.participantDataTransport.ready).toBe(
+      false
+    )
+  })
+
+  it("rejects stale ready=false and ready=true when no route or source remains", async () => {
+    const staleRoom: any = makeRoom()
+    staleRoom.participants.resident.participantDataTransport = {
+      sessionId: "new-session",
+      ready: true,
+    }
+    const staleSession = readySession(staleRoom)
+    const staleResponse = await staleSession.fetch(
+      readyRequest("old-session", false)
+    )
+    expect(staleResponse.status).toBe(401)
+    expect(staleRoom.participants.resident.participantDataTransport).toEqual({
+      sessionId: "new-session",
+      ready: true,
+    })
+
+    const unavailableRoom: any = makeRoom()
+    unavailableRoom.participants.resident.participantDataTransport = {
+      sessionId: "agent-session",
+      ready: false,
+    }
+    unavailableRoom.generatedApps = {}
+    const unavailableSession = readySession(unavailableRoom)
+    const readyResponse = await unavailableSession.fetch(
+      readyRequest("agent-session", true)
+    )
+    expect(readyResponse.status).toBe(403)
+    expect(
+      unavailableRoom.participants.resident.participantDataTransport.ready
+    ).toBe(false)
   })
 
   it("authorizes only the authenticated Human in the current Task/App Agent pair", async () => {

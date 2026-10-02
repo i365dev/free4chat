@@ -2779,9 +2779,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         capabilityIds,
       })
     }
-    if (routes.length === 0) return { routes, sources: [] }
+    if (routes.length === 0) return { routes: [], sources: [] }
 
-    const authorizedHumanIds = new Set(
+    const candidateHumanIds = new Set(
       routes.map((route) => route.humanParticipantId)
     )
     const sources = Object.values(room.participants)
@@ -2792,7 +2792,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           media: NonNullable<RoomParticipant["media"]>
         } =>
           participant.kind === "human" &&
-          authorizedHumanIds.has(participant.id) &&
+          candidateHumanIds.has(participant.id) &&
           participant.connected &&
           Boolean(participant.media?.appDataChannelReady) &&
           typeof participant.media?.sessionId === "string"
@@ -2802,7 +2802,22 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         participantId: participant.id,
         sessionId: participant.media.sessionId,
       }))
-    return { routes, sources }
+    const sourceHumanIds = new Set(
+      sources.map((source) => source.participantId)
+    )
+    const availableRoutes = routes.filter((route) =>
+      sourceHumanIds.has(route.humanParticipantId)
+    )
+    if (availableRoutes.length === 0) return { routes: [], sources: [] }
+    const routedHumanIds = new Set(
+      availableRoutes.map((route) => route.humanParticipantId)
+    )
+    return {
+      routes: availableRoutes,
+      sources: sources.filter((source) =>
+        routedHumanIds.has(source.participantId)
+      ),
+    }
   }
 
   private projectRoomAppsForAgent(
@@ -5762,10 +5777,14 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         room,
         participant.id
       )
+      if (typeof request.ready !== "boolean")
+        return this.json(
+          { error: "participant_data_transport_unavailable" },
+          403
+        )
       if (
-        state.routes.length === 0 ||
-        (request.ready === true && state.sources.length === 0) ||
-        typeof request.ready !== "boolean"
+        request.ready &&
+        (state.routes.length === 0 || state.sources.length === 0)
       )
         return this.json(
           { error: "participant_data_transport_unavailable" },
