@@ -193,11 +193,11 @@ describe("resolveAgentPurposePermission — agent-transport purpose", () => {
   })
 })
 
-describe("resolveAgentPurposePermission — generated app participant transport", () => {
+describe("resolveAgentPurposePermission — participant reliable transport", () => {
   it("allows reliable data transport without any media direction or grant", () => {
     expect(
       resolveAgentPurposePermission({
-        purpose: "generated-app-capability",
+        purpose: "participant-reliable",
         wantsLocalPublish: false,
         wantsRemoteSubscribe: false,
         involvesVideo: false,
@@ -209,7 +209,7 @@ describe("resolveAgentPurposePermission — generated app participant transport"
     ]) {
       expect(
         resolveAgentPurposePermission({
-          purpose: "generated-app-capability",
+          purpose: "participant-reliable",
           ...direction,
           involvesVideo: false,
         })

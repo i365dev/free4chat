@@ -60,7 +60,8 @@ func TestRuntimeCapabilityProjectionAndRpcBounds(t *testing.T) {
 		Routes: []RuntimeParticipantTransportRoute{{
 			AppInstanceID:  "generated:123e4567-e89b-12d3-a456-426614174000",
 			BundleRevision: 2, TaskRequestID: "task-origin", AgentParticipantID: "agent-a",
-			RuntimeHostID: "host-route-1", CapabilityIDs: []string{"fixture"},
+			HumanParticipantID: "human-a",
+			RuntimeHostID:      "host-route-1", CapabilityIDs: []string{"fixture"},
 		}},
 		Sources: []RuntimeParticipantTransportSource{{ParticipantID: "human-a", SessionID: "human-session-1"}},
 	}

@@ -81,7 +81,7 @@ export type AgentMediaPurpose =
   | "live-transcript"
   | "voice-reply"
   | "agent-transport"
-  | "generated-app-capability"
+  | "participant-reliable"
 
 /**
  * #83 direction matrix (pure, fail-closed): what an explicit narrow purpose
@@ -89,7 +89,8 @@ export type AgentMediaPurpose =
  * meeting-notes unlocks ONLY remote Human-audio subscribe; voice-reply
  * unlocks ONLY local single-audio publish; agent-transport covers ONLY
  * transport plumbing (initial DataChannel establish / bootstrap
- * renegotiation) and is refused for any media direction; video is always
+ * renegotiation) and is refused for any media direction. participant-reliable
+ * similarly admits only its no-media DataChannel transport; video is always
  * denied.
  */
 export function resolveAgentPurposePermission(args: {
@@ -104,7 +105,7 @@ export function resolveAgentPurposePermission(args: {
     args.purpose !== "live-transcript" &&
     args.purpose !== "voice-reply" &&
     args.purpose !== "agent-transport" &&
-    args.purpose !== "generated-app-capability"
+    args.purpose !== "participant-reliable"
   )
     return { ok: false, error: "agent_media_purpose_required" }
   if (args.wantsLocalPublish && args.purpose !== "voice-reply")

@@ -1409,6 +1409,7 @@ type RuntimeParticipantTransportRoute struct {
 	BundleRevision     int64    `json:"bundleRevision"`
 	TaskRequestID      string   `json:"taskRequestId"`
 	AgentParticipantID string   `json:"agentParticipantId"`
+	HumanParticipantID string   `json:"humanParticipantId"`
 	RuntimeHostID      string   `json:"runtimeHostId"`
 	CapabilityIDs      []string `json:"capabilityIds"`
 }
@@ -1434,6 +1435,7 @@ func (p RuntimeParticipantTransportProjection) Valid() bool {
 			route.BundleRevision < 1 || route.TaskRequestID == "" ||
 			!validCapabilityText(route.TaskRequestID, MaxResidentTaskRequestID) ||
 			!participantTransportParticipantPattern.MatchString(route.AgentParticipantID) ||
+			!participantTransportParticipantPattern.MatchString(route.HumanParticipantID) ||
 			!ValidRuntimeHostID(route.RuntimeHostID) ||
 			len(route.CapabilityIDs) == 0 || len(route.CapabilityIDs) > 8 {
 			return false
@@ -1463,6 +1465,11 @@ func (p RuntimeParticipantTransportProjection) Valid() bool {
 			return false
 		}
 		sources[source.ParticipantID] = struct{}{}
+	}
+	for _, route := range p.Routes {
+		if _, exists := sources[route.HumanParticipantID]; !exists {
+			return false
+		}
 	}
 	return true
 }

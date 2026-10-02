@@ -169,9 +169,11 @@ func TestResidentRuntimeUsesEventStreamAndControlProjectionsDoNotWakeHarness(t *
 				BundleRevision:     1,
 				TaskRequestID:      "task-origin",
 				AgentParticipantID: "agent-a",
+				HumanParticipantID: "human-a",
 				RuntimeHostID:      "11111111-2222-3333-4444-555555555555",
 				CapabilityIDs:      []string{"printer_status"},
 			}},
+			Sources: []types.RuntimeParticipantTransportSource{{ParticipantID: "human-a", SessionID: "human-session"}},
 		},
 		Cursor: 0, ExpiresAt: time.Now().Add(time.Hour).UnixMilli(),
 	}

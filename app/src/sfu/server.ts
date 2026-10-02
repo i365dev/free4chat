@@ -4,6 +4,10 @@ import {
   type AdmissionRateLimiter,
 } from "../common/admissionLimit"
 import { isAllowedOrigin } from "../common/origin"
+import {
+  isParticipantDirectReliableChannelForAgent,
+  participantDirectReliableChannelName,
+} from "../common/participantDataChannel"
 import { realtimeBaseUrl } from "../common/realtimeUrl"
 import {
   resolveSfuAppSecret,
@@ -1243,6 +1247,87 @@ export async function handleSfuRequest(
     const sessionId = typeof body.sessionId === "string" ? body.sessionId : ""
     if (!room || !participantId || !token || !sessionId)
       return badRequest("missing_session")
+
+    if (body.transport === "participant-direct-reliable") {
+      if (route !== "datachannels/new")
+        return json({ error: "participant_direct_transport_forbidden" }, 403)
+      const channels = Array.isArray(body.dataChannels) ? body.dataChannels : []
+      if (!channels.length || channels.length > 32)
+        return badRequest("invalid_data_channel")
+      const authorizedChannels: Array<Record<string, unknown>> = []
+      for (const value of channels) {
+        if (!value || typeof value !== "object" || Array.isArray(value))
+          return badRequest("invalid_data_channel")
+        const channel = value as Record<string, unknown>
+        const peerParticipantId =
+          typeof channel.peerParticipantId === "string"
+            ? channel.peerParticipantId
+            : ""
+        const dataChannelName =
+          typeof channel.dataChannelName === "string"
+            ? channel.dataChannelName
+            : ""
+        let direction: "publish" | "subscribe"
+        let peerSessionId: string | undefined
+        if (
+          channel.location === "local" &&
+          channel.ordered === true &&
+          dataChannelName ===
+            participantDirectReliableChannelName(
+              participantId,
+              peerParticipantId
+            )
+        ) {
+          direction = "publish"
+        } else if (
+          channel.location === "remote" &&
+          channel.ordered === true &&
+          channel.waitForAck === true &&
+          channel.canReply === true &&
+          typeof channel.sessionId === "string" &&
+          isParticipantDirectReliableChannelForAgent(
+            dataChannelName,
+            peerParticipantId
+          )
+        ) {
+          direction = "subscribe"
+          peerSessionId = channel.sessionId
+        } else {
+          return json(
+            { error: "participant_direct_channel_shape_forbidden" },
+            403
+          )
+        }
+        const pairAuthorization = await roomControl(env, room, {
+          action: "authorize-participant-direct-datachannel",
+          participantId,
+          token,
+          sessionId,
+          peerParticipantId,
+          ...(peerSessionId ? { peerSessionId } : {}),
+          dataChannelName,
+          direction,
+        })
+        if (!pairAuthorization.ok) return pairAuthorization
+        const upstreamChannel = { ...channel }
+        delete upstreamChannel.peerParticipantId
+        authorizedChannels.push(upstreamChannel)
+      }
+      const upstream = await realtimeRequest(
+        env,
+        `/sessions/${encodeURIComponent(sessionId)}/datachannels/new`,
+        {
+          method: "POST",
+          body: JSON.stringify({ dataChannels: authorizedChannels }),
+        }
+      )
+      const responseBody = await upstream.text()
+      return new Response(responseBody, {
+        status: upstream.status,
+        headers: { "Content-Type": "application/json" },
+      })
+    }
+
     const auth = await authorize(
       env,
       room,
@@ -1270,55 +1355,7 @@ export async function handleSfuRequest(
       kind?: string
     }
     if (dataChannelCallerKind === "agent") {
-      const capabilityPurpose = body.purpose === "generated-app-capability"
-      if (route === "datachannels/new" && capabilityPurpose) {
-        const channels = Array.isArray(body.dataChannels)
-          ? body.dataChannels.filter(
-              (channel): channel is Record<string, unknown> =>
-                Boolean(channel) && typeof channel === "object"
-            )
-          : []
-        if (!channels.length || channels.length > 33)
-          return badRequest("invalid_data_channel")
-        for (const channel of channels) {
-          const localName = `room-app-reliable-${participantId}`
-          const isLocal =
-            channel.location === "local" &&
-            channel.dataChannelName === localName &&
-            channel.ordered === true
-          const remoteName =
-            typeof channel.dataChannelName === "string"
-              ? channel.dataChannelName
-              : ""
-          const remoteId = remoteName.startsWith("room-app-reliable-")
-            ? remoteName.slice("room-app-reliable-".length)
-            : ""
-          const isRemote =
-            channel.location === "remote" &&
-            /^[A-Za-z0-9_-]{1,128}$/.test(remoteId) &&
-            remoteName === `room-app-reliable-${remoteId}` &&
-            channel.ordered === true &&
-            channel.waitForAck === true &&
-            typeof channel.sessionId === "string"
-          if (!isLocal && !isRemote)
-            return json({ error: "agent_datachannel_shape_forbidden" }, 403)
-          if (isRemote) {
-            const sourceAuth = await authorize(
-              env,
-              room,
-              participantId,
-              token,
-              sessionId,
-              undefined,
-              undefined,
-              channel.sessionId as string,
-              undefined,
-              "generated-app-capability"
-            )
-            if (!sourceAuth.ok) return sourceAuth
-          }
-        }
-      } else if (route === "datachannels/new") {
+      if (route === "datachannels/new") {
         return json({ error: "agent_datachannel_forbidden" }, 403)
       }
       if (

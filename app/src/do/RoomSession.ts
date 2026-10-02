@@ -143,6 +143,7 @@ import {
   validateGeneratedRoomAppBundle,
   validateGeneratedRoomAppState,
 } from "../common/generatedRoomApp"
+import { participantDirectReliableChannelName } from "../common/participantDataChannel"
 import {
   ROOM_APP_MAX_PAYLOAD_BYTES,
   ROOM_APP_AGENT_MAX_IN_FLIGHT,
@@ -469,6 +470,7 @@ interface RuntimeParticipantTransportRouteProjection {
   bundleRevision: number
   taskRequestId: string
   agentParticipantId: string
+  humanParticipantId: string
   runtimeHostId: string
   capabilityIds: string[]
 }
@@ -864,6 +866,16 @@ type ControlRequest =
       token: string
       sessionId: string
       ready: boolean
+    }
+  | {
+      action: "authorize-participant-direct-datachannel"
+      participantId: string
+      token: string
+      sessionId: string
+      peerParticipantId: string
+      peerSessionId?: string
+      dataChannelName: string
+      direction: "publish" | "subscribe"
     }
   | {
       // #83 review: narrow admission probe for the ONE shared Agent SFU
@@ -2722,8 +2734,8 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   /**
    * Private control-plane association for Runtime participant DataChannels.
    * Operation payloads never use the RoomSession DO; this snapshot only binds
-   * the published Task App to its originating Agent/Host and lists currently
-   * connected Human Room App publishers for direct SFU subscriptions.
+   * the published Task App to its originating Agent/Host/Human pair and lists
+   * those connected Human participants for private direct SFU lanes.
    */
   private projectRuntimeParticipantTransportState(
     room: RoomRecord,
@@ -2748,6 +2760,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           participantId
       )
         continue
+      const humanParticipantId = [
+        task.request.fromParticipantId,
+        task.request.targetParticipantId,
+      ].find((candidateId) => room.participants[candidateId]?.kind === "human")
+      if (!humanParticipantId) continue
       const capabilityIds = host.capabilities
         .map((capability) => capability.capabilityId)
         .filter(isRuntimeCapabilityId)
@@ -2757,12 +2774,16 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         bundleRevision: publication.bundleRevision,
         taskRequestId: publication.taskRequestId,
         agentParticipantId: participantId,
+        humanParticipantId,
         runtimeHostId,
         capabilityIds,
       })
     }
     if (routes.length === 0) return { routes, sources: [] }
 
+    const authorizedHumanIds = new Set(
+      routes.map((route) => route.humanParticipantId)
+    )
     const sources = Object.values(room.participants)
       .filter(
         (
@@ -2771,6 +2792,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           media: NonNullable<RoomParticipant["media"]>
         } =>
           participant.kind === "human" &&
+          authorizedHumanIds.has(participant.id) &&
           participant.connected &&
           Boolean(participant.media?.appDataChannelReady) &&
           typeof participant.media?.sessionId === "string"
@@ -5757,6 +5779,69 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       return this.json({ ok: true })
     }
 
+    if (request.action === "authorize-participant-direct-datachannel") {
+      const room = await this.activeRoom()
+      if (!room) return this.json({ error: "room_expired" }, 410)
+      const caller = this.findParticipant(
+        room,
+        request.participantId,
+        request.token
+      )
+      const peer = room.participants[request.peerParticipantId]
+      if (!caller || !caller.connected || !peer || !peer.connected)
+        return this.json({ error: "unauthorized" }, 401)
+
+      const agent = caller.kind === "agent" ? caller : peer
+      const human = caller.kind === "human" ? caller : peer
+      const expectedName =
+        agent.kind === "agent" && human.kind === "human"
+          ? participantDirectReliableChannelName(agent.id, human.id)
+          : null
+      const participantState =
+        agent.kind === "agent"
+          ? this.projectRuntimeParticipantTransportState(room, agent.id)
+          : { routes: [], sources: [] }
+      const associated = participantState.routes.some(
+        (route) => route.humanParticipantId === human.id
+      )
+      const currentHumanSource = participantState.sources.some(
+        (source) =>
+          source.participantId === human.id &&
+          source.sessionId === human.media?.sessionId
+      )
+      const publisherSessionMatches =
+        agent.kind === "agent" &&
+        agent.participantDataTransport?.sessionId ===
+          (request.direction === "publish"
+            ? request.sessionId
+            : request.peerSessionId)
+      const callerSessionMatches =
+        request.direction === "publish"
+          ? caller === agent && caller.kind === "agent"
+          : caller === human &&
+            caller.kind === "human" &&
+            caller.media?.sessionId === request.sessionId
+
+      if (
+        !expectedName ||
+        request.dataChannelName !== expectedName ||
+        !associated ||
+        !currentHumanSource ||
+        !publisherSessionMatches ||
+        !callerSessionMatches ||
+        (request.direction !== "publish" &&
+          request.direction !== "subscribe") ||
+        (request.direction === "subscribe" &&
+          agent.participantDataTransport?.ready !== true)
+      )
+        return this.json(
+          { error: "participant_direct_pair_not_authorized" },
+          403
+        )
+
+      return this.json({ ok: true })
+    }
+
     if (request.action === "agent-media-attach") {
       const room = await this.activeRoom()
       if (!room) return this.json({ error: "room_expired" }, 410)
@@ -6139,16 +6224,17 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     if (!room) return this.json({ error: "room_expired" }, 410)
 
     if (request.action === "authorize") {
-      const capabilitySession = request.purpose === "generated-app-capability"
+      const participantReliableSession =
+        request.purpose === "participant-reliable"
       const participant = this.findParticipant(
         room,
         request.participantId,
         request.token,
-        capabilitySession ? undefined : request.sessionId
+        participantReliableSession ? undefined : request.sessionId
       )
       if (!participant) return this.json({ error: "unauthorized" }, 401)
       if (
-        capabilitySession &&
+        participantReliableSession &&
         (participant.kind !== "agent" ||
           request.sessionId !==
             participant.participantDataTransport?.sessionId ||
@@ -6221,12 +6307,6 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         )
           return this.json({ error: "agent_media_not_authorized" }, 403)
         if (
-          request.purpose === "generated-app-capability" &&
-          (request.localTrackCount ?? 0) > 0
-        ) {
-          return this.json({ error: "agent_media_direction_forbidden" }, 403)
-        }
-        if (
           participant.media?.agentPublishedMid &&
           (request.localTrackCount ?? 0) > 0
         )
@@ -6297,9 +6377,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
                 this.projectRuntimeParticipantTransportState(room, candidate.id)
                   .routes.length > 0))
         )
-        const capabilitySource =
+        const participantDataSource =
           participant.kind === "agent" &&
-          request.purpose === "generated-app-capability" &&
+          request.purpose === "participant-reliable" &&
           this.projectRuntimeParticipantTransportState(
             room,
             participant.id
@@ -6308,7 +6388,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           )
         if (
           !sessionExists ||
-          (request.purpose === "generated-app-capability" && !capabilitySource)
+          (participantReliableSession && !participantDataSource)
         )
           return this.json({ error: "datachannel_session_not_found" }, 404)
       }

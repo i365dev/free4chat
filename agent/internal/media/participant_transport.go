@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +19,25 @@ const (
 	capabilityPayloadLimit = 16 * 1024
 	capabilitySeenLimit    = 64
 )
+
+func participantDirectReliableChannelName(agentParticipantID, humanParticipantID string) string {
+	if !participantIDForDirectChannel(agentParticipantID) || !participantIDForDirectChannel(humanParticipantID) || agentParticipantID == humanParticipantID {
+		return ""
+	}
+	return "participant-direct-reliable-" + strconv.Itoa(len(agentParticipantID)) + "-" + agentParticipantID + "-" + humanParticipantID
+}
+
+func participantIDForDirectChannel(value string) bool {
+	if len(value) == 0 || len(value) > 128 {
+		return false
+	}
+	for _, char := range value {
+		if (char < 'A' || char > 'Z') && (char < 'a' || char > 'z') && (char < '0' || char > '9') && char != '_' && char != '-' {
+			return false
+		}
+	}
+	return true
+}
 
 type capabilityFrame struct {
 	Type           string                            `json:"type"`
@@ -49,25 +69,29 @@ type reliableParticipantDataChannel interface {
 }
 
 // RuntimeParticipantTransport owns a media-free Pion connection for the
-// currently projected Generated App association. It has no queue: requests
-// are admitted only while the peer and the matching source channel are live.
+// currently authorized participant-pair projection. Its first consumer is
+// Generated App capability RPC. It has no queue: messages are admitted only
+// while the exact peer channel and projected Task/App route are live.
 type RuntimeParticipantTransport struct {
 	siteOrigin string
 	handle     DecodedHandle
 	handler    types.ResidentCapabilityController
 	log        func(string, map[string]string)
 
-	mu       sync.Mutex
-	closed   bool
-	ctx      context.Context
-	cancel   context.CancelFunc
-	session  string
-	engine   *Engine
-	outbound reliableParticipantDataChannel
-	routes   map[string]types.RuntimeParticipantTransportRoute
-	sources  map[string]string // negotiated subscriber label -> participant id
-	inflight chan struct{}
-	seen     map[string]time.Time
+	mu          sync.Mutex
+	closed      bool
+	starting    bool
+	generation  uint64
+	ctx         context.Context
+	cancel      context.CancelFunc
+	session     string
+	engine      *Engine
+	outbound    map[string]reliableParticipantDataChannel // Human participant id -> private pair lane
+	routes      map[string]types.RuntimeParticipantTransportRoute
+	sources     map[string]string // local pairwise publisher label -> Human participant id
+	inflight    chan struct{}
+	seen        map[string]time.Time
+	readyUpdate func(session string, ready bool) error
 }
 
 func NewRuntimeParticipantTransport(siteOrigin string, handle DecodedHandle, handler types.ResidentCapabilityController, log func(string, map[string]string)) *RuntimeParticipantTransport {
@@ -113,20 +137,34 @@ func (t *RuntimeParticipantTransport) Start(ctx context.Context, projection type
 	projection.Routes = filteredRoutes
 	transportCtx, cancel := context.WithCancel(ctx)
 	t.mu.Lock()
-	if t.closed {
+	if t.closed || t.starting || t.session != "" {
+		closed := t.closed
 		t.mu.Unlock()
 		cancel()
-		return errors.New("participant_data_transport_closed")
+		if closed {
+			return errors.New("participant_data_transport_closed")
+		}
+		return errors.New("participant_data_transport_already_started")
 	}
+	t.generation++
+	generation := t.generation
+	t.starting = true
 	t.ctx, t.cancel = transportCtx, cancel
 	t.mu.Unlock()
 	rest := NewSfuRestClient(t.siteOrigin, t.handle)
 	session, err := rest.CreateAgentParticipantDataSession()
 	if err != nil {
 		cancel()
+		t.finishStartFailure(generation, "", nil)
 		return err
 	}
 	t.mu.Lock()
+	if t.closed || t.generation != generation || transportCtx.Err() != nil {
+		t.mu.Unlock()
+		cancel()
+		_ = t.updateParticipantDataReady(session, false)
+		return errors.New("participant_data_transport_closed")
+	}
 	t.session = session
 	t.mu.Unlock()
 	events := EngineEvents{OnDataChannelMessage: func(label string, payload []byte) { t.receive(label, payload) }}
@@ -134,7 +172,8 @@ func (t *RuntimeParticipantTransport) Start(ctx context.Context, projection type
 	fail := func(err error) error {
 		cancel()
 		engine.Close()
-		_ = rest.SetAgentParticipantDataReady(session, false)
+		_ = t.updateParticipantDataReady(session, false)
+		t.finishStartFailure(generation, session, engine)
 		return err
 	}
 	if err := engine.Create(); err != nil {
@@ -147,7 +186,7 @@ func (t *RuntimeParticipantTransport) Start(ctx context.Context, projection type
 	if err != nil {
 		return fail(err)
 	}
-	answer, err := rest.EstablishDataChannelTransport(session, *offer, PurposeGeneratedAppCapability)
+	answer, err := rest.EstablishDataChannelTransport(session, *offer, PurposeParticipantReliable)
 	if err != nil {
 		return fail(err)
 	}
@@ -162,28 +201,35 @@ func (t *RuntimeParticipantTransport) Start(ctx context.Context, projection type
 		return fail(err)
 	}
 
-	channels := []map[string]any{{"location": "local", "dataChannelName": "room-app-reliable-" + t.handle.ParticipantID, "ordered": true}}
+	channels := make([]map[string]any, 0, len(projection.Sources))
+	channelHumans := make([]string, 0, len(projection.Sources))
 	for _, source := range projection.Sources {
-		channels = append(channels, map[string]any{"location": "remote", "sessionId": source.SessionID, "dataChannelName": "room-app-reliable-" + source.ParticipantID, "ordered": true, "waitForAck": true})
+		name := participantDirectReliableChannelName(t.handle.ParticipantID, source.ParticipantID)
+		if name == "" {
+			return fail(errors.New("participant_direct_channel_invalid"))
+		}
+		channels = append(channels, map[string]any{
+			"location": "local", "dataChannelName": name, "ordered": true,
+			"peerParticipantId": source.ParticipantID,
+		})
+		channelHumans = append(channelHumans, source.ParticipantID)
 	}
 	ids, err := rest.CreateParticipantDataChannels(session, channels)
 	if err != nil {
 		return fail(err)
 	}
-	outbound, err := engine.CreateParticipantDataChannel("room-app-reliable-"+t.handle.ParticipantID, ids[0])
-	if err != nil {
-		return fail(err)
-	}
+	outbound := make(map[string]reliableParticipantDataChannel, len(projection.Sources))
 	sources := make(map[string]string, len(projection.Sources))
-	channelsReady := []*ParticipantDataChannel{outbound}
+	channelsReady := make([]*ParticipantDataChannel, 0, len(projection.Sources))
 	for i, source := range projection.Sources {
-		label := "room-app-reliable-" + source.ParticipantID + "-subscriber"
-		channel, err := engine.CreateParticipantDataChannel(label, ids[i+1])
+		label := participantDirectReliableChannelName(t.handle.ParticipantID, source.ParticipantID)
+		channel, err := engine.CreateParticipantDataChannel(label, ids[i])
 		if err != nil {
 			return fail(err)
 		}
 		channelsReady = append(channelsReady, channel)
-		sources[label] = source.ParticipantID
+		sources[label] = channelHumans[i]
+		outbound[source.ParticipantID] = channel
 	}
 	allReady := func() bool {
 		for _, channel := range channelsReady {
@@ -209,16 +255,61 @@ func (t *RuntimeParticipantTransport) Start(ctx context.Context, projection type
 		routes[route.AppInstanceID] = route
 	}
 	t.mu.Lock()
-	if t.closed || transportCtx.Err() != nil {
+	if t.closed || t.generation != generation || transportCtx.Err() != nil || t.session != session {
 		t.mu.Unlock()
 		return fail(errors.New("participant_data_transport_closed"))
 	}
 	t.session, t.engine, t.outbound, t.routes, t.sources = session, engine, outbound, routes, sources
 	t.mu.Unlock()
-	if err := rest.SetAgentParticipantDataReady(session, true); err != nil {
+	if err := t.publishReadyAndCheckCurrent(session, engine, generation); err != nil {
 		return fail(err)
 	}
 	return nil
+}
+
+func (t *RuntimeParticipantTransport) updateParticipantDataReady(session string, ready bool) error {
+	if t.readyUpdate != nil {
+		return t.readyUpdate(session, ready)
+	}
+	return NewSfuRestClient(t.siteOrigin, t.handle).SetAgentParticipantDataReady(session, ready)
+}
+
+func (t *RuntimeParticipantTransport) publishReadyAndCheckCurrent(session string, engine *Engine, generation uint64) error {
+	if err := t.updateParticipantDataReady(session, true); err != nil {
+		return err
+	}
+	t.mu.Lock()
+	current := !t.closed && t.generation == generation && t.session == session && t.engine == engine
+	if current {
+		t.starting = false
+	}
+	t.mu.Unlock()
+	if current {
+		return nil
+	}
+	// Close may have published ready=false while the true request was in
+	// flight. Reassert false after the stale true completes; this exact-session
+	// corrective update cannot affect a replacement transport.
+	_ = t.updateParticipantDataReady(session, false)
+	return errors.New("participant_data_transport_closed")
+}
+
+func (t *RuntimeParticipantTransport) finishStartFailure(generation uint64, session string, engine *Engine) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.generation != generation {
+		return
+	}
+	t.ctx = nil
+	t.cancel = nil
+	if session != "" && t.session == session && (t.engine == nil || t.engine == engine) {
+		t.session = ""
+		t.engine = nil
+		t.outbound = nil
+		t.routes = nil
+		t.sources = nil
+	}
+	t.starting = false
 }
 
 // completeParticipantDataTransportBootstrap follows the established Bridge
@@ -248,7 +339,7 @@ func completeParticipantDataTransportBootstrap(
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := renegotiate(session, *answer, PurposeGeneratedAppCapability); err != nil {
+		if err := renegotiate(session, *answer, PurposeParticipantReliable); err != nil {
 			return err
 		}
 	} else {
@@ -267,7 +358,9 @@ func (t *RuntimeParticipantTransport) receive(label string, payload []byte) {
 		return
 	}
 	t.mu.Lock()
-	if t.closed || t.sources[label] == "" || t.outbound == nil || !t.outbound.Ready() {
+	humanParticipantID := t.sources[label]
+	out := t.outbound[humanParticipantID]
+	if t.closed || humanParticipantID == "" || out == nil || !out.Ready() {
 		t.mu.Unlock()
 		return
 	}
@@ -278,13 +371,12 @@ func (t *RuntimeParticipantTransport) receive(label string, payload []byte) {
 		return
 	}
 	route, ok := t.routes[frame.AppInstanceID]
-	if !ok || frame.BundleRevision != route.BundleRevision || frame.TaskRequestID != route.TaskRequestID || frame.AgentID != route.AgentParticipantID || !containsString(route.CapabilityIDs, frame.CapabilityID) || frame.RequestID == "" || len(frame.RequestID) > 64 || strings.TrimSpace(frame.RequestID) != frame.RequestID {
+	if !ok || route.HumanParticipantID != humanParticipantID || frame.BundleRevision != route.BundleRevision || frame.TaskRequestID != route.TaskRequestID || frame.AgentID != route.AgentParticipantID || !containsString(route.CapabilityIDs, frame.CapabilityID) || frame.RequestID == "" || len(frame.RequestID) > 64 || strings.TrimSpace(frame.RequestID) != frame.RequestID {
 		t.mu.Unlock()
 		return
 	}
 	request := types.ResidentCapabilityRequest{RequestID: frame.RequestID, RuntimeHostID: route.RuntimeHostID, CapabilityID: frame.CapabilityID, Operation: frame.Operation, Action: frame.Action, Args: frame.Args}
 	if !t.capabilityRequestAllowed(route, request) {
-		out := t.outbound
 		t.mu.Unlock()
 		t.sendResult(out, route, frame, "unauthorized", nil)
 		return
@@ -314,7 +406,6 @@ func (t *RuntimeParticipantTransport) receive(label string, payload []byte) {
 		return
 	}
 	t.seen[frame.RequestID] = now.Add(30 * time.Second)
-	out := t.outbound
 	transportCtx := t.ctx
 	t.mu.Unlock()
 	if transportCtx == nil {
@@ -402,6 +493,8 @@ func (t *RuntimeParticipantTransport) Close() {
 		return
 	}
 	t.closed = true
+	t.generation++
+	t.starting = false
 	session, engine := t.session, t.engine
 	cancel := t.cancel
 	t.cancel = nil
@@ -416,7 +509,7 @@ func (t *RuntimeParticipantTransport) Close() {
 		cancel()
 	}
 	if session != "" {
-		_ = NewSfuRestClient(t.siteOrigin, t.handle).SetAgentParticipantDataReady(session, false)
+		_ = t.updateParticipantDataReady(session, false)
 	}
 	if engine != nil {
 		engine.Close()

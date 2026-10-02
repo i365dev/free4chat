@@ -63,11 +63,11 @@ func SiteOriginFromMCPURL(mcpURL string) (string, error) {
 type Purpose string
 
 const (
-	PurposeAgentTransport         Purpose = "agent-transport"
-	PurposeGeneratedAppCapability Purpose = "generated-app-capability"
-	PurposeMeetingNotes           Purpose = "meeting-notes"
-	PurposeLiveTranscript         Purpose = "live-transcript"
-	PurposeVoiceReply             Purpose = "voice-reply"
+	PurposeAgentTransport      Purpose = "agent-transport"
+	PurposeParticipantReliable Purpose = "participant-reliable"
+	PurposeMeetingNotes        Purpose = "meeting-notes"
+	PurposeLiveTranscript      Purpose = "live-transcript"
+	PurposeVoiceReply          Purpose = "voice-reply"
 )
 
 // AgentMediaDiscoveryDenied is the agent-room-media denial code introduced
@@ -229,15 +229,15 @@ func (c *SfuRestClient) SetAgentParticipantDataReady(sessionID string, ready boo
 	return err
 }
 
-// CreateParticipantDataChannels allocates bounded, already-associated
-// negotiated channels on the current Cloudflare session.
+// CreateParticipantDataChannels allocates bounded, pair-authorized negotiated
+// reliable channels on the current Cloudflare session.
 func (c *SfuRestClient) CreateParticipantDataChannels(sessionID string, channels []map[string]any) ([]uint16, error) {
 	if len(channels) == 0 || len(channels) > 33 {
 		return nil, errors.New("invalid_datachannel_count")
 	}
 	body := c.base()
 	body["sessionId"] = sessionID
-	body["purpose"] = string(PurposeGeneratedAppCapability)
+	body["transport"] = "participant-direct-reliable"
 	body["dataChannels"] = channels
 	data, err := c.request("datachannels/new", http.MethodPost, body)
 	if err != nil {

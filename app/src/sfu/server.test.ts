@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { handleSfuRequest, type SfuEnv } from "./server"
 import type { AdmissionRateLimiter } from "../common/admissionLimit"
+import { participantDirectReliableChannelName } from "../common/participantDataChannel"
 import { TURNSTILE_ACTION } from "../common/turnstile"
 
 type DoResponder = (body: Record<string, unknown>) => {
@@ -2344,26 +2345,28 @@ describe("#83 review: purpose reaches every DO authorize along the real path", (
   })
 })
 
-describe("#83 review: Agent datachannel access is bootstrap-only over the shared session", () => {
-  function agentDataChannelEnv() {
-    const fetchMock = vi.fn(async (_input: string | URL | Request) =>
-      Response.json({ ok: true })
+describe("participant direct reliable DataChannel authorization", () => {
+  function agentDataChannelEnv(respond?: DoResponder) {
+    const fetchMock = vi.fn(
+      async (_input: string | URL | Request, _init: RequestInit) =>
+        Response.json({ ok: true })
     )
     vi.stubGlobal("fetch", fetchMock)
-    const seenActions: string[] = []
+    const seenActions: Record<string, unknown>[] = []
     const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
       if (body.action === "authorize")
         return { status: 200, body: { ok: true, kind: "agent" } }
-      seenActions.push(String(body.action))
+      seenActions.push(body)
+      if (respond) return respond(body)
       return { status: 200, body: { ok: true } }
     })
-    return { fetchMock, env }
+    return { fetchMock, env, seenActions }
   }
 
   const baseBody = {
     ...agentBody,
     sessionId: "sess-a",
-    purpose: "agent-transport",
+    purpose: "participant-reliable",
   }
   const origin = { origin: "https://www.free4.chat" }
 
@@ -2432,18 +2435,21 @@ describe("#83 review: Agent datachannel access is bootstrap-only over the shared
     )
   })
 
-  it("allows only the Agent's named reliable capability lane without media grants", async () => {
-    const { fetchMock, env } = agentDataChannelEnv()
+  it("creates one Agent-published lane for its authorized Human pair", async () => {
+    const { fetchMock, env, seenActions } = agentDataChannelEnv()
+    const name = participantDirectReliableChannelName("agent-1", "human-1")
     const res = await handleSfuRequest(
       req("datachannels/new", {
         ...origin,
         body: JSON.stringify({
-          ...baseBody,
-          purpose: "generated-app-capability",
+          ...agentBody,
+          sessionId: "sess-a",
+          transport: "participant-direct-reliable",
           dataChannels: [
             {
               location: "local",
-              dataChannelName: "room-app-reliable-agent-1",
+              dataChannelName: name,
+              peerParticipantId: "human-1",
               ordered: true,
             },
           ],
@@ -2452,24 +2458,58 @@ describe("#83 review: Agent datachannel access is bootstrap-only over the shared
       env
     )
     expect(res.status).toBe(200)
+    expect(seenActions).toEqual([
+      expect.objectContaining({
+        action: "authorize-participant-direct-datachannel",
+        participantId: "agent-1",
+        peerParticipantId: "human-1",
+        sessionId: "sess-a",
+        dataChannelName: name,
+        direction: "publish",
+      }),
+    ])
+    expect(fetchMock.mock.calls[0][1]?.body).toBe(
+      JSON.stringify({
+        dataChannels: [
+          { location: "local", dataChannelName: name, ordered: true },
+        ],
+      })
+    )
     expect(String(fetchMock.mock.calls[0][0])).toContain(
       "/sessions/sess-a/datachannels/new"
     )
   })
 
-  it("rejects unrelated Agent channels on the capability transport before Cloudflare", async () => {
-    const { fetchMock, env } = agentDataChannelEnv()
+  it("rejects a Human who spoofs another participant's private lane suffix", async () => {
+    const { fetchMock, env, seenActions } = agentDataChannelEnv((body) =>
+      body.participantId === "human-b"
+        ? {
+            status: 403,
+            body: { error: "participant_direct_pair_not_authorized" },
+          }
+        : { status: 200, body: { ok: true } }
+    )
     const res = await handleSfuRequest(
       req("datachannels/new", {
         ...origin,
         body: JSON.stringify({
-          ...baseBody,
-          purpose: "generated-app-capability",
+          room: "test-room",
+          participantId: "human-b",
+          token: "human-b-token",
+          sessionId: "human-b-session",
+          transport: "participant-direct-reliable",
           dataChannels: [
             {
-              location: "local",
-              dataChannelName: "files-agent-a",
+              location: "remote",
+              sessionId: "agent-direct-session",
+              peerParticipantId: "agent-1",
+              dataChannelName: participantDirectReliableChannelName(
+                "agent-1",
+                "human-a"
+              ),
               ordered: true,
+              waitForAck: true,
+              canReply: true,
             },
           ],
         }),
@@ -2477,8 +2517,75 @@ describe("#83 review: Agent datachannel access is bootstrap-only over the shared
       env
     )
     expect(res.status).toBe(403)
-    expect((await json(res)).error).toBe("agent_datachannel_shape_forbidden")
+    expect((await json(res)).error).toBe(
+      "participant_direct_pair_not_authorized"
+    )
+    expect(seenActions).toEqual([
+      expect.objectContaining({
+        action: "authorize-participant-direct-datachannel",
+        participantId: "human-b",
+        peerParticipantId: "agent-1",
+        dataChannelName: participantDirectReliableChannelName(
+          "agent-1",
+          "human-a"
+        ),
+        direction: "subscribe",
+      }),
+    ])
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("allows only a direct Human subscriber with reply access and readiness gating", async () => {
+    const { fetchMock, env, seenActions } = agentDataChannelEnv()
+    const name = participantDirectReliableChannelName("agent-1", "human-a")
+    const res = await handleSfuRequest(
+      req("datachannels/new", {
+        ...origin,
+        body: JSON.stringify({
+          room: "test-room",
+          participantId: "human-a",
+          token: "human-a-token",
+          sessionId: "human-a-session",
+          transport: "participant-direct-reliable",
+          dataChannels: [
+            {
+              location: "remote",
+              sessionId: "agent-direct-session",
+              peerParticipantId: "agent-1",
+              dataChannelName: name,
+              ordered: true,
+              waitForAck: true,
+              canReply: true,
+            },
+          ],
+        }),
+      }),
+      env
+    )
+    expect(res.status).toBe(200)
+    expect(seenActions[0]).toMatchObject({
+      action: "authorize-participant-direct-datachannel",
+      participantId: "human-a",
+      sessionId: "human-a-session",
+      peerParticipantId: "agent-1",
+      peerSessionId: "agent-direct-session",
+      dataChannelName: name,
+      direction: "subscribe",
+    })
+    expect(fetchMock.mock.calls[0][1]?.body).toBe(
+      JSON.stringify({
+        dataChannels: [
+          {
+            location: "remote",
+            sessionId: "agent-direct-session",
+            dataChannelName: name,
+            ordered: true,
+            waitForAck: true,
+            canReply: true,
+          },
+        ],
+      })
+    )
   })
 
   it("close stays available to Agents for cleaning up the established channel", async () => {

@@ -248,7 +248,7 @@ func (s *residentEventStream) Receive(ctx context.Context) (types.WaitResult, er
 		RoomApps:   parseResidentRoomApps(envelope.RoomApps),
 	}
 	if !envelope.RuntimeParticipantTransport.Valid() {
-		return types.WaitResult{}, &Error{Message: "resident capability transport projection is invalid", Code: CodeToolError}
+		return types.WaitResult{}, &Error{Message: "resident participant transport projection is invalid", Code: CodeToolError}
 	}
 	wait.RuntimeParticipantTransport = envelope.RuntimeParticipantTransport
 	if envelope.Participants != nil {

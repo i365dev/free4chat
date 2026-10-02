@@ -2,6 +2,7 @@ import { act, renderHook, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { useSfuChatRoom } from "./useSfuChatRoom"
+import { participantDirectReliableChannelName } from "../common/participantDataChannel"
 import {
   EMPTY_ROOM_APP_CATALOG,
   roomAppInstanceId,
@@ -633,7 +634,7 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
     unmount()
   })
 
-  it("subscribes an Agent participant reliable lane when its Runtime data transport becomes ready and carries capability results there", async () => {
+  it("subscribes the private Agent-Human reliable lane and carries capability requests and results there", async () => {
     const appInstanceId = "generated:123e4567-e89b-12d3-a456-426614174000"
     const dataChannelCalls: Array<Record<string, unknown>> = []
     fetchMock.mockImplementation(
@@ -743,19 +744,36 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
     ).toBe(false)
     sendAgentState(true)
 
+    const directChannelName = participantDirectReliableChannelName(
+      "agent-a",
+      "participant-1"
+    )
     await waitFor(() =>
       expect(
         dataChannelCalls.some(
           (call) =>
-            call.publisherSessionId === "agent-data-session" &&
+            call.transport === "participant-direct-reliable" &&
             Array.isArray(call.dataChannels) &&
             (call.dataChannels[0] as { dataChannelName?: string })
-              .dataChannelName === "room-app-reliable-agent-a"
+              .dataChannelName === directChannelName
         )
       ).toBe(true)
     )
+    const directSubscription = dataChannelCalls.find(
+      (call) => call.transport === "participant-direct-reliable"
+    )
+    expect(directSubscription?.dataChannels).toEqual([
+      expect.objectContaining({
+        location: "remote",
+        peerParticipantId: "agent-a",
+        dataChannelName: directChannelName,
+        ordered: true,
+        waitForAck: true,
+        canReply: true,
+      }),
+    ])
     const agentSubscriber = FakePeerConnection.dataChannels.find(
-      (channel) => channel.label === "room-app-reliable-agent-a-subscriber"
+      (channel) => channel.label === `${directChannelName}-subscriber`
     )
     expect(agentSubscriber).toBeDefined()
 
@@ -776,8 +794,15 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
     const localReliable = FakePeerConnection.dataChannels.find(
       (channel) => channel.label === "room-app-reliable-participant-1"
     )
-    await waitFor(() => expect(localReliable?.send).toHaveBeenCalledOnce())
-    const outbound = JSON.parse(String(localReliable?.send.mock.calls[0][0]))
+    await waitFor(() =>
+      expect(agentSubscriber?.send.mock.calls.length).toBeGreaterThanOrEqual(2)
+    )
+    expect(localReliable?.send).not.toHaveBeenCalled()
+    const outbound = agentSubscriber?.send.mock.calls
+      .filter(([wire]) => wire !== "ack")
+      .map(([wire]) => JSON.parse(String(wire)))
+      .find((message) => message.payload?.type === "runtime-capability-request")
+    expect(outbound).toBeDefined()
     expect(outbound.payload.type).toBe("runtime-capability-request")
     expect(
       lastFakeWebSocket?.send.mock.calls.some(([wire]) =>
