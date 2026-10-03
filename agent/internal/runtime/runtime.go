@@ -2186,11 +2186,20 @@ func (r *ResidentRuntime) runTurn(scope string, target int64) {
 		r.lastErrorSource = ""
 	}
 	r.mu.Unlock()
+	// A Human must verify a published Task App before its capability-bearing
+	// Task is settled; otherwise the App loses its Task authorization first.
+	generatedAppNeedsHumanVerification := result.GeneratedApp != nil &&
+		humanTaskRequestFor(events, r.currentParticipantID()) != nil
 	if result.GeneratedApp != nil {
 		if err := r.publishGeneratedTaskOutput(scope, result.GeneratedApp); err != nil {
 			r.recordDeliveredTurnFailure(scope, "send", turnFailureSend, started, err)
 			r.settleHumanTask(events, "failed", "Agent Task App could not be published.")
 			return
+		}
+		if generatedAppNeedsHumanVerification {
+			r.log("task_app_waiting_for_human_verification", map[string]string{
+				"scopeKind": scopeKindOf(scope),
+			})
 		}
 	}
 	// A lifecycle result is never ordinary reply text. Its body may contain
@@ -2207,7 +2216,9 @@ func (r *ResidentRuntime) runTurn(scope string, target int64) {
 
 	text := strings.TrimSpace(result.Text)
 	if text == "" {
-		r.settleHumanTask(events, "completed", "Agent completed the task.")
+		if !generatedAppNeedsHumanVerification {
+			r.settleHumanTask(events, "completed", "Agent completed the task.")
+		}
 		return
 	}
 	handle, err := r.requireHandle()
@@ -2240,7 +2251,9 @@ func (r *ResidentRuntime) runTurn(scope string, target int64) {
 	// Task even when a Harness does not issue the separate collab-result CLI
 	// command itself. The Room deduplicates an explicit Harness result that
 	// raced this canonical completion.
-	r.settleHumanTask(events, "completed", "Agent completed the task.")
+	if !generatedAppNeedsHumanVerification {
+		r.settleHumanTask(events, "completed", "Agent completed the task.")
+	}
 	// Voice Reply is additive: speak only after the text reply is
 	// persisted; a nil/unready output keeps the turn text-only.
 	if voiceOutput := r.voiceOutput(); voiceOutput != nil {
