@@ -415,7 +415,7 @@ export default function Home() {
                   ],
                   [
                     "GENERATED TASK ROOM APP",
-                    "A bounded sandboxed mini-app with Room-shared state.",
+                    "A bounded sandboxed mini-app with Room-shared state and explicit access to the originating Runtime's bounded local capabilities.",
                   ],
                   [
                     "EXTERNAL APP",
@@ -446,11 +446,40 @@ export default function Home() {
             </section>
 
             <section
+              aria-labelledby="local-capabilities-heading"
+              className="w-full border-t border-emerald-900/60 py-10 text-left"
+            >
+              <p className="text-center font-mono text-xs font-bold uppercase tracking-widest text-emerald-600">
+                {"// local_capabilities"}
+              </p>
+              <h2
+                id="local-capabilities-heading"
+                className="mt-3 text-center font-mono text-lg font-bold uppercase tracking-wide text-emerald-200 sm:text-xl"
+              >
+                Bring a local capability into the Room without moving it to the
+                cloud.
+              </h2>
+              <p className="mx-auto mt-3 max-w-2xl text-center font-mono text-xs leading-relaxed text-emerald-600">
+                A Runtime can project a bounded semantic capability from an
+                external Adapter. A Generated Task App can use it on an explicit
+                Human action while local endpoints and credentials stay local.
+              </p>
+              <p className="mt-4 text-center">
+                <Link
+                  href="/docs/guides/interactive-task-outputs"
+                  className="font-mono text-xs text-emerald-400 underline-offset-4 hover:underline"
+                >
+                  How interactive Task outputs work →
+                </Link>
+              </p>
+            </section>
+
+            <section
               aria-labelledby="multi-agent-heading"
               className="w-full border-t border-emerald-900/60 py-12 text-center"
             >
               <p className="font-mono text-xs font-bold uppercase tracking-widest text-emerald-600">
-                {"// when_you_need_another_capability"}
+                {"// when_you_need_another_agent"}
               </p>
               <h2
                 id="multi-agent-heading"

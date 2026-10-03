@@ -12,6 +12,15 @@ test("homepage keeps document scrolling available without horizontal overflow", 
 }) => {
   await page.goto("/")
   await expect(page.locator("h1")).toBeVisible()
+  const localCapabilities = page.getByRole("region", {
+    name: "Bring a local capability into the Room without moving it to the cloud.",
+  })
+  await expect(localCapabilities).toBeVisible()
+  await expect(
+    localCapabilities.getByRole("link", {
+      name: "How interactive Task outputs work →",
+    })
+  ).toHaveAttribute("href", "/docs/guides/interactive-task-outputs")
 
   for (const viewport of VIEWPORTS) {
     await page.setViewportSize({

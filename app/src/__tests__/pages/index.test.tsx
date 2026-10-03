@@ -39,6 +39,33 @@ describe("Home page", () => {
       screen.getByText("$ free4chat-agent room create --agent pi --name Pi")
     ).toBeInTheDocument()
 
+    expect(
+      screen.getByText(
+        "A bounded sandboxed mini-app with Room-shared state and explicit access to the originating Runtime's bounded local capabilities."
+      )
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole("heading", {
+        name: "Bring a local capability into the Room without moving it to the cloud.",
+      })
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        "A Runtime can project a bounded semantic capability from an external Adapter. A Generated Task App can use it on an explicit Human action while local endpoints and credentials stay local."
+      )
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole("link", {
+        name: "How interactive Task outputs work →",
+      })
+    ).toHaveAttribute("href", "/docs/guides/interactive-task-outputs")
+    expect(
+      screen.getByText("// when_you_need_another_agent")
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByText("// when_you_need_another_capability")
+    ).not.toBeInTheDocument()
+
     // The homepage explore slots answer "what can I do with Free4Chat?" and
     // route to the product pages; docs and API entry points stay in the
     // footer, and the Agent quick start owns the developer card above.
