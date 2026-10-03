@@ -178,21 +178,32 @@ These boundaries do not make App guidance trustworthy or authorize a local
 Agent tool. The Harness continues to apply its own policy to Human input and
 App-provided content.
 
-## What comes next
+## Two completed production proofs
 
-Whiteboard proves an **App-owned shared software artifact**. The separate
-participant-local capability experiment in Extension Lab #215 tests a
-different ownership boundary:
+Whiteboard proves an **App-owned shared software artifact**: the App owns its
+semantic state and synchronization, while Humans and Agents use its existing
+contract.
+
+Extension Lab #215 completed a materially different proof with an external
+Epson/CUPS Adapter:
 
 ```text
-participant-local capability
-→ Runtime-owned local endpoint and credential
-→ Room projection
+participant-owned local capability
+→ Runtime validates and projects bounded semantics
+→ Generated Task App provides the Human control surface
 ```
 
-Only after that materially different second proof should Free4Chat consider
-extracting a broader Room Capability abstraction. This page records the
-shipped Room App pattern; it does not pre-specify that future framework.
+The Adapter owns printer discovery, endpoint, and service protocol. The
+Runtime projects one semantic capability and routes an explicitly Human-clicked
+operation over the private reliable Human↔originating-Agent participant lane;
+the Generated Task App receives only bounded semantic results. Core/Runtime
+contain no Epson/CUPS logic.
+
+Together, these proofs show that the existing Room App and participant-local
+capability seams are sufficient. Do not add a broader generic Room Capability
+framework until a third materially different use case demonstrates a missing
+primitive. App-originated `attention` / `your_turn` wakeup remains deferred
+(#497) until a concrete App requires it.
 
 ## Related pages
 

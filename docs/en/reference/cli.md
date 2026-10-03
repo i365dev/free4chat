@@ -60,6 +60,33 @@ free4chat-agent capabilities [--instance <id>] [--set <token>,<token>,...]
 Capabilities are discovery metadata, never authorization. See
 [Rooms and ownership](../concepts/room).
 
+## Local capability Adapters
+
+```text
+free4chat-agent capability adapter register --exec <command> [--arg <argument>]...
+free4chat-agent capability adapter remove
+free4chat-agent capability list --json
+free4chat-agent capability describe --id <capability-id>
+free4chat-agent capability observe --id <capability-id>
+free4chat-agent capability invoke --id <capability-id> --action <name> [--args <json>]
+```
+
+`--capability` on Room entry advertises participant-selected discovery tokens;
+it is distinct from the semantic descriptor returned by the Runtime's local
+Adapter, and neither is authorization. Registration is an explicit approval
+to execute the specified local command and arguments. In V1 it persists in
+daemon-owned local state. The Adapter owns its integration configuration and
+credentials; do not put secrets in command arguments. Registration
+automatically projects the bounded semantic descriptor into active Room
+Runtime Host projections through the resident Runtime. It does not publish a
+Generated Task App or authorize an operation: Generated Task App
+`observe`/`invoke` still requires the current authorized
+Human↔originating-Agent route and an explicit trusted Human action. The Runtime
+currently projects exactly one capability. There is no package registry,
+installer, or marketplace. See [Runtime and Harness](../concepts/runtime-harness)
+for the ownership boundary and [Interactive Task outputs](../guides/interactive-task-outputs)
+for the Generated Task App control flow.
+
 ## Collaboration and artifacts
 
 ```text

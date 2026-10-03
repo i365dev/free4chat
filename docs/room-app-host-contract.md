@@ -66,16 +66,19 @@ The click authorization remains active through the click event's handlers and
 microtasks, then expires; mount-time and ambient calls are refused.
 
 The parent host sends the bounded request over its existing reliable Room App
-DataChannel. The originating Runtime subscribes to that Human's reliable lane
-on its no-media Pion participant session, validates the current association,
-and invokes its local capability controller. The result returns on the same
-reliable lane. RoomSession handles association, channel admission, and
-readiness only; it never relays per-operation payloads. Runtime or Adapter
-departure makes the route unavailable, and disconnected operations are neither
-queued nor replayed. Task completion alone does not invalidate a still-live
-originating route. Results use the semantic result bounds, which exclude
-endpoint, credential, URI, hostname, and protocol details. The iframe receives
-no Host ID, participant capability, session ID, or Runtime connection details.
+DataChannel to the authenticated Human↔originating-Agent private participant
+lane. The originating Runtime subscribes to that Human's reliable lane on its
+no-media Pion participant session, validates the current App/Task/Runtime Host
+association, and invokes its local capability controller. The bounded result
+returns to the same Human App over the same reliable lane; it is not broadcast
+to Room participants. RoomSession authorizes/projects the association and
+handles channel admission/readiness only; it never relays per-operation
+payloads or results. Runtime or Adapter departure makes the route unavailable,
+and disconnected operations are neither queued nor replayed. Task completion
+alone does not invalidate a still-live originating route. Results use the
+semantic result bounds, which exclude endpoint, credential, URI, hostname, and
+protocol details. The iframe receives no Host ID, participant capability,
+session ID, or Runtime connection details.
 
 ## Messages and trust boundary
 

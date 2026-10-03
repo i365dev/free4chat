@@ -1,6 +1,9 @@
 # Local Capability Adapter Protocol and V1 Runtime
 
-**Status:** Phase 0 protocol decision; this change adds its first production Runtime integration.
+**Status:** V1 shipped in Runtime `0.5.52`; Extension Lab #215 completed
+production acceptance using an external Epson/CUPS Adapter and a Generated
+Task App. This record preserves the original Phase-0 decision rationale and
+tracks the implemented V1 boundary below.
 
 ## Decision
 
@@ -84,12 +87,11 @@ The protocol carries none of: vendor tokens/passwords, OAuth tokens, BLE pairing
 ## Agent authoring and approval
 
 ```text
-Agent finds or writes Adapter
-→ operator separately approves local code execution
-→ Runtime validates list/describe and bounded behavior
-→ Human separately approves publication/control in a Room
-→ Room/session or registration ends
-→ temporary Adapter is stopped and its generated files may be removed
+Operator explicitly registers a local executable and bounded argv
+→ Runtime validates the Adapter descriptor and bounded behavior
+→ Room projects one semantic capability under its existing authorization
+→ Human explicitly clicks a Generated Task App control for one operation
+→ result returns as bounded semantic data
 ```
 
 `free4chat-agent capability adapter register --exec ... [--arg ...]` is the explicit local execution approval and stores only the command and bounded argv in a private Runtime config file. `capability adapter remove` unregisters it. Starting an executable does not publish its capability; Human Room publication/control approval remains separate. A Room capability request does not grant the Adapter filesystem, network, USB, or secret authority. V1 registrations are daemon-owned and persist across daemon restarts. Room/session-owned temporary Adapter cleanup is deferred; user-installed persistent processes are the supported V1 lifecycle. There is no installer or package manager.
@@ -109,7 +111,10 @@ Agent finds or writes Adapter
 | Python reference Adapter / fixture / validator in `agent/experimental/local-capability-adapter/` | **PROOF-ONLY** | Executable spec evidence, outside production Runtime packages and dependencies. |
 | Current Go fixture tests | **REPLACED** | Focused conformance, lifecycle, timeout, bounds, process failure, and Python reference dogfood tests exercise the external seam. |
 
-The one-capability Runtime Host ceiling is intentionally unchanged. Multi-capability support and Room/session-scoped temporary Adapter ownership require later evidence.
+V1 ships one capability projection per Runtime Host. It has no package
+registry/installer and no Room-owned ephemeral Adapter lifecycle. Multi-
+capability expansion or temporary Room-owned Adapter lifecycle requires later
+evidence; neither is implied by the protocol's bounded list framing.
 
 ## Threat model
 
@@ -124,6 +129,16 @@ Treat the Adapter as separately approved local code, not as trusted because its 
 - Protocol streaming, unsolicited Adapter events, multiple in-flight requests, or socket transport.
 - Changing #512 release/version work.
 
-## Reuse proof
+## Fixture integration proof
 
 The reference adapter `living_room_light` translates `observe` to the deterministic fixture `GET /state` and `invoke(set_led)` to `POST /actions/set-led`. The endpoint exists only in an Adapter-owned config file. Production daemon tests register this Python process, route an Agent's Generated Task App capability RPC through the resident Runtime controller, replace the process, and verify process crash clears projection. A second Adapter for any other fixture/device can expose the same descriptor/action semantics while changing only its local implementation/config; Room/Core/Runtime continue to see `list / describe / observe / invoke` and bounded semantic JSON.
+
+## Production reuse proof
+
+Extension Lab #215 completed the participant-local path with a real
+Epson/CUPS Adapter under Runtime `0.5.52` and production Web/Core. The Adapter
+owns CUPS discovery and queue details; Runtime projects the read-only
+`printer_status` semantic capability; a Generated Task App provides the Human
+control surface and receives only the bounded status result. The Lab recorded
+final real Epson/CUPS acceptance. This is reuse evidence for the existing
+Runtime/Adapter seam, not vendor functionality in Core or Runtime.

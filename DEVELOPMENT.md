@@ -108,6 +108,19 @@ to be sandboxes; use only a Harness configuration whose local permissions are
 appropriate for room input. Custom ACP commands are trusted local code, not a
 security boundary.
 
+### Local capability Adapter development
+
+The Go Runtime can register one external stdio Adapter per local daemon and
+project one bounded semantic capability. Registration is explicit local
+execution approval; Adapter-specific endpoints, configuration, and
+credentials stay with the Adapter. The protocol does not sandbox the process.
+See the [CLI reference](docs/en/reference/cli.md#local-capability-adapters)
+for the commands. To exercise the reference protocol implementation locally,
+run `python3 agent/experimental/local-capability-adapter/validate.py` from the
+repository root. The completed CUPS proof Adapter and its bounded, read-only
+contract are documented in
+[`agent/experimental/cups-printer-status-adapter/README.md`](agent/experimental/cups-printer-status-adapter/README.md).
+
 ## Deployment
 
 The production Worker is `free4chat-realtime`. Its custom routes are managed in Cloudflare and are intentionally not rewritten by every CI deployment.
