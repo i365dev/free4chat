@@ -582,22 +582,141 @@ describe("RoomSession reliable participant unicast (#377)", () => {
     expect(outsideApp.status).toBe(404)
   })
 
-  it("fails explicitly when more than one eligible host is active", async () => {
-    const { addHumanSocket, addAgentSocket, setHostReady, requestFromAgent } =
-      makeRoomSession()
-    const first = addHumanSocket("human-a")
+  it("routes to one deterministic replica and fences the response to that endpoint", async () => {
+    const {
+      session,
+      store,
+      addHumanSocket,
+      addAgentSocket,
+      setHostReady,
+      requestFromAgent,
+      sendHostResponse,
+    } = makeRoomSession()
+    // Deliberately register sockets in reverse selection order: routing must
+    // not depend on getWebSockets() iteration order.
     const second = addHumanSocket("human-b")
+    const first = addHumanSocket("human-a")
     addAgentSocket("agent-c")
     await setHostReady(first)
     await setHostReady(second)
-    const response = await requestFromAgent()
-    expect(response.status).toBe(409)
+    const room = store.get("room") as ReturnType<typeof buildStoredRoom>
+    const roomApps = (
+      session as unknown as {
+        agentEvents: (
+          room: ReturnType<typeof buildStoredRoom>,
+          participantId: string,
+          cursor: number
+        ) => { roomApps: unknown[] }
+      }
+    ).agentEvents(room, "agent-c", 0).roomApps
+    expect(roomApps).toEqual([
+      {
+        appInstanceId: APP_INSTANCE_ID,
+        appId: "test-app-1",
+        title: "Test App 1",
+        source: "curated",
+        callable: true,
+      },
+    ])
+    const pending = requestFromAgent()
+    await vi.waitFor(() => expect(first.messages()).toHaveLength(1))
+    const request = first.messages()[0]!
+    expect(request).toMatchObject({
+      type: "room-app-agent-request",
+      appInstanceId: APP_INSTANCE_ID,
+    })
+    expect(second.messages()).toEqual([])
+
+    // A different eligible replica cannot satisfy a request targeted to A.
+    await sendHostResponse(second, {
+      type: "room-app-agent-response",
+      requestId: request.requestId,
+      appInstanceId: APP_INSTANCE_ID,
+      ok: true,
+      result: { replica: "non-selected" },
+    })
+    await sendHostResponse(first, {
+      type: "room-app-agent-response",
+      requestId: request.requestId,
+      appInstanceId: APP_INSTANCE_ID,
+      ok: true,
+      result: { replica: "selected" },
+    })
+    expect(await (await pending).json()).toEqual({
+      ok: true,
+      result: { replica: "selected" },
+    })
+  })
+
+  it("does not replay when the selected replica becomes unavailable", async () => {
+    const { addHumanSocket, addAgentSocket, setHostReady, requestFromAgent } =
+      makeRoomSession()
+    const second = addHumanSocket("human-b")
+    const first = addHumanSocket("human-a")
+    addAgentSocket("agent-c")
+    await setHostReady(first)
+    await setHostReady(second)
+
+    const pending = requestFromAgent()
+    await vi.waitFor(() => expect(first.messages()).toHaveLength(1))
+    await setHostReady(first, APP_INSTANCE_ID, false)
+
+    const response = await pending
+    expect(response.status).toBe(502)
     expect(await response.json()).toMatchObject({
       ok: false,
-      error: "ambiguous_host",
+      error: "host_unavailable",
     })
-    expect(first.messages()).toEqual([])
     expect(second.messages()).toEqual([])
+  })
+
+  it("routes different curated App instances independently", async () => {
+    const {
+      addHumanSocket,
+      addAgentSocket,
+      setHostReady,
+      requestFromAgent,
+      sendHostResponse,
+    } = makeRoomSession()
+    const appOneHost = addHumanSocket("human-a")
+    const appTwoHost = addHumanSocket("human-b")
+    addAgentSocket("agent-c")
+    await setHostReady(appOneHost, APP_INSTANCE_ID)
+    await setHostReady(appTwoHost, SECOND_TEST_APP_INSTANCE_ID)
+
+    const appOnePending = requestFromAgent(APP_INSTANCE_ID)
+    const appTwoPending = requestFromAgent(SECOND_TEST_APP_INSTANCE_ID)
+    await vi.waitFor(() => {
+      expect(appOneHost.messages()).toHaveLength(1)
+      expect(appTwoHost.messages()).toHaveLength(1)
+    })
+    const appOneRequest = appOneHost.messages()[0]!
+    const appTwoRequest = appTwoHost.messages()[0]!
+    expect(appOneRequest.appInstanceId).toBe(APP_INSTANCE_ID)
+    expect(appTwoRequest.appInstanceId).toBe(SECOND_TEST_APP_INSTANCE_ID)
+
+    await sendHostResponse(appTwoHost, {
+      type: "room-app-agent-response",
+      requestId: appTwoRequest.requestId,
+      appInstanceId: SECOND_TEST_APP_INSTANCE_ID,
+      ok: true,
+      result: { app: "two" },
+    })
+    await sendHostResponse(appOneHost, {
+      type: "room-app-agent-response",
+      requestId: appOneRequest.requestId,
+      appInstanceId: APP_INSTANCE_ID,
+      ok: true,
+      result: { app: "one" },
+    })
+    expect(await (await appOnePending).json()).toEqual({
+      ok: true,
+      result: { app: "one" },
+    })
+    expect(await (await appTwoPending).json()).toEqual({
+      ok: true,
+      result: { app: "two" },
+    })
   })
 
   it("ends an in-flight request immediately when its selected host disconnects", async () => {
@@ -627,7 +746,7 @@ describe("RoomSession reliable participant unicast (#377)", () => {
     expect(response.status).toBe(502)
     expect(await response.json()).toMatchObject({
       ok: false,
-      error: "host_disconnected",
+      error: "host_unavailable",
     })
   })
 

@@ -58,8 +58,7 @@ export interface RoomAppHostMetadata {
 export interface RoomAppAgentProjection
   extends Omit<RoomAppHostMetadata, "source"> {
   source: "curated"
-  callable: boolean
-  unavailableReason?: "ambiguous_host"
+  callable: true
 }
 
 /** Public, read-only Worker Service Binding used by the Room authority. */
@@ -804,10 +803,7 @@ export function projectCallableRoomApps(
       )
       .map((app) => [app.id, app])
   )
-  const hostsByInstance = new Map<
-    string,
-    { metadata: RoomAppHostMetadata; count: number }
-  >()
+  const metadataByInstance = new Map<string, RoomAppHostMetadata>()
   for (const hostApps of activeHosts) {
     const seenOnHost = new Set<string>()
     for (const app of hostApps) {
@@ -826,25 +822,19 @@ export function projectCallableRoomApps(
         title: definition.label,
         source: "curated",
       }
-      const existing = hostsByInstance.get(app.appInstanceId)
-      if (existing) existing.count += 1
-      else
-        hostsByInstance.set(app.appInstanceId, {
-          metadata: currentMetadata,
-          count: 1,
-        })
+      // The curated appInstanceId is the semantic target. Multiple Human
+      // sockets may host replicas of it, but the Agent sees one logical App.
+      if (!metadataByInstance.has(app.appInstanceId))
+        metadataByInstance.set(app.appInstanceId, currentMetadata)
     }
   }
 
-  return [...hostsByInstance.values()]
-    .sort((left, right) =>
-      left.metadata.appId.localeCompare(right.metadata.appId)
-    )
-    .map(({ metadata, count }) => ({
+  return [...metadataByInstance.values()]
+    .sort((left, right) => left.appId.localeCompare(right.appId))
+    .map((metadata) => ({
       ...metadata,
       source: "curated" as const,
-      callable: count === 1,
-      ...(count > 1 ? { unavailableReason: "ambiguous_host" as const } : {}),
+      callable: true,
     }))
 }
 

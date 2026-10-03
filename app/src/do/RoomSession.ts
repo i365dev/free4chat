@@ -9133,8 +9133,18 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     }
     if (hosts.length === 0)
       return this.json({ ok: false, error: "host_unavailable" }, 409)
-    if (hosts.length !== 1)
-      return this.json({ ok: false, error: "ambiguous_host" }, 409)
+    // The App instance is the logical target; Human sockets are transport
+    // replicas. Pick one current endpoint deterministically and never replay
+    // this transient semantic request to another replica.
+    hosts.sort((left, right) => {
+      const leftParticipant = left.attachment.participantId
+      const rightParticipant = right.attachment.participantId
+      if (leftParticipant !== rightParticipant)
+        return leftParticipant < rightParticipant ? -1 : 1
+      const leftNonce = left.attachment.connectionNonce
+      const rightNonce = right.attachment.connectionNonce
+      return leftNonce === rightNonce ? 0 : leftNonce < rightNonce ? -1 : 1
+    })
     if (this.pendingRoomAppAgentRequests.size >= ROOM_APP_AGENT_MAX_IN_FLIGHT)
       return this.json({ ok: false, error: "too_many_requests" }, 429)
 
@@ -9703,7 +9713,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     this.failRoomAppAgentRequestsForHost(
       participant.id,
       attachment.connectionNonce,
-      "host_disconnected"
+      "host_unavailable"
     )
     participant.connected = false
     participant.lastSeenAt = Date.now()

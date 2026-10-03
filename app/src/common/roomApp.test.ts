@@ -948,7 +948,7 @@ describe("Room App host contract", () => {
     ])
   })
 
-  it("omits stale/closed instances and marks a multi-host instance non-callable", () => {
+  it("omits stale instances and projects multiple ready replicas as one callable logical App", () => {
     const app = {
       appInstanceId: roomAppInstanceId("room-a", "test-app"),
       appId: "test-app",
@@ -960,13 +960,19 @@ describe("Room App host contract", () => {
       appInstanceId: roomAppInstanceId("old-room", "test-app"),
     }
     expect(projectCallableRoomApps("room-a", [[], [stale]], true)).toEqual([])
-    expect(projectCallableRoomApps("room-a", [[app], [app]], true)).toEqual([
+    const projected = projectCallableRoomApps(
+      "room-a",
+      [[app, app], [app]],
+      true
+    )
+    expect(projected).toEqual([
       {
         ...app,
-        callable: false,
-        unavailableReason: "ambiguous_host",
+        callable: true,
       },
     ])
+    expect(projected[0]).not.toHaveProperty("participantId")
+    expect(projected[0]).not.toHaveProperty("connectionNonce")
     expect(
       projectCallableRoomApps(
         "room-a",
