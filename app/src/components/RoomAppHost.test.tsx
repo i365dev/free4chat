@@ -1019,14 +1019,15 @@ describe("RoomAppHost App-instance transport lifetime", () => {
   /** Completes the iframe handshake and returns the live host-owned port. */
   function handshake(
     iframe: HTMLIFrameElement,
-    frameWindow: { postMessage: ReturnType<typeof vi.fn> }
+    frameWindow: { postMessage: ReturnType<typeof vi.fn> },
+    instanceId: string = appInstanceId
   ) {
     fireEvent.load(iframe)
     const bootstrap = frameWindow.postMessage.mock.calls[0][0]
     act(() => {
       lastChannel!.port1.emit({
         type: "ready",
-        appInstanceId,
+        appInstanceId: instanceId,
         handshakeToken: bootstrap.handshakeToken,
       })
     })
@@ -1302,5 +1303,158 @@ describe("RoomAppHost App-instance transport lifetime", () => {
     expect(screen.getByRole("alert")).toBeInTheDocument()
     expect(screen.queryByText("ready")).toBeNull()
     expect(port.close).toHaveBeenCalledTimes(1)
+  })
+
+  it("restores and replaces an opaque snapshot through only the curated local bridge", () => {
+    vi.stubGlobal("MessageChannel", TestMessageChannel)
+    const key = `free4chat:room-app-recovery:v1:${appInstanceId}`
+    const initialSnapshot = '{"opaque":"saved"}'
+    const nextSnapshot = '{"opaque":"latest"}'
+    window.sessionStorage.removeItem(key)
+    window.sessionStorage.setItem(key, initialSnapshot)
+    const send = vi.fn(() => true)
+    const sendUnicast = vi.fn(() => "sent" as const)
+    const respondAgentRequest = vi.fn(() => true)
+    const definition = catalogRevision()
+    const { rendered, iframe, frameWindow } = mountApp(definition, {
+      send,
+      sendUnicast,
+      respondAgentRequest,
+    })
+    const { port } = handshake(iframe, frameWindow)
+
+    expect(port.postMessage).toHaveBeenLastCalledWith({
+      type: "ready",
+      protocolVersion: 1,
+      appInstanceId,
+      self,
+      participants,
+      localRecovery: initialSnapshot,
+    })
+
+    act(() => {
+      port.emit({
+        type: "setLocalRecovery",
+        appInstanceId,
+        snapshot: nextSnapshot,
+      })
+    })
+    expect(window.sessionStorage.getItem(key)).toBe(nextSnapshot)
+    expect(send).not.toHaveBeenCalled()
+    expect(sendUnicast).not.toHaveBeenCalled()
+    expect(respondAgentRequest).not.toHaveBeenCalled()
+    rendered.unmount()
+    window.sessionStorage.removeItem(key)
+  })
+
+  it("isolates snapshots by App instance and leaves a missing snapshot null", () => {
+    vi.stubGlobal("MessageChannel", TestMessageChannel)
+    const instanceA = appInstanceId
+    const instanceB = "test-app:other-room"
+    const keyA = `free4chat:room-app-recovery:v1:${instanceA}`
+    const keyB = `free4chat:room-app-recovery:v1:${instanceB}`
+    window.sessionStorage.removeItem(keyA)
+    window.sessionStorage.removeItem(keyB)
+    window.sessionStorage.setItem(keyA, "only-a")
+    const definition = catalogRevision()
+    const first = mountApp(definition)
+    const firstPort = handshake(first.iframe, first.frameWindow).port
+    expect(firstPort.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ localRecovery: "only-a" })
+    )
+    first.rendered.unmount()
+
+    const second = mountApp(definition, { appInstanceId: instanceB })
+    const secondPort = handshake(
+      second.iframe,
+      second.frameWindow,
+      instanceB
+    ).port
+    expect(secondPort.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ localRecovery: null })
+    )
+    act(() => {
+      secondPort.emit({
+        type: "setLocalRecovery",
+        appInstanceId: instanceA,
+        snapshot: "cannot-write-a",
+      })
+    })
+    expect(window.sessionStorage.getItem(keyA)).toBe("only-a")
+    expect(window.sessionStorage.getItem(keyB)).toBeNull()
+    second.rendered.unmount()
+    window.sessionStorage.removeItem(keyA)
+    window.sessionStorage.removeItem(keyB)
+  })
+
+  it("keeps Generated Apps outside local recovery and tolerates storage errors", () => {
+    vi.stubGlobal("MessageChannel", TestMessageChannel)
+    const generated = {
+      id: "generated:task-1",
+      label: "Task App",
+      url: "https://room-apps.free4.chat/generated",
+      origin: "https://room-apps.free4.chat",
+      source: "generated" as const,
+      srcDoc: "<main>Task</main>",
+    }
+    const generatedKey = `free4chat:room-app-recovery:v1:${generated.id}`
+    const getItem = vi
+      .spyOn(Storage.prototype, "getItem")
+      .mockImplementation(() => {
+        throw new Error("storage unavailable")
+      })
+    const setItem = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(() => {
+        throw new Error("quota exceeded")
+      })
+    const { rendered, iframe, frameWindow } = mountApp(generated, {
+      appInstanceId: generated.id,
+    })
+    const { port } = handshake(iframe, frameWindow, generated.id)
+    const generatedReadyMessage = port.postMessage.mock.lastCall?.[0]
+    expect(generatedReadyMessage?.type).toBe("ready")
+    expect("localRecovery" in generatedReadyMessage).toBe(false)
+    act(() => {
+      port.emit({
+        type: "setLocalRecovery",
+        appInstanceId: generated.id,
+        snapshot: "generated-must-not-store",
+      })
+    })
+    expect(getItem).not.toHaveBeenCalled()
+    expect(setItem).not.toHaveBeenCalled()
+    expect(screen.getByText("ready")).toBeInTheDocument()
+    rendered.unmount()
+    getItem.mockRestore()
+    setItem.mockRestore()
+    expect(window.sessionStorage.getItem(generatedKey)).toBeNull()
+
+    const failingRead = vi
+      .spyOn(Storage.prototype, "getItem")
+      .mockImplementation(() => {
+        throw new Error("storage disabled")
+      })
+    const failure = mountApp(catalogRevision())
+    const failurePort = handshake(failure.iframe, failure.frameWindow).port
+    expect(failurePort.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ localRecovery: null })
+    )
+    const failingWrite = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(() => {
+        throw new Error("storage quota")
+      })
+    act(() => {
+      failurePort.emit({
+        type: "setLocalRecovery",
+        appInstanceId,
+        snapshot: "best-effort",
+      })
+    })
+    expect(screen.getByText("ready")).toBeInTheDocument()
+    failure.rendered.unmount()
+    failingRead.mockRestore()
+    failingWrite.mockRestore()
   })
 })

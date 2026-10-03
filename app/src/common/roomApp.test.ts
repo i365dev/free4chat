@@ -8,6 +8,7 @@ import {
   ROOM_APP_CATALOG_TIMEOUT_MS,
   ROOM_APP_TRUSTED_ORIGIN,
   ROOM_APP_MAX_PAYLOAD_BYTES,
+  ROOM_APP_LOCAL_RECOVERY_MAX_BYTES,
   buildRoomInviteUrl,
   currentRoomAppCatalog,
   createRoomAppCatalogLoader,
@@ -655,6 +656,57 @@ describe("Room App host contract", () => {
           payload: { type: "private" },
         },
         "test-app:abc123"
+      )
+    ).toBeNull()
+  })
+
+  it("accepts only bounded opaque local recovery writes for the exact App instance", () => {
+    const appInstanceId = "test-app:abc123"
+    const message = (snapshot: string) => ({
+      type: "setLocalRecovery",
+      appInstanceId,
+      snapshot,
+    })
+    expect(
+      decodeRoomAppClientMessage(message("{opaque:true}"), appInstanceId)
+    ).toEqual({
+      type: "setLocalRecovery",
+      appInstanceId,
+      snapshot: "{opaque:true}",
+    })
+    expect(
+      decodeRoomAppClientMessage(
+        message("界".repeat(Math.floor(ROOM_APP_LOCAL_RECOVERY_MAX_BYTES / 3))),
+        appInstanceId
+      )
+    ).toMatchObject({ type: "setLocalRecovery" })
+    expect(
+      decodeRoomAppClientMessage(
+        message(
+          "界".repeat(Math.floor(ROOM_APP_LOCAL_RECOVERY_MAX_BYTES / 3) + 1)
+        ),
+        appInstanceId
+      )
+    ).toBeNull()
+    expect(
+      decodeRoomAppClientMessage(
+        message("a".repeat(ROOM_APP_LOCAL_RECOVERY_MAX_BYTES)),
+        appInstanceId
+      )
+    ).toMatchObject({ type: "setLocalRecovery" })
+    expect(
+      decodeRoomAppClientMessage(
+        message("a".repeat(ROOM_APP_LOCAL_RECOVERY_MAX_BYTES + 1)),
+        appInstanceId
+      )
+    ).toBeNull()
+    expect(
+      decodeRoomAppClientMessage(message("snapshot"), "other:abc123")
+    ).toBeNull()
+    expect(
+      decodeRoomAppClientMessage(
+        { ...message("snapshot"), extra: true },
+        appInstanceId
       )
     ).toBeNull()
   })
