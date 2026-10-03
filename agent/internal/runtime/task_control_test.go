@@ -310,6 +310,66 @@ func TestTaskInterruptCancelsTheOwnedTaskTurnAndKeepsTheTaskUsable(t *testing.T)
 	}
 }
 
+func TestGeneratedTaskAppKeepsHumanTaskOpenForVerification(t *testing.T) {
+	for _, reply := range []string{"", "App published; please refresh it."} {
+		name := "without_text"
+		if reply != "" {
+			name = "with_text"
+		}
+		t.Run(name, func(t *testing.T) {
+			client := &fakeClient{}
+			bundle := map[string]any{
+				"version":  float64(1),
+				"manifest": map[string]any{"title": "Status", "networkOrigins": []any{}},
+				"html":     "<main>Status</main>",
+				"css":      "main { color: green; }",
+				"js":       "document.body.dataset.ready='true';",
+				"initialState": map[string]any{
+					"status": "unknown",
+				},
+			}
+			adapter := &fakeAdapter{name: "pi", scopedTurnResults: []types.HarnessTurnResult{{
+				Text:         reply,
+				GeneratedApp: &types.GeneratedTaskAppOutput{Bundle: bundle},
+			}}}
+			rt := NewResidentRuntime(Options{
+				InstanceID: "task-app-verification",
+				RoomID:     "room-task-app-verification",
+				Name:       "Agent",
+				Client:     client,
+				Adapter:    adapter,
+			})
+			defer rt.Stop()
+			rt.adoptJoin(types.JoinResult{
+				ParticipantID:     "agent",
+				ParticipantHandle: "room-secret",
+				Cursor:            0,
+				ExpiresAt:         time.Now().Add(time.Hour).UnixMilli(),
+			})
+			setRoster(rt, "human-1")
+
+			const requestID = "req-generated-app"
+			done := startTurn(rt, taskRequestEvent(1, "task:"+requestID, requestID, "human-1"))
+			waitForDone(t, done, "Generated Task App publication")
+
+			client.mu.Lock()
+			publishedTaskID := client.generatedAppTaskID
+			publishedHandle := client.generatedAppHandle
+			client.mu.Unlock()
+			if publishedTaskID != requestID || publishedHandle != "room-secret" {
+				t.Fatalf("Generated App was not published for the exact Task: task=%q handle=%q", publishedTaskID, publishedHandle)
+			}
+			if got := client.snapshotCollabResults(); len(got) != 0 {
+				t.Fatalf("Generated App Task completed before Human verification: %+v", got)
+			}
+			responses := client.snapshotCollabResponses()
+			if len(responses) != 1 || responses[0].Decision != "accepted" {
+				t.Fatalf("Human Task was not accepted before App publication: %+v", responses)
+			}
+		})
+	}
+}
+
 func TestTaskInterruptCanSettleAndRecoverTwiceInTheSameTask(t *testing.T) {
 	rt, adapter := newTaskInterruptRuntime()
 	defer rt.Stop()
