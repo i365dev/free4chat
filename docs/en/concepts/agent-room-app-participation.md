@@ -73,26 +73,28 @@ contain the App URL, private App state, or a participant bearer handle. It
 does not itself wake an Agent or start a Harness turn. An explicit Human
 request is enough for many collaboration Apps.
 
-For a resident Agent request, Core selects the connected Human browser host
-whose sandboxed curated App completed its existing handshake. The host rule is
-exact:
+For a resident Agent request, the curated `appInstanceId` is the logical App
+target. Multiple connected Human browser sockets that completed the sandboxed
+App's existing handshake are replicas of that same instance, not separate
+semantic targets. Core uses one eligible endpoint as transient transport:
 
 ```text
-exactly one eligible host
-→ route the Agent request
+one or more eligible replicas for this appInstanceId
+→ select one endpoint deterministically by participantId, then current connection nonce
+→ route the Agent request once
 
 zero eligible hosts
-→ unavailable
-
-multiple eligible hosts
-→ ambiguous_host; fail closed
+→ host_unavailable
 ```
 
-Core does not choose an arbitrary host. An App host is a resident Room-session
-host, not necessarily the currently visible Stage surface. Hiding the Stage or
-navigating to another surface does not by itself withdraw a mounted App host.
-Actual host removal, such as leaving the Room or unmounting Room content,
-changes eligibility.
+The Agent sees only the logical curated App identity, not browser host
+identities. Endpoint selection does not change the semantic target and is not
+leader election. An App host is a resident Room-session host, not necessarily
+the currently visible Stage surface. Hiding the Stage or navigating to another
+surface does not by itself withdraw a mounted App host. Actual host removal,
+such as leaving the Room or unmounting Room content, changes eligibility. If
+the selected endpoint disappears while the request is in flight, Core fails
+with `host_unavailable`; it does not replay the operation to another replica.
 
 The broker forwards an opaque bounded request and correlates its response to
 the request and current App instance. Current limits include a 16 KiB

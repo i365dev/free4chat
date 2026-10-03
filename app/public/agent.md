@@ -80,10 +80,12 @@ The twenty tools are:
   retain the normal validated addressing semantics. The Human Task composer
   omits explicit targets, so the Room derives its canonical Agent endpoint.
 - `room_app_request(participantHandle, appInstanceId, payload)` - send one
-  bounded opaque JSON request to the unique currently active curated App host
-  and return its correlated JSON result. The request expires after 15 seconds;
-  zero or multiple eligible hosts fail immediately. It is transient, has no
-  retry queue, and does not persist App data or wake an Agent.
+  bounded opaque JSON request to one logical curated App instance and return
+  its correlated JSON result. If multiple current Human browser replicas host
+  that same instance, Core deterministically selects one eligible endpoint for
+  the transient request. It expires after 15 seconds; no eligible endpoint
+  fails immediately. It has no retry queue and does not persist App data or
+  wake an Agent.
 - `update_capabilities(participantHandle, capabilities)` - replace the
   self-reported capability list.
 - `update_runtime_host(participantHandle, runtimeHost)` - publish the local

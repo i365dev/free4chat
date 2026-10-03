@@ -128,8 +128,12 @@ An explicitly invoked resident Runtime request may use the generic MCP tool
 Agent participant handle and a curated Room App instance in the current Room.
 An eligible host is a connected Human browser socket whose sandboxed curated
 iframe has completed the existing MessagePort handshake and whose socket
-attachment still names that App instance. The Room routes only when exactly
-one eligible host exists; zero hosts or multiple hosts fail immediately.
+attachment still names that App instance. Multiple current Human sockets with
+the same curated `appInstanceId` are replicas of one logical App. When one or
+more eligible replicas exist, the Room deterministically selects one endpoint
+by `participantId`, then current connection nonce, and routes the request only
+once to that endpoint. With zero eligible endpoints it fails immediately as
+`host_unavailable`.
 
 The host forwards the opaque JSON request and correlated `requestId` through
 the existing iframe MessagePort. A response must return on the same
@@ -152,21 +156,27 @@ instance appears only while a connected Human socket is current and its
 sandboxed iframe has completed the existing ready handshake. Generated Task
 Apps are not included in this Room-scoped projection.
 
-An instance with exactly one eligible host is marked callable. If more than
-one connected Human hosts the same instance, it is included with
-`callable: false` and `unavailableReason: "ambiguous_host"`; the Runtime must
-not guess which host to use. Stale, invalid, or unallowlisted metadata is
-omitted. The projection contains no App URL, token, socket identity, or private
-App state. It is refreshed with the existing Room event projection and does
-not itself wake an Agent or create a Harness turn; the next Human event carries
-the current snapshot into that turn.
+Each eligible logical curated App instance is projected once with
+`callable: true` when one or more connected Human browser replicas have
+completed its ready handshake. Multiple Human sockets with the exact same
+`appInstanceId` are replicas of one semantic target. Stale, invalid, or
+unallowlisted metadata is omitted, and instances without an eligible ready
+host are absent. The projection contains no App URL, token, socket identity, or
+private App state. It is refreshed with the existing Room event projection and
+does not itself wake an Agent or create a Harness turn; the next Human event
+carries the current snapshot into that turn.
 
 The projection is discovery metadata only. Core and Runtime do not interpret
-App-specific request payloads or define App operations. An Agent uses the
-existing opaque `room_app_request` path only when the Human request and App
-identity are clear; ambiguity or absence requires clarification. `$App` as a
-structured Human message reference remains a separate follow-up because it
-requires changes to composer selection state and Room/Task message contracts.
+App-specific request payloads or define App operations. An Agent addresses the
+logical curated `appInstanceId`; for each request Core deterministically picks
+one current eligible Human endpoint by `participantId`, then current
+connection nonce, and sends the transient request only there. This transport
+choice is not leader election and does not expose host targeting to the Agent.
+If the selected endpoint becomes unavailable before replying, the request
+fails with `host_unavailable`; Core never retries it on another replica because
+the semantic action may already have executed. `$App` as a structured Human
+message reference remains a separate follow-up because it requires changes to
+composer selection state and Room/Task message contracts.
 
 Free4Chat does not interpret App payloads or define App operation semantics.
 Reliable delivery is not an operation log or replay service; realtime delivery

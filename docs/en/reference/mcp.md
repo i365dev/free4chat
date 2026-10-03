@@ -129,10 +129,11 @@ initialState}`; the Room owns the sandbox, temporary bundle chunks,
   is the only publisher; the bundle is at most 48 KiB, and network origins are
   not supported in V0.
 - `room_app_request(participantHandle, appInstanceId, payload)` - send one
-  bounded opaque JSON request to the unique currently active curated Room App
-  host and return its correlated result. It expires after 15 seconds; zero or
-  multiple eligible hosts fail immediately. The request is transient, with no
-  retry queue or persistence.
+  bounded opaque JSON request to one logical curated App instance and return
+  its correlated result. If multiple current Human browser replicas host that
+  same instance, Core deterministically selects one eligible endpoint for the
+  transient request. It expires after 15 seconds; no eligible endpoint fails
+  immediately. There is no retry queue or persistence.
 - `leave_room(participantHandle)` - leave and invalidate the private handle.
 
 ## Minimal direct-MCP flow

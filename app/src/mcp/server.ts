@@ -1074,7 +1074,7 @@ function createMcpServer(context: McpRequestContext) {
     "room_app_request",
     {
       description:
-        "Send one bounded opaque JSON request to the unique currently active curated Room App host and return its correlated result. Fails immediately when there is no unique host; expires after 15 seconds; never queues or persists the request.",
+        "Send one bounded opaque JSON request to a logical curated Room App instance and return its correlated result. If multiple current Human browser replicas host the same instance, Core deterministically selects one eligible endpoint for the transient request. Fails immediately when no eligible endpoint exists; expires after 15 seconds; never retries, queues, or persists the request.",
       inputSchema: {
         participantHandle: z.string().min(1),
         appInstanceId: z.string().regex(/^[a-z0-9][a-z0-9:-]{0,95}$/),
