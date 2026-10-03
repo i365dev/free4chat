@@ -8,9 +8,13 @@ import AgentTasksPage from "../../pages/agent-tasks"
 import AiAgentRoomPage from "../../pages/ai-agent-room"
 import MultiAgentCollaborationPage from "../../pages/multi-agent-collaboration"
 import PrivacyPage from "../../pages/privacy"
+import RemoteAgentPage from "../../pages/remote-agent"
 import TemporaryChatRoomPage from "../../pages/temporary-chat-room"
+import UseCasesPage from "../../pages/use-cases"
 
 const PAGES: Array<{ name: string; Component: () => ReactElement }> = [
+  { name: "use-cases", Component: UseCasesPage },
+  { name: "remote-agent", Component: RemoteAgentPage },
   { name: "temporary-chat-room", Component: TemporaryChatRoomPage },
   { name: "ai-agent-room", Component: AiAgentRoomPage },
   { name: "multi-agent-collaboration", Component: MultiAgentCollaborationPage },
@@ -73,6 +77,12 @@ describe("Discovery pages — CTA analytics", () => {
       page: "agent-tasks",
       target: "docs",
     },
+    {
+      Component: RemoteAgentPage,
+      label: "Read the Agent Room quick start",
+      page: "remote-agent",
+      target: "docs",
+    },
   ])(
     "tracks a secondary discovery CTA with bounded page and target buckets",
     ({ Component, label, page, target }) => {
@@ -104,6 +114,19 @@ describe("Room Apps discovery link", () => {
     )
   })
 
+  it("includes the new scenario pages in the shared discovery footer", () => {
+    render(<DiscoveryFooter />)
+
+    expect(screen.getByRole("link", { name: "Use cases" })).toHaveAttribute(
+      "href",
+      "/use-cases"
+    )
+    expect(screen.getByRole("link", { name: "Remote Agent" })).toHaveAttribute(
+      "href",
+      "/remote-agent"
+    )
+  })
+
   it("includes the Project privacy and community links", () => {
     render(<DiscoveryFooter />)
 
@@ -123,5 +146,52 @@ describe("Room Apps discovery link", () => {
       "href",
       "mailto:hello@free4.chat"
     )
+  })
+})
+
+describe("Use cases discovery links", () => {
+  it("connects each scenario to its canonical product or documentation page", () => {
+    render(<UseCasesPage />)
+
+    expect(
+      screen.getByRole("link", {
+        name: "See how cross-device supervision works",
+      })
+    ).toHaveAttribute("href", "/remote-agent")
+    expect(
+      screen.getByRole("link", { name: "Learn about Agent Tasks" })
+    ).toHaveAttribute("href", "/agent-tasks")
+    expect(
+      screen.getByRole("link", { name: "Explore multi-Agent collaboration" })
+    ).toHaveAttribute("href", "/multi-agent-collaboration")
+    expect(
+      screen.getByRole("link", { name: "How AI Agent Rooms work" })
+    ).toHaveAttribute("href", "/ai-agent-room")
+    expect(
+      screen.getByRole("link", { name: "Browse Room Apps" })
+    ).toHaveAttribute("href", "/apps")
+    expect(
+      screen.getByRole("link", { name: "Agent participation in Room Apps" })
+    ).toHaveAttribute("href", "/docs/concepts/agent-room-app-participation")
+    expect(
+      screen.getByRole("link", { name: "Interactive Task outputs" })
+    ).toHaveAttribute("href", "/docs/guides/interactive-task-outputs")
+    expect(
+      screen.getByRole("link", { name: "Explore the Room App catalog" })
+    ).toHaveAttribute("href", "/apps")
+  })
+
+  it("links remote supervision to Tasks and both Agent Runtime references", () => {
+    render(<RemoteAgentPage />)
+
+    screen
+      .getAllByRole("link", { name: "Agent Tasks" })
+      .forEach((link) => expect(link).toHaveAttribute("href", "/agent-tasks"))
+    expect(
+      screen.getByRole("link", { name: "Agent Room quick start" })
+    ).toHaveAttribute("href", "/docs/getting-started/agent-room")
+    expect(
+      screen.getByRole("link", { name: "Runtime and Harness" })
+    ).toHaveAttribute("href", "/docs/concepts/runtime-harness")
   })
 })

@@ -272,6 +272,10 @@ export default function Home() {
                 >
                   Create and join Rooms from the terminal →
                 </Link>
+                <p className="mt-3 font-mono text-[11px] leading-relaxed text-emerald-600">
+                  Agent Runtime: macOS + Linux. Human supervision: supported
+                  browsers, including Windows and mobile.
+                </p>
               </div>
             </div>
 
@@ -506,6 +510,16 @@ export default function Home() {
             >
               <p className="text-center font-mono text-xs font-bold uppercase tracking-widest text-emerald-600">
                 {"// explore_free4chat"}
+              </p>
+              <p className="mx-auto mt-3 max-w-3xl text-center font-mono text-xs leading-relaxed text-emerald-600">
+                Run work elsewhere, connect separate Agents, share artifacts, or
+                publish a temporary Task App.{" "}
+                <Link
+                  href="/use-cases"
+                  className="text-emerald-400 underline-offset-4 hover:underline"
+                >
+                  Explore use cases →
+                </Link>
               </p>
               <div className="mt-5 grid gap-3 font-mono text-xs sm:grid-cols-2 lg:grid-cols-3">
                 {[

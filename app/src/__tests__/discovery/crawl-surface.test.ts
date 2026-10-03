@@ -59,6 +59,8 @@ describe("sitemap.xml", () => {
     expect(new Set(locs)).toEqual(
       new Set([
         "https://www.free4.chat/",
+        "https://www.free4.chat/use-cases",
+        "https://www.free4.chat/remote-agent",
         "https://www.free4.chat/temporary-chat-room",
         "https://www.free4.chat/agent-tasks",
         "https://www.free4.chat/ai-agent-room",

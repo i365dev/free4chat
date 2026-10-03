@@ -7,6 +7,8 @@ const GROUPS: Array<{
   {
     heading: "Explore",
     links: [
+      { href: "/use-cases", label: "Use cases" },
+      { href: "/remote-agent", label: "Remote Agent" },
       { href: "/temporary-chat-room", label: "Temporary rooms" },
       { href: "/agent-tasks", label: "Agent Tasks" },
       { href: "/ai-agent-room", label: "AI Agent rooms" },

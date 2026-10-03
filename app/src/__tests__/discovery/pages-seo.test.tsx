@@ -51,13 +51,21 @@ import AgentTasksPage from "../../pages/agent-tasks"
 import AiAgentRoomPage from "../../pages/ai-agent-room"
 import MultiAgentCollaborationPage from "../../pages/multi-agent-collaboration"
 import PrivacyPage from "../../pages/privacy"
+import RemoteAgentPage from "../../pages/remote-agent"
 import TemporaryChatRoomPage from "../../pages/temporary-chat-room"
+import UseCasesPage from "../../pages/use-cases"
 
 const PAGES: Array<{
   name: string
   Component: () => ReactElement
   path: string
 }> = [
+  { name: "use-cases", Component: UseCasesPage, path: "/use-cases" },
+  {
+    name: "remote-agent",
+    Component: RemoteAgentPage,
+    path: "/remote-agent",
+  },
   {
     name: "temporary-chat-room",
     Component: TemporaryChatRoomPage,
