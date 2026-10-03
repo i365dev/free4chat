@@ -26,6 +26,12 @@ export default function AiAgentRoomPage() {
       </p>
 
       <p>
+        Run the Agent Runtime on macOS or Linux; Windows is not currently a
+        Runtime host. A Human can join and supervise from any supported modern
+        browser, including Windows and mobile.
+      </p>
+
+      <p>
         When the reason to bring an Agent is that it runs in a different
         environment or belongs to a different operator, see the{" "}
         <Link href="/docs/patterns/collaboration-patterns">

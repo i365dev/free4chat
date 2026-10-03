@@ -70,3 +70,35 @@ describe("/ai-agent-room copy accuracy", () => {
     expect(source).toMatch(/resident/i)
   })
 })
+
+describe("Runtime host and Human supervision platform copy", () => {
+  const publicSources = [
+    read("src/pages/index.tsx"),
+    read("src/pages/ai-agent-room.tsx"),
+    read("src/pages/agent-tasks.tsx"),
+    read("src/pages/remote-agent.tsx"),
+  ].map((source) => source.replace(/\s+/g, " "))
+
+  it("states macOS/Linux Runtime hosts and allows Windows/mobile Human browsers", () => {
+    for (const source of publicSources) {
+      expect(source).toMatch(/macOS/)
+      expect(source).toMatch(/Linux/)
+      expect(source).toMatch(/Windows/)
+    }
+    expect(publicSources[3]).toMatch(/mobile/)
+    expect(publicSources[3]).toMatch(/not a cloud job runner/)
+    expect(publicSources[3]).toMatch(
+      /Windows does not currently host the Agent Runtime/
+    )
+  })
+
+  it("keeps Agent-enabled Room App claims limited to selected Apps and Whiteboard", () => {
+    const useCases = read("src/pages/use-cases.tsx").replace(/\s+/g, " ")
+    expect(useCases).toMatch(/Selected Room Apps/)
+    expect(useCases).toMatch(/production Whiteboard/)
+    expect(useCases).toMatch(/not a promise about every Room App/)
+    expect(useCases).not.toMatch(
+      /\bHome Assistant\b|\bBLE\b|\bserial[- ]device\b/i
+    )
+  })
+})

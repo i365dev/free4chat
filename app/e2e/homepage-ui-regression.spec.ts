@@ -94,3 +94,40 @@ test("homepage keeps document scrolling available without horizontal overflow", 
       .toBeGreaterThan(lowerStart)
   }
 })
+
+test("new discovery pages stay readable on desktop and phone", async ({
+  page,
+}) => {
+  const pages = [
+    {
+      path: "/use-cases",
+      heading: "What can you do with Free4Chat?",
+      requiredCopy: /production Whiteboard/,
+    },
+    {
+      path: "/remote-agent",
+      heading: "Run the Agent there. Supervise it from here.",
+      requiredCopy: /Agent Runtime: macOS \+ Linux/,
+    },
+  ]
+
+  for (const route of pages) {
+    for (const viewport of [
+      { width: 1440, height: 900 },
+      { width: 390, height: 844 },
+    ]) {
+      await page.setViewportSize(viewport)
+      await page.goto(route.path)
+      await expect(
+        page.getByRole("heading", { level: 1, name: route.heading })
+      ).toBeVisible()
+      await expect(page.getByText(route.requiredCopy)).toBeVisible()
+
+      const geometry = await page.evaluate(() => ({
+        viewportWidth: window.innerWidth,
+        scrollWidth: document.documentElement.scrollWidth,
+      }))
+      expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.viewportWidth)
+    }
+  }
+})

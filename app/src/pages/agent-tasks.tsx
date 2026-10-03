@@ -74,6 +74,11 @@ export default function AgentTasksPage() {
           machine. If they shut down, durable execution is not promised.
         </li>
         <li>
+          The Agent Runtime currently runs on macOS and Linux, not Windows. A
+          Human can supervise from any supported modern browser, including
+          Windows and mobile.
+        </li>
+        <li>
           The Room and its shared Task state remain temporary and expire after
           the Room has been empty for a while.
         </li>

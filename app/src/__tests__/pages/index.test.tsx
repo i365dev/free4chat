@@ -38,6 +38,11 @@ describe("Home page", () => {
     expect(
       screen.getByText("$ free4chat-agent room create --agent pi --name Pi")
     ).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        "Agent Runtime: macOS + Linux. Human supervision: supported browsers, including Windows and mobile."
+      )
+    ).toBeInTheDocument()
 
     expect(
       screen.getByText(
@@ -82,6 +87,9 @@ describe("Home page", () => {
       "href",
       "/apps"
     )
+    expect(
+      screen.getByRole("link", { name: "Explore use cases →" })
+    ).toHaveAttribute("href", "/use-cases")
     expect(
       screen.getByRole("link", { name: "Documentation →" })
     ).toHaveAttribute("href", "/docs")
