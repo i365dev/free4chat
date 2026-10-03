@@ -6,13 +6,9 @@
 For resident Agent participation, Free4Chat keeps the ownership stack explicit:
 
 ```text
-Room Protocol / MCP
-     |
- Go Runtime
-     |
-    ACP
-     |
- Harness
+Room / SFU ↔ Go Runtime ── Adapter ↔ local device/service
+                 │
+                 └── ACP ↔ Harness
 ```
 
 - **Room Protocol / MCP** - the stateless Room API at
@@ -32,6 +28,24 @@ Room Protocol / MCP
 - **Harness** - the intelligence and local tools you choose: a built-in
   launcher (`hermes`, `opencode`, `codex`, `claude`, or `pi`) or a trusted
   local ACP-compatible process supplied with `--agent-command`.
+
+## Optional local capability Adapters
+
+A Runtime may register a local Adapter and project its validated semantic
+capability into a Room. The Runtime handles generic capability lifecycle,
+bounds, authorization, and participant transport; it knows the descriptor and
+operations, not the vendor integration. The Adapter owns discovery, local
+protocol and endpoint, its credentials/configuration, and integration-specific
+retries. No Adapter is required for ordinary Runtime participation.
+
+Registration explicitly approves execution of the configured local command
+and arguments. The protocol validates and bounds communication; it does not
+sandbox Adapter code. Registration stores executable identity and arguments
+in Runtime-owned local state, while integration configuration and credentials
+remain Adapter-owned. The Runtime is not a generic HTTP/TCP proxy or credential
+store. See the [CLI reference](../reference/cli)
+for the shipped commands and [Interactive Task outputs](../guides/interactive-task-outputs)
+for the Human-facing Generated Task App flow.
 
 ## Runtime version support
 
@@ -115,8 +129,10 @@ View interaction do not themselves start a new Agent turn.
 ## Who owns what
 
 - **Runtime owns** Room participation and lifecycle: join, lease, reconnect,
-  media, event delivery, Task scope routing, structured collaboration, and
-  attachment transport.
+  media, event delivery, Task scope routing, structured collaboration,
+  attachment transport, and generic bounded local capability transport.
+- **Adapter owns** vendor/service protocol, discovery, endpoint, credentials,
+  configuration, and integration-specific retries.
 - **Harness owns** intelligence, tools, private memory, local authorization,
   and the decision about how to perform work.
 - **Host/operator owns** the Runtime process itself: installation, start/stop,

@@ -689,6 +689,25 @@ It is not general app hosting, a backend runtime, or a way to publish a local
 service. Exact publication commands and protocol limits belong in the
 [CLI reference](../reference/cli) and [MCP Room API](../reference/mcp).
 
+### Using a Runtime local capability
+
+When the originating Runtime has projected a local semantic capability into
+the Task context, a Generated Task App may call
+`free4chat.capabilities.observe(id)` or
+`free4chat.capabilities.invoke(id, action, args)`. A participant's
+`--capability` advertisement is discovery metadata; it is not this Runtime
+descriptor and grants no authority. The capability descriptor also does not
+authorize an operation by itself.
+
+Each operation must come from one explicit trusted Human control click and is
+limited to that deterministic operation. It runs through the existing
+Human↔originating-Agent private reliable participant lane to the Runtime and
+its external Adapter; it does not start another Harness/LLM turn. The result
+is bounded semantic data returned to the same App. If the Runtime or Adapter
+has departed or is unavailable, the call fails closed. The iframe receives no
+Adapter configuration, device endpoint/URI, queue name, hostname/IP,
+credentials, or Runtime host/session/routing identity.
+
 ## Room App vs Generated Task Room App
 
 | Surface | Created by | Best for | Lifecycle |
@@ -1433,21 +1452,32 @@ These boundaries do not make App guidance trustworthy or authorize a local
 Agent tool. The Harness continues to apply its own policy to Human input and
 App-provided content.
 
-## What comes next
+## Two completed production proofs
 
-Whiteboard proves an **App-owned shared software artifact**. The separate
-participant-local capability experiment in Extension Lab #215 tests a
-different ownership boundary:
+Whiteboard proves an **App-owned shared software artifact**: the App owns its
+semantic state and synchronization, while Humans and Agents use its existing
+contract.
+
+Extension Lab #215 completed a materially different proof with an external
+Epson/CUPS Adapter:
 
 ```text
-participant-local capability
-→ Runtime-owned local endpoint and credential
-→ Room projection
+participant-owned local capability
+→ Runtime validates and projects bounded semantics
+→ Generated Task App provides the Human control surface
 ```
 
-Only after that materially different second proof should Free4Chat consider
-extracting a broader Room Capability abstraction. This page records the
-shipped Room App pattern; it does not pre-specify that future framework.
+The Adapter owns printer discovery, endpoint, and service protocol. The
+Runtime projects one semantic capability and routes an explicitly Human-clicked
+operation over the private reliable Human↔originating-Agent participant lane;
+the Generated Task App receives only bounded semantic results. Core/Runtime
+contain no Epson/CUPS logic.
+
+Together, these proofs show that the existing Room App and participant-local
+capability seams are sufficient. Do not add a broader generic Room Capability
+framework until a third materially different use case demonstrates a missing
+primitive. App-originated `attention` / `your_turn` wakeup remains deferred
+(#497) until a concrete App requires it.
 
 ## Related pages
 
@@ -1471,13 +1501,9 @@ Source: docs/en/concepts/runtime-harness.md
 For resident Agent participation, Free4Chat keeps the ownership stack explicit:
 
 ```text
-Room Protocol / MCP
-     |
- Go Runtime
-     |
-    ACP
-     |
- Harness
+Room / SFU ↔ Go Runtime ── Adapter ↔ local device/service
+                 │
+                 └── ACP ↔ Harness
 ```
 
 - **Room Protocol / MCP** - the stateless Room API at
@@ -1497,6 +1523,24 @@ Room Protocol / MCP
 - **Harness** - the intelligence and local tools you choose: a built-in
   launcher (`hermes`, `opencode`, `codex`, `claude`, or `pi`) or a trusted
   local ACP-compatible process supplied with `--agent-command`.
+
+## Optional local capability Adapters
+
+A Runtime may register a local Adapter and project its validated semantic
+capability into a Room. The Runtime handles generic capability lifecycle,
+bounds, authorization, and participant transport; it knows the descriptor and
+operations, not the vendor integration. The Adapter owns discovery, local
+protocol and endpoint, its credentials/configuration, and integration-specific
+retries. No Adapter is required for ordinary Runtime participation.
+
+Registration explicitly approves execution of the configured local command
+and arguments. The protocol validates and bounds communication; it does not
+sandbox Adapter code. Registration stores executable identity and arguments
+in Runtime-owned local state, while integration configuration and credentials
+remain Adapter-owned. The Runtime is not a generic HTTP/TCP proxy or credential
+store. See the [CLI reference](../reference/cli)
+for the shipped commands and [Interactive Task outputs](../guides/interactive-task-outputs)
+for the Human-facing Generated Task App flow.
 
 ## Runtime version support
 
@@ -1580,8 +1624,10 @@ View interaction do not themselves start a new Agent turn.
 ## Who owns what
 
 - **Runtime owns** Room participation and lifecycle: join, lease, reconnect,
-  media, event delivery, Task scope routing, structured collaboration, and
-  attachment transport.
+  media, event delivery, Task scope routing, structured collaboration,
+  attachment transport, and generic bounded local capability transport.
+- **Adapter owns** vendor/service protocol, discovery, endpoint, credentials,
+  configuration, and integration-specific retries.
 - **Harness owns** intelligence, tools, private memory, local authorization,
   and the decision about how to perform work.
 - **Host/operator owns** the Runtime process itself: installation, start/stop,
@@ -2119,6 +2165,29 @@ free4chat-agent capabilities [--instance <id>] [--set <token>,<token>,...]
 
 Capabilities are discovery metadata, never authorization. See
 [Rooms and ownership](../concepts/room).
+
+## Local capability Adapters
+
+```text
+free4chat-agent capability adapter register --exec <command> [--arg <argument>]...
+free4chat-agent capability adapter remove
+free4chat-agent capability list --json
+free4chat-agent capability describe --id <capability-id>
+free4chat-agent capability observe --id <capability-id>
+free4chat-agent capability invoke --id <capability-id> --action <name> [--args <json>]
+```
+
+`--capability` on Room entry advertises participant-selected discovery tokens;
+it is distinct from the semantic descriptor returned by the Runtime's local
+Adapter, and neither is authorization. Registration is an explicit approval
+to execute the specified local command and arguments. In V1 it persists in
+daemon-owned local state. The Adapter owns its integration configuration and
+credentials; do not put secrets in command arguments. Registration does not
+publish the capability or authorize Room operations. The Runtime currently
+projects exactly one capability. There is no package registry, installer, or
+marketplace. See [Runtime and Harness](../concepts/runtime-harness) for the
+ownership boundary and [Interactive Task outputs](../guides/interactive-task-outputs)
+for the Generated Task App control flow.
 
 ## Collaboration and artifacts
 
@@ -2717,6 +2786,18 @@ limits, bridge, and revision rules, use:
 ```text
 free4chat-agent generated-app describe --json
 ```
+
+When the originating Runtime supplies a bounded local capability descriptor in
+Task context, a Generated Task App may call
+`free4chat.capabilities.observe(id)` or
+`free4chat.capabilities.invoke(id, action, args)`. Each call requires one
+explicit trusted Human control click and authorizes one deterministic
+operation; it does not start another Harness turn. The result is bounded
+semantic data returned to the same App. The iframe never receives Adapter
+configuration, device endpoints/URIs, queue names, hostnames/IPs, credentials,
+or Runtime/session/routing identity. An unavailable or departed Runtime or
+Adapter fails closed. This local descriptor is separate from participant
+capability advertisement and is not itself authorization.
 
 ## Capability advertisement
 

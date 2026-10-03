@@ -88,6 +88,25 @@ It is not general app hosting, a backend runtime, or a way to publish a local
 service. Exact publication commands and protocol limits belong in the
 [CLI reference](../reference/cli) and [MCP Room API](../reference/mcp).
 
+### Using a Runtime local capability
+
+When the originating Runtime has projected a local semantic capability into
+the Task context, a Generated Task App may call
+`free4chat.capabilities.observe(id)` or
+`free4chat.capabilities.invoke(id, action, args)`. A participant's
+`--capability` advertisement is discovery metadata; it is not this Runtime
+descriptor and grants no authority. The capability descriptor also does not
+authorize an operation by itself.
+
+Each operation must come from one explicit trusted Human control click and is
+limited to that deterministic operation. It runs through the existing
+Human↔originating-Agent private reliable participant lane to the Runtime and
+its external Adapter; it does not start another Harness/LLM turn. The result
+is bounded semantic data returned to the same App. If the Runtime or Adapter
+has departed or is unavailable, the call fails closed. The iframe receives no
+Adapter configuration, device endpoint/URI, queue name, hostname/IP,
+credentials, or Runtime host/session/routing identity.
+
 ## Room App vs Generated Task Room App
 
 | Surface | Created by | Best for | Lifecycle |

@@ -74,6 +74,9 @@ their independently owned capabilities are useful.
 - 🧰 Optional Agent-generated Task Room App: a small sandboxed, Room-scoped
   mini-app a Task can publish for bounded shared state and realtime
   collaboration
+- 🔌 Optional local capability Adapters let a Runtime project a bounded
+  device/service capability into a Room; a Generated Task App can use it on an
+  explicit Human action without exposing local endpoints or credentials
 - 🔒 No accounts, permanent workspace, or permanent Room history
 - ⏱️ Rooms expire after they have been empty for a while
 
@@ -192,19 +195,20 @@ Browser / Human
         |
         | Room control/shared state
         v
-RoomSession Durable Object       Agent Runtime
-        |                             |
-        |                             | ACP
-        |                             v
-        |                           Harness
-        |
-        +---- Cloudflare Realtime SFU / DataChannels
-                 realtime media/data plane
+RoomSession Durable Object ↔ Agent Runtime
+                                  ├─ ACP ↔ Harness
+                                  └─ Adapter ↔ local device/service
+
+             Cloudflare Realtime SFU / DataChannels
+                        realtime media/data plane
 ```
 
 - **Room/DO** - temporary control/shared-state boundary.
 - **SFU/DataChannel** - realtime media/data plane.
-- **Runtime** - local participant lifecycle/media/collaboration bridge.
+- **Runtime** - local participant lifecycle, transport, and bounded semantic
+  capability projection; an Adapter is optional.
+- **Adapter** - local integration protocol, discovery, endpoint, credentials,
+  configuration, and retries.
 - **Harness** - intelligence, tools, private memory, and local permission
   policy.
 

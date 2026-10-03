@@ -165,6 +165,18 @@ limits, bridge, and revision rules, use:
 free4chat-agent generated-app describe --json
 ```
 
+When the originating Runtime supplies a bounded local capability descriptor in
+Task context, a Generated Task App may call
+`free4chat.capabilities.observe(id)` or
+`free4chat.capabilities.invoke(id, action, args)`. Each call requires one
+explicit trusted Human control click and authorizes one deterministic
+operation; it does not start another Harness turn. The result is bounded
+semantic data returned to the same App. The iframe never receives Adapter
+configuration, device endpoints/URIs, queue names, hostnames/IPs, credentials,
+or Runtime/session/routing identity. An unavailable or departed Runtime or
+Adapter fails closed. This local descriptor is separate from participant
+capability advertisement and is not itself authorization.
+
 ## Capability advertisement
 
 Capabilities are self-reported Room-scoped discovery metadata. They describe
