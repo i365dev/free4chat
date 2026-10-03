@@ -36,6 +36,27 @@ func scopedEvent(sequence int64, scope, text string) types.RoomEvent {
 	return event
 }
 
+func waitForScopedRuns(t *testing.T, started <-chan string, expected []string) {
+	t.Helper()
+	want := make(map[string]struct{}, len(expected))
+	for _, scope := range expected {
+		want[scope] = struct{}{}
+	}
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	for range expected {
+		select {
+		case scope := <-started:
+			if _, ok := want[scope]; !ok {
+				t.Fatalf("unexpected or duplicate scoped Harness run before settlement barrier: %s", scope)
+			}
+			delete(want, scope)
+		case <-timer.C:
+			t.Fatalf("timed out waiting for admitted scoped Harness runs: remaining=%v", want)
+		}
+	}
+}
+
 type legacyOnlyAdapter struct {
 	ensureCalls     int
 	generationCalls int
@@ -598,6 +619,8 @@ func TestSerializedRoomWireScopeIDRoutesToRetainedTaskSessions(t *testing.T) {
 
 func TestLogicalTaskScopeCapacityFailsClosedWithoutRoomFallback(t *testing.T) {
 	adapter := &fakeAdapter{name: "pi"}
+	started := make(chan string, types.MaxLogicalTaskScopes+1)
+	adapter.scopedRunHook = func(scope string) { started <- scope }
 	rt := newScopedRuntimeFixture(t, adapter)
 	defer rt.Stop()
 
@@ -605,6 +628,17 @@ func TestLogicalTaskScopeCapacityFailsClosedWithoutRoomFallback(t *testing.T) {
 		scope := "task:" + itoa(int64(index+1))
 		rt.acceptEvent(scopedEvent(int64(index+1), scope, "scope-"+itoa(int64(index+1))))
 	}
+	rt.drainTurns()
+	// drainTurns can observe the brief gap after a lane releases and before its
+	// completion callback refills the next lane. Wait until every admitted scope
+	// has started, then drain the remaining active lanes before taking a stable
+	// Harness snapshot. Independent scopes still run concurrently up to the
+	// Runtime's normal lane limit.
+	expectedScopes := make([]string, 0, types.MaxLogicalTaskScopes)
+	for index := 0; index < types.MaxLogicalTaskScopes; index++ {
+		expectedScopes = append(expectedScopes, "task:"+itoa(int64(index+1)))
+	}
+	waitForScopedRuns(t, started, expectedScopes)
 	rt.drainTurns()
 	rt.mu.Lock()
 	if len(rt.scopedSessions) != types.MaxLogicalTaskScopes || len(rt.scopeOrder) != types.MaxLogicalTaskScopes {
