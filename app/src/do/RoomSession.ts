@@ -6278,6 +6278,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       // If PREPARE is still armed, release it before removing its exact brief.
       // A late PREPARED result then sees no owning pending record and follows
       // the existing cancel path.
+      const targetAgentIds = new Set<string>()
       for (const candidate of this.ctx.getWebSockets()) {
         let socketAttachment: ConnectionAttachment | null = null
         try {
@@ -6300,12 +6301,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         } catch {
           // The exact Runtime preparation is still cancelled below.
         }
-        this.sendAgentSessionCancel(
-          room,
-          pending.targetAgentId,
-          participant.id,
-          pending.taskRequestId
-        )
+        targetAgentIds.add(pending.targetAgentId)
         this.sendHumanTaskSessionStartResult(
           candidate,
           pending.requestId,
@@ -6313,6 +6309,41 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           "session_continuation_unavailable"
         )
       }
+      // The Human socket can already have disappeared when this cleanup
+      // arrives. Find the matching Runtime correlation by its exact Human and
+      // Task identity, release only that slot, and send one cancel per Agent.
+      for (const target of Object.values(room.participants)) {
+        if (target.kind !== "agent") continue
+        for (const agentSocket of this.ctx.getWebSockets(
+          this.agentEventSocketTag(target.id)
+        )) {
+          const agentAttachment =
+            this.deserializeAgentEventAttachment(agentSocket)
+          const control = agentAttachment?.pendingSessionControl
+          if (
+            !agentAttachment ||
+            agentAttachment.participantId !== target.id ||
+            control?.operation !== "prepare" ||
+            control.humanParticipantId !== participant.id ||
+            control.taskRequestId !== request.taskRequestId
+          )
+            continue
+          targetAgentIds.add(target.id)
+          delete agentAttachment.pendingSessionControl
+          try {
+            agentSocket.serializeAttachment(agentAttachment)
+          } catch {
+            // A late Runtime result remains fenced by its missing correlation.
+          }
+        }
+      }
+      for (const targetAgentId of targetAgentIds)
+        this.sendAgentSessionCancel(
+          room,
+          targetAgentId,
+          participant.id,
+          request.taskRequestId
+        )
 
       room.attachments = room.attachments.filter(
         (entry) => entry.id !== request.attachmentId

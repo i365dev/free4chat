@@ -1822,6 +1822,68 @@ describe("useSfuChatRoom Live Transcript RoomState wiring (#177 PR3)", () => {
     }
   })
 
+  it("returns a failed start without waiting for best-effort brief cleanup", async () => {
+    const fetchMock = global.fetch as unknown as ReturnType<typeof vi.fn>
+    const originalFetch = fetchMock.getMockImplementation() as
+      | ((input: RequestInfo | URL, init?: RequestInit) => Promise<Response>)
+      | undefined
+    fetchMock.mockImplementation((input, init) => {
+      if (String(input).endsWith("/api/room/attachments"))
+        return jsonResponse({ attachment: { id: "failed-start-brief" } })
+      if (String(input).endsWith("/api/room/attachments/discard"))
+        return new Promise<Response>(() => undefined)
+      return originalFetch!(input, init)
+    })
+    const { result, unmount } = renderHook(() =>
+      useSfuChatRoom("project-brief-cleanup-room", "Guest", "audio")
+    )
+    await waitFor(() => expect(RecordingWebSocket.instances).toHaveLength(1))
+    await waitFor(() =>
+      expect(result.current.getLocalRoomAuth()).toMatchObject({
+        participantId: "human-a",
+      })
+    )
+    const socket = RecordingWebSocket.instances[0]
+    act(() => socket.onopen?.())
+    const pending = result.current.startTaskWithSession(
+      "agent-pi",
+      null,
+      "Start the brief",
+      "project-token-1",
+      undefined,
+      {},
+      new File(["brief"], "task-brief.md", { type: "text/markdown" })
+    )
+    await waitFor(() =>
+      expect(
+        socket.sent.some(
+          (payload) => JSON.parse(payload).type === "task-session-start"
+        )
+      ).toBe(true)
+    )
+    const frame = JSON.parse(socket.sent.at(-1) ?? "{}")
+    act(() =>
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "task-session-start-result",
+          requestId: frame.requestId,
+          ok: false,
+          error: "session_selection_expired",
+        }),
+      })
+    )
+    await expect(pending).resolves.toEqual({
+      ok: false,
+      error: "session_selection_expired",
+    })
+    expect(
+      fetchMock.mock.calls.some(([input]) =>
+        String(input).endsWith("/api/room/attachments/discard")
+      )
+    ).toBe(true)
+    unmount()
+  })
+
   it("does not send a brief when its socket closes during staging", async () => {
     const fetchMock = global.fetch as unknown as ReturnType<typeof vi.fn>
     const originalFetch = fetchMock.getMockImplementation() as

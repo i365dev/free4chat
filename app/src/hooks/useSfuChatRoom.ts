@@ -4959,7 +4959,6 @@ export function useSfuChatRoom(
             pendingTaskSessionRequestsRef.current.delete(requestId)
             clearTimeout(pendingRequest.timeout)
             settle({ ok: false, error: "session_continuation_unavailable" })
-            if (stagedAttachmentId) void discardStagedBrief(stagedAttachmentId)
             return
           }
           // Brief staging has its own bounded client deadline. Runtime PREPARE
@@ -4982,16 +4981,15 @@ export function useSfuChatRoom(
           pendingTaskSessionRequestsRef.current.delete(requestId)
           clearTimeout(pendingRequest.timeout)
           settle({ ok: false, error: "session_continuation_unavailable" })
-          if (stagedAttachmentId) void discardStagedBrief(stagedAttachmentId)
         }
         if (!brief) {
           sendStart(null)
           return
         }
         void stageBrief().then(sendStart)
-      }).then(async (result) => {
+      }).then((result) => {
         if (!result.ok && stagedAttachmentId)
-          await discardStagedBrief(stagedAttachmentId)
+          void discardStagedBrief(stagedAttachmentId)
         return result
       })
     },
