@@ -389,14 +389,14 @@ func TestPermanentHarnessFailureKeepsTruthfulReconnectingState(t *testing.T) {
 	if status.State != StateReconnecting || status.LastError == "" {
 		t.Fatalf("permanent Harness failure did not report a truthful reconnect state: %+v", status)
 	}
-	if got := rt.pendingAddressedSnapshotFor("task:T"); len(got) != 1 || got[0] != 1 {
-		t.Fatalf("permanent Harness failure acknowledged its canonical turn: %v", got)
+	if got := rt.pendingAddressedSnapshotFor("task:T"); len(got) != 0 {
+		t.Fatalf("permanent Harness failure retained executable bookkeeping: %v", got)
 	}
 	if adapter.ensureCalls != 0 || adapter.runCalls != 0 {
 		t.Fatalf("legacy adapter reached a task-scope turn: ensure=%d run=%d", adapter.ensureCalls, adapter.runCalls)
 	}
-	if !rt.turnRecoveryClosed("task:T", 1) {
-		t.Fatal("permanent Harness failure left its autonomous recovery open")
+	if rt.turnRecoveryClosed("task:T", 1) {
+		t.Fatal("permanent Task failure retained a per-message recovery marker")
 	}
 
 	// Unrelated later Room traffic must neither re-execute the permanently
@@ -410,11 +410,11 @@ func TestPermanentHarnessFailureKeepsTruthfulReconnectingState(t *testing.T) {
 	if adapter.ensureCalls != 0 || adapter.runCalls != 0 {
 		t.Fatalf("unrelated Room traffic re-executed the permanently failed turn: ensure=%d run=%d", adapter.ensureCalls, adapter.runCalls)
 	}
-	if got := rt.pendingAddressedSnapshotFor("task:T"); len(got) != 1 || got[0] != 1 {
-		t.Fatalf("permanently failed turn was silently acknowledged: %v", got)
+	if got := rt.pendingAddressedSnapshotFor("task:T"); len(got) != 0 {
+		t.Fatalf("permanently failed Task retained Runtime queue state: %v", got)
 	}
-	if !rt.turnRecoveryClosed("task:T", 1) {
-		t.Fatal("unrelated Room traffic reopened a permanently closed recovery")
+	if rt.turnRecoveryClosed("task:T", 1) {
+		t.Fatal("unrelated Room traffic created a per-message Task marker")
 	}
 
 	// A transport rejoin is not an explicit recovery boundary either: it must
@@ -424,15 +424,14 @@ func TestPermanentHarnessFailureKeepsTruthfulReconnectingState(t *testing.T) {
 	if status.State != StateReconnecting || status.LastError == "" {
 		t.Fatalf("transport rejoin downgraded the permanent failure state: %+v", status)
 	}
-	if got := rt.pendingAddressedSnapshotFor("task:T"); len(got) != 1 || got[0] != 1 {
-		t.Fatalf("transport rejoin acknowledged the parked turn: %v", got)
+	if got := rt.pendingAddressedSnapshotFor("task:T"); len(got) != 0 {
+		t.Fatalf("transport rejoin recreated failed Runtime queue state: %v", got)
 	}
 }
 
-// TestTransportRetryKeepsPermanentHarnessFailureReconnecting covers the other
-// state restoration point: the resident transport reconnect/back-off must not
-// downgrade a permanent Harness failure back to a healthy waiting state.
-func TestTransportRetryKeepsPermanentHarnessFailureReconnecting(t *testing.T) {
+// TestTransportRetryPreservesNeedsAttentionAfterTaskBookkeepingIsDropped pins
+// attention at the Task projection while resident transport reconnects.
+func TestTransportRetryPreservesNeedsAttentionAfterTaskBookkeepingIsDropped(t *testing.T) {
 	first := newResidentTestStream()
 	second := newResidentTestStream()
 	client := &residentTestClient{
@@ -461,8 +460,9 @@ func TestTransportRetryKeepsPermanentHarnessFailureReconnecting(t *testing.T) {
 	// A task-scope addressed trigger fails permanently and parks its turn.
 	first.results <- addressedEnvelope(scopedEvent(1, "task:T", "T1"))
 	waitFor(t, 3*time.Second, func() bool {
-		return rt.turnRecoveryClosed("task:T", 1)
-	}, "permanent Harness failure parked its canonical turn")
+		projection, ok := rt.snapshotTaskExecution("task:T")
+		return ok && projection.Availability == types.TaskExecutionAvailabilityNeedsAttention
+	}, "permanent Harness failure publishes needs-attention")
 
 	// The transport then drops; the reconnect back-off restores local state.
 	if err := first.Close(); err != nil {
@@ -472,21 +472,21 @@ func TestTransportRetryKeepsPermanentHarnessFailureReconnecting(t *testing.T) {
 		open, _, _ := client.residentOpenSnapshot()
 		return open >= 2
 	}, "resident reconnect after transport loss")
-	if status := rt.Status(); status.State != StateReconnecting || status.LastError == "" {
-		t.Fatalf("transport recovery downgraded a permanent Harness failure: %+v", status)
+	projection, ok := rt.snapshotTaskExecution("task:T")
+	if !ok || projection.Availability != types.TaskExecutionAvailabilityNeedsAttention || projection.QueuedCount != 0 {
+		t.Fatalf("transport recovery lost the Task's needs-attention state: %+v", projection)
 	}
-	if got := rt.pendingAddressedSnapshotFor("task:T"); len(got) != 1 || got[0] != 1 {
-		t.Fatalf("transport recovery acknowledged the parked turn: %v", got)
+	if got := rt.pendingAddressedSnapshotFor("task:T"); len(got) != 0 {
+		t.Fatalf("transport recovery recreated failed Runtime queue state: %v", got)
 	}
 	if adapter.runCalls != 0 {
 		t.Fatalf("transport recovery ran the unsupported task turn: %d", adapter.runCalls)
 	}
 }
 
-// TestClosedTurnRecoveryDoesNotBlockAnotherScope proves a canonical turn whose
-// autonomous recovery is closed parks only its own scope: it is never
-// re-executed, but a different scope's fresh addressed work still runs.
-func TestClosedTurnRecoveryDoesNotBlockAnotherScope(t *testing.T) {
+// TestExhaustedTaskDoesNotBlockAnotherScope proves retry exhaustion
+// quarantines failed Task bookkeeping while a different scope keeps running.
+func TestExhaustedTaskDoesNotBlockAnotherScope(t *testing.T) {
 	adapter := &fakeAdapter{name: "pi", turnErr: &harness.TurnTimeoutError{TimeoutMs: 120_000}}
 	rt := newTurnRetryRuntime(t, adapter, &fakeClient{}, silentLog)
 	rt.adoptJoin(types.JoinResult{ParticipantID: "agent", ParticipantHandle: "secret", Cursor: 0})
@@ -496,8 +496,8 @@ func TestClosedTurnRecoveryDoesNotBlockAnotherScope(t *testing.T) {
 	for attempt := 0; attempt < 1+maxTurnRetryAttempts; attempt++ {
 		rt.drainTurns()
 	}
-	if !rt.turnRecoveryClosed("task:T", 1) {
-		t.Fatal("exhausted task turn did not close its autonomous recovery")
+	if rt.turnRecoveryClosed("task:T", 1) {
+		t.Fatal("exhausted Task retained a per-message recovery marker")
 	}
 	runs, _ := adapter.scopedRunSnapshot()
 	if len(runs) != 1+maxTurnRetryAttempts {
@@ -517,8 +517,8 @@ func TestClosedTurnRecoveryDoesNotBlockAnotherScope(t *testing.T) {
 	if !reflect.DeepEqual(details["task:U"], []string{"U1"}) {
 		t.Fatalf("other scope received the wrong delta: %#v", details["task:U"])
 	}
-	if got := rt.pendingAddressedSnapshotFor("task:T"); len(got) != 1 || got[0] != 1 {
-		t.Fatalf("closed task turn was silently acknowledged: %v", got)
+	if got := rt.pendingAddressedSnapshotFor("task:T"); len(got) != 0 {
+		t.Fatalf("exhausted Task retained executable queue state: %v", got)
 	}
 	if got := rt.pendingAddressedSnapshotFor("task:U"); len(got) != 0 {
 		t.Fatalf("fresh task work was not delivered: %v", got)
@@ -526,13 +526,13 @@ func TestClosedTurnRecoveryDoesNotBlockAnotherScope(t *testing.T) {
 	if got := rt.deliveredSeqFor("task:U"); got != 2 {
 		t.Fatalf("fresh task scope did not advance its own delivery: %d", got)
 	}
-	if got := rt.deliveredSeqFor("task:T"); got != 0 {
-		t.Fatalf("closed task scope advanced delivery: %d", got)
+	if got := rt.deliveredSeqFor("task:T"); got != 1 {
+		t.Fatalf("quarantined task scope cursor = %d, want 1", got)
 	}
-	// The parked turn keeps the resident truthful while the other scope
-	// made progress.
-	if status := rt.Status(); status.State != StateReconnecting || status.LastError == "" {
-		t.Fatalf("closed recovery lost its truthful reconnect state: %+v", status)
+	// Task attention is scoped to the failed Task. A different scope may
+	// complete normally and restore resident transport state.
+	if status := rt.Status(); status.State != StateWaiting || status.LastError != "" {
+		t.Fatalf("successful independent work left a stale resident error: %+v", status)
 	}
 }
 
@@ -609,8 +609,9 @@ func TestExplicitReAddressThenSuccessLeavesNoStaleClosedRecovery(t *testing.T) {
 		t.Fatalf("transport rejoin resurrected a stale Harness error: %+v", status)
 	}
 
-	// A genuinely still-parked turn must keep the truthful reconnect state:
-	// the condition is unresolved work, not "never reconnecting again".
+	// A newly failing Task still keeps the truthful Runtime error, but its
+	// failed execution bookkeeping is quarantined rather than marked as a
+	// permanently retained canonical turn.
 	adapter.mu.Lock()
 	adapter.turnErr = &harness.TurnTimeoutError{TimeoutMs: 120_000}
 	adapter.mu.Unlock()
@@ -619,16 +620,12 @@ func TestExplicitReAddressThenSuccessLeavesNoStaleClosedRecovery(t *testing.T) {
 		rt.drainTurns()
 	}
 	parkedMarkers := closedTurnRecoverySnapshot(rt)
-	if len(parkedMarkers) != 1 || parkedMarkers[0] != (canonicalTurnKey{scope: "task:T", target: 3}) {
-		t.Fatalf("still-parked scope has the wrong marker set: %+v", parkedMarkers)
+	if len(parkedMarkers) != 0 || rt.turnRecoveryClosed("task:T", 3) || len(rt.pendingAddressedSnapshotFor("task:T")) != 0 {
+		t.Fatalf("exhausted Task retained per-message recovery state: markers=%+v pending=%v", parkedMarkers, rt.pendingAddressedSnapshotFor("task:T"))
 	}
-	for _, key := range parkedMarkers {
-		if !containsSequence(rt.pendingAddressedSnapshotFor(key.scope), key.target) {
-			t.Fatalf("closed-recovery marker outlived its settled turn: %+v", key)
-		}
-	}
-	if !rt.turnRecoveryClosed("task:T", 3) || rt.turnRecoveryClosed(roomScope, 2) {
-		t.Fatalf("marker set does not match the genuinely parked turn: %+v", parkedMarkers)
+	projection, ok := rt.snapshotTaskExecution("task:T")
+	if !ok || projection.Availability != types.TaskExecutionAvailabilityNeedsAttention {
+		t.Fatalf("exhausted Task did not expose needs-attention: %+v", projection)
 	}
 	rt.adoptJoin(types.JoinResult{ParticipantID: "agent-3", ParticipantHandle: "secret-3", Cursor: 11})
 	if status := rt.Status(); status.State != StateReconnecting || status.LastError == "" {
@@ -737,8 +734,12 @@ func TestTaskScopeRetryPreservesScopeAndCorrelation(t *testing.T) {
 		t.Fatalf("terminally failed task trigger remained replayable: %v", got)
 	}
 	results := client.fakeClient.snapshotCollabResults()
-	if len(results) != 1 || results[0].RequestID != "request-T" || results[0].Status != "failed" {
-		t.Fatalf("bounded retry exhaustion must publish one terminal failure: %+v", results)
+	if len(results) != 0 {
+		t.Fatalf("bounded retry exhaustion must leave undelivered work recoverable: %+v", results)
+	}
+	projection, ok := rt.snapshotTaskExecution("task:request-T")
+	if !ok || projection.Availability != types.TaskExecutionAvailabilityNeedsAttention {
+		t.Fatalf("bounded retry exhaustion must publish needs-attention: %+v, ok=%v", projection, ok)
 	}
 	responses := client.snapshotCollabResponses()
 	if len(responses) == 0 {
@@ -1008,7 +1009,11 @@ func TestLegacyAdapterTaskScopeDoesNotArmTheRetryClock(t *testing.T) {
 	if got := log.count("turn_retry_exhausted"); got != 0 {
 		t.Fatalf("permanent misconfiguration reported a retry budget: %d", got)
 	}
-	if got := rt.pendingAddressedSnapshotFor("task:T"); len(got) != 1 {
-		t.Fatalf("unretryable task turn was acknowledged: %v", got)
+	if got := rt.pendingAddressedSnapshotFor("task:T"); len(got) != 0 {
+		t.Fatalf("unretryable Task work remained as queue contention: %v", got)
+	}
+	projection, ok := rt.snapshotTaskExecution("task:T")
+	if !ok || projection.Availability != types.TaskExecutionAvailabilityNeedsAttention {
+		t.Fatalf("permanent Task failure must require Human attention: %+v, ok=%v", projection, ok)
 	}
 }

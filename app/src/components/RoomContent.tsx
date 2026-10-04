@@ -508,7 +508,6 @@ export default function RoomContent({
     sendPermissionResponse,
     sendTaskInterrupt,
     sendTaskInterruptAndSend,
-    sendTaskReplacePendingAndSend,
     localMicState,
     toggleMicrophone,
     toggleScreenShare,
@@ -1912,12 +1911,6 @@ export default function RoomContent({
       return sent
     },
     [sendTaskInterruptAndSend]
-  )
-
-  const handleTaskReplacePendingAndSend = useCallback(
-    (taskRequestId: string, text: string) =>
-      sendTaskReplacePendingAndSend(taskRequestId, text),
-    [sendTaskReplacePendingAndSend]
   )
 
   const toggleAgentVoice = useCallback(
@@ -3525,8 +3518,6 @@ export default function RoomContent({
                         interruptible:
                           activeTaskTurn !== undefined &&
                           !activeTaskInterrupting,
-                        replacePendingAvailable:
-                          (activeTaskExecution?.queuedCount ?? 0) > 0,
                         onInterrupt: () => {
                           if (activeTaskTurn === undefined) return
                           handleTaskInterrupt(
@@ -3542,11 +3533,6 @@ export default function RoomContent({
                                 activeTaskTurn,
                                 text
                               ),
-                        onReplacePendingAndSend: (text: string) =>
-                          handleTaskReplacePendingAndSend(
-                            activeTask.requestId,
-                            text
-                          ),
                       }
                     : undefined
                 }

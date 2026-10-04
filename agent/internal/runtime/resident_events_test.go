@@ -596,30 +596,49 @@ func TestResidentReconnectPreservesExactRunningTaskProjectionAndSteerTarget(t *t
 		t.Fatalf("ordinary transport reconnect interrupted/restarted A or ran B: cancels=%d runs=%d", adapter.cancelCount(), adapter.runCount("task:req-T"))
 	}
 
-	// The control carried on the replacement stream still targets the exact
-	// current turn A. Its explicit interrupt is observable while the hold keeps
-	// the Harness call in flight; B remains pending until A actually settles.
-	second.results <- types.WaitResult{TaskControl: interruptControl("req-T", activeSequence)}
-	interrupting := waitForExecution(t, client.execution, "req-T", "exact-turn interrupt projection", func(p types.TaskExecutionProjection) bool {
-		return p.CurrentTurnSequence == activeSequence && p.Phase == types.TaskExecutionPhaseInterrupting
+	// The exact projection sequence remains the control target after reconnect.
+	// Do not invoke the control: ordinary transport recovery must let A settle.
+	if reconnected.CurrentTurnSequence != activeSequence {
+		t.Fatalf("the reconnected Steer/Interrupt authority no longer names A: %+v", reconnected)
+	}
+	rt.turnRetryDelay = func(int) time.Duration { return time.Millisecond }
+	adapter.fakeAdapter.mu.Lock()
+	adapter.fakeAdapter.scopedTurnErrors = map[int]error{
+		2: errors.New("scripted bounded delivery failure"),
+		3: errors.New("scripted bounded delivery failure"),
+		4: errors.New("scripted bounded delivery failure"),
+	}
+	adapter.fakeAdapter.mu.Unlock()
+	adapter.releaseTurn()
+	closeGateIgnoringDoubleClose(hold)
+	attention := waitForExecution(t, client.execution, "req-T", "B retry exhaustion becomes needs-attention", func(p types.TaskExecutionProjection) bool {
+		return p.Availability == types.TaskExecutionAvailabilityNeedsAttention && p.CurrentTurnSequence == 0 && p.QueuedCount == 0
 	})
-	if interrupting.QueuedCount != 1 || adapter.cancelCount() != 1 || adapter.runCount("task:req-T") != 1 {
-		t.Fatalf("the reconnected control missed exact A or started B early: projection=%+v cancels=%d runs=%d", interrupting, adapter.cancelCount(), adapter.runCount("task:req-T"))
+	if attention.Phase == types.TaskExecutionPhaseQueued || adapter.runCount("task:req-T") != 4 {
+		t.Fatalf("failed B was mislabeled as queued or retried beyond its bound: projection=%+v runs=%d", attention, adapter.runCount("task:req-T"))
+	}
+	waitForDone(t, drained, "A and bounded B retries to settle")
+	time.Sleep(20 * time.Millisecond)
+	if adapter.runCount("task:req-T") != 4 || len(rt.pendingAddressedSnapshotFor("task:req-T")) != 0 {
+		t.Fatalf("exhausted B remained executable: runs=%d pending=%v", adapter.runCount("task:req-T"), rt.pendingAddressedSnapshotFor("task:req-T"))
 	}
 
-	adapter.blockNextTurn()
-	closeGateIgnoringDoubleClose(hold)
-	waitFor(t, 2*time.Second, func() bool { return adapter.runCount("task:req-T") == 2 }, "queued instruction B after A settles")
-	startedB := waitForExecution(t, client.execution, "req-T", "instruction B running", func(p types.TaskExecutionProjection) bool {
-		return p.CurrentTurnSequence == queuedSequence && p.Phase == types.TaskExecutionPhaseRunning
-	})
-	if startedB.QueuedCount != 0 {
-		t.Fatalf("the settled A remained counted behind itself: %+v", startedB)
+	// A new Human instruction clears stale Runtime recovery state and is sent
+	// once. Room history remains the source from which B could be copied/re-sent.
+	recovery := scopedEvent(queuedSequence+1, "task:req-T", "fresh Human instruction C")
+	rt.acceptEvent(recovery)
+	continued := make(chan struct{})
+	go func() {
+		rt.drainTurns()
+		close(continued)
+	}()
+	waitForDone(t, continued, "fresh C to reach Harness")
+	if adapter.runCount("task:req-T") != 5 {
+		t.Fatalf("C was not delivered exactly once: runs=%d", adapter.runCount("task:req-T"))
 	}
-	adapter.releaseTurn()
-	waitForDone(t, drained, "A and B to settle")
-	if adapter.runCount("task:req-T") != 2 {
-		t.Fatalf("normal progression replayed a Task instruction: runs=%d", adapter.runCount("task:req-T"))
+	_, details := adapter.scopedRunSnapshot()
+	if detailsForTask := details["task:req-T"]; len(detailsForTask) != 5 || detailsForTask[4] != "fresh Human instruction C" {
+		t.Fatalf("recovery turn did not contain only C: %v", detailsForTask)
 	}
 }
 

@@ -103,10 +103,8 @@ interface TextChatCardProps {
   taskExecution?: {
     interrupting: boolean
     interruptible: boolean
-    replacePendingAvailable: boolean
     onInterrupt: () => void
     onInterruptAndSend: (text: string) => boolean
-    onReplacePendingAndSend: (text: string) => boolean
   }
   onSendAction: (
     actionType: ActionType,
@@ -1645,16 +1643,6 @@ const TextChatCard = memo(function TextChatCard({
     setSelectedAgents([])
   }
 
-  const handleReplacePendingAndSend = () => {
-    if (!taskExecution?.replacePendingAvailable) return
-    if (draftAttachment || sendingDraft) return
-    const text = message.trim()
-    if (!text) return
-    if (!taskExecution.onReplacePendingAndSend(text)) return
-    setMessage("")
-    setSelectedAgents([])
-  }
-
   const handleKeyDown = (event: React.KeyboardEvent) => {
     if (pickerVisible) {
       if (event.key === "ArrowDown") {
@@ -2052,21 +2040,6 @@ const TextChatCard = memo(function TextChatCard({
                 Interrupt &amp; send
               </button>
             )}
-            {taskExecution?.replacePendingAvailable &&
-              message.trim() !== "" && (
-                <button
-                  type="button"
-                  data-testid="task-replace-pending-and-send"
-                  onClick={handleReplacePendingAndSend}
-                  disabled={
-                    taskUnavailable || sendingDraft || Boolean(draftAttachment)
-                  }
-                  className="shrink-0 rounded-lg border border-amber-500/50 px-2 py-1 text-[11px] text-amber-200 transition hover:bg-amber-500/10 disabled:opacity-30"
-                  title="Replace waiting Task instructions. A running turn will continue uninterrupted."
-                >
-                  Replace queued &amp; send
-                </button>
-              )}
             {taskScoped && onSendTaskFile && (
               <button
                 type="button"

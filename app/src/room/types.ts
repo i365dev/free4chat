@@ -46,7 +46,7 @@ export type TaskExecutionOutcome = "interrupted"
 export type TaskExecutionAvailability =
   | "session_lost"
   | "control_unavailable"
-  | "recovery_closed"
+  | "needs_attention"
 
 export interface TaskExecutionProjection {
   agentParticipantId: string
@@ -306,8 +306,6 @@ export interface RoomMessage {
   // #309: validated correlation to an existing canonical collaboration
   // request. This is not a client-selected generic scope id.
   taskRequestId?: string
-  // Only the explicit Room replacement command sets this delivery boundary.
-  supersedesThroughSequence?: number
   targets?: string[]
   createdAt: number
   sequence: number
@@ -614,7 +612,6 @@ export interface AgentEvent {
   // #303: only the sanitized addressed projection of a structured collab
   // event carries its task correlation scope. Ordinary Room text has none.
   scopeId?: string
-  supersedesThroughSequence?: number
   participant: {
     id: string
     name: string

@@ -48,10 +48,6 @@ type pendingTurnContext struct {
 	// of dispatching a second yield request. First application always issues
 	// one best-effort yield, whether or not priority had to change.
 	steerRequested bool
-	// superseded marks an undelivered Human instruction that a later, explicit
-	// Human replacement command removed from execution. It remains in Room
-	// history, but can never be replayed to a Harness.
-	superseded bool
 	// delivered records that this exact instruction already reached the
 	// Harness. A steered instruction can be delivered OUT of canonical order,
 	// so this is what lets deliveredThrough stay a contiguous canonical
@@ -233,6 +229,49 @@ func humanTaskRequestFor(events []types.RoomEvent, participantID string) *types.
 		}
 	}
 	return newest
+}
+
+func (r *ResidentRuntime) humanTaskRequestForScope(scope string, events []types.RoomEvent, participantID string) *types.WireCollabEvent {
+	if request := humanTaskRequestFor(events, participantID); request != nil {
+		return request
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.humanTaskRequestForScopeLocked(scope, events, participantID)
+}
+
+// humanTaskRequestForScopeLocked returns the sanitized lifecycle token saved
+// from the Task's original Human request when a recovered instruction no
+// longer includes that original queue item. Human task content is never kept
+// here or replayed.
+func (r *ResidentRuntime) humanTaskRequestForScopeLocked(scope string, events []types.RoomEvent, participantID string) *types.WireCollabEvent {
+	if request := humanTaskRequestFor(events, participantID); request != nil {
+		return request
+	}
+	state := r.scopedSessions[normalizeScope(scope)]
+	if state == nil || state.taskRequest == nil ||
+		state.taskRequest.TargetParticipantID != participantID {
+		return nil
+	}
+	request := *state.taskRequest
+	return &request
+}
+
+func (r *ResidentRuntime) taskRequestAccepted(scope, requestID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	state := r.scopedSessions[normalizeScope(scope)]
+	return state != nil && state.taskRequest != nil &&
+		state.taskRequest.RequestID == requestID && state.taskRequestAccepted
+}
+
+func (r *ResidentRuntime) markTaskRequestAccepted(scope, requestID string) {
+	r.mu.Lock()
+	if state := r.scopedSessions[normalizeScope(scope)]; state != nil &&
+		state.taskRequest != nil && state.taskRequest.RequestID == requestID {
+		state.taskRequestAccepted = true
+	}
+	r.mu.Unlock()
 }
 
 func containsSequence(items []int64, sequence int64) bool {
@@ -1033,7 +1072,7 @@ func (r *ResidentRuntime) steerWouldBeNextLocked(scope string, ref *logicalSessi
 			continue
 		}
 		context, ok := (*ref.pendingContexts)[candidate]
-		if ok && (context.delivered || context.superseded) {
+		if ok && context.delivered {
 			continue
 		}
 		return candidate == sequence
@@ -1048,8 +1087,7 @@ func (r *ResidentRuntime) steerWouldBeNextLocked(scope string, ref *logicalSessi
 //	the running turn is never selected here (its scope is skipped by callers);
 //	a steer is delivered before ordinary not-yet-started follow-ups;
 //	among steers, canonical order wins;
-//	a closed Task head requires an explicit Human replacement; ordinary Room
-//	conversation retains its existing closed-steer behavior.
+//	closed Room steer entries keep their existing delivery behavior.
 func (r *ResidentRuntime) nextPendingTargetLocked(scope string, ref *logicalSessionRef) (int64, bool) {
 	if ref == nil || ref.pendingAddressed == nil || len(*ref.pendingAddressed) == 0 {
 		return 0, false
@@ -1060,20 +1098,16 @@ func (r *ResidentRuntime) nextPendingTargetLocked(scope string, ref *logicalSess
 	head := int64(0)
 	for _, sequence := range *ref.pendingAddressed {
 		context, ok := (*ref.pendingContexts)[sequence]
-		if ok && (context.delivered || context.superseded) {
+		if ok && context.delivered {
 			// Already consumed out of canonical order. It stays in the ledger
 			// only because earlier ordinary work is still undelivered, so it
 			// must never be selected again.
 			continue
 		}
 		if r.turnRecoveryClosedLocked(scope, sequence) {
-			// For a Task scope, a permanently closed canonical head is a Human
-			// decision point: a later ordinary message cannot silently bypass
-			// the undelivered Task instruction. Room conversation recovery keeps
-			// its existing behavior of advancing past a closed steer.
-			if head == 0 && taskExecutionScope(scope) {
-				return 0, false
-			}
+			// Task delivery exhaustion drops Runtime queue bookkeeping and
+			// projects needs-attention; closed per-instruction markers remain
+			// only for the ordinary Room conversation path.
 			continue
 		}
 		if head == 0 {
@@ -1109,7 +1143,7 @@ func (r *ResidentRuntime) pendingUndeliveredLocked(scope string, target int64) b
 	if !ok {
 		return false
 	}
-	return !context.delivered && !context.superseded
+	return !context.delivered
 }
 
 func (r *ResidentRuntime) pendingUndeliveredFor(scope string, target int64) bool {
@@ -1142,7 +1176,7 @@ func (r *ResidentRuntime) undeliveredDeliveryCountLocked(scope string, ref *logi
 			continue
 		}
 		context, ok := (*ref.pendingContexts)[sequence]
-		if ok && (context.delivered || context.superseded) {
+		if ok && context.delivered {
 			continue
 		}
 		queued++
@@ -1160,7 +1194,7 @@ func (r *ResidentRuntime) collapseDeliveredPrefixLocked(scope string, ref *logic
 	for len(*ref.pendingAddressed) > 0 {
 		head := (*ref.pendingAddressed)[0]
 		context, ok := (*ref.pendingContexts)[head]
-		if ok && !context.delivered && !context.superseded {
+		if ok && !context.delivered {
 			break
 		}
 		// A missing entry was already consumed (a duplicate or an explicitly
@@ -1174,54 +1208,4 @@ func (r *ResidentRuntime) collapseDeliveredPrefixLocked(scope string, ref *logic
 		removed = true
 	}
 	return removed
-}
-
-// supersedePendingHumanInstructionsLocked records an explicit Human decision
-// to replace earlier, not-yet-started addressed Task text or attachment
-// instructions. The canonical Room messages remain in
-// history; superseded targets advance the existing delivery cursor and can
-// never be replayed. A lane that has already started is always preserved.
-// Callers hold r.mu and pass a Room-authenticated Human text event boundary.
-func (r *ResidentRuntime) supersedePendingHumanInstructionsLocked(scope string, ref *logicalSessionRef, through int64) int {
-	if ref == nil || ref.pendingAddressed == nil || ref.pendingContexts == nil {
-		return 0
-	}
-	state := r.scopedSessions[scope]
-	firstTaskSequence := int64(0)
-	if state != nil {
-		firstTaskSequence = state.admittedSequence
-	}
-	active := int64(0)
-	if lane, ok := r.activeTurns[scope]; ok {
-		active = lane.target
-	}
-	count := 0
-	for _, sequence := range *ref.pendingAddressed {
-		if sequence <= firstTaskSequence || sequence > through || sequence == active {
-			continue
-		}
-		context, ok := (*ref.pendingContexts)[sequence]
-		if !ok || context.delivered || context.superseded || len(context.events) == 0 {
-			continue
-		}
-		trigger := context.events[len(context.events)-1]
-		if trigger.Sequence != sequence ||
-			(trigger.Type != "text" && trigger.Type != "image") ||
-			!trigger.Addressed || trigger.Participant.Kind != types.KindHuman {
-			continue
-		}
-		context.superseded = true
-		(*ref.pendingContexts)[sequence] = context
-		key := canonicalTurnKey{scope: normalizeScope(scope), target: sequence}
-		delete(r.turnRetries, key)
-		r.forgetTurnRecoveryLocked(scope, sequence)
-		count++
-	}
-	if count > 0 {
-		r.collapseDeliveredPrefixLocked(scope, ref)
-		r.clearTaskExecutionBlocker(scope)
-		r.turnIdleCond.Broadcast()
-		r.wakeTurnRetryClock()
-	}
-	return count
 }

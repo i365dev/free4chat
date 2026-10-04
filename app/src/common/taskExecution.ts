@@ -98,7 +98,7 @@ export function isTaskExecutionAvailability(
   return (
     value === "session_lost" ||
     value === "control_unavailable" ||
-    value === "recovery_closed"
+    value === "needs_attention"
   )
 }
 
@@ -130,13 +130,13 @@ export function taskExecutionLabel(projection: {
     return { label: "Session lost" }
   if (projection.availability === "control_unavailable")
     return {
-      label: "Task blocked",
-      detail: "Harness control unavailable · instructions retained",
+      label: "Needs attention",
+      detail: "Recent instructions may not have reached the Agent",
     }
-  if (projection.availability === "recovery_closed")
+  if (projection.availability === "needs_attention")
     return {
-      label: "Task blocked",
-      detail: "Automatic recovery stopped · instructions retained",
+      label: "Needs attention",
+      detail: "Recent instructions may not have reached the Agent",
     }
   // #421: an explicit QUEUED phase means accepted work is waiting for an
   // execution lane (bounded cross-session concurrency, or a serial provider).

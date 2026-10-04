@@ -444,8 +444,8 @@ func TestNativeControlSetterFailuresRetryBoundedlyThenBlockTask(t *testing.T) {
 			blocked := waitForExecution(t, execution, "req-control-retry", "native control failure becomes blocked", func(p types.TaskExecutionProjection) bool {
 				return p.Availability == types.TaskExecutionAvailabilityControlUnavailable
 			})
-			if blocked.CurrentTurnSequence != 0 || blocked.Phase != "" || blocked.QueuedCount != 1 {
-				t.Fatalf("failed pre-Harness control application was projected as lane contention: %+v", blocked)
+			if blocked.CurrentTurnSequence != 0 || blocked.Phase != "" || blocked.QueuedCount != 0 {
+				t.Fatalf("failed pre-Harness control application was not quarantined: %+v", blocked)
 			}
 			waitFor(t, 2*time.Second, func() bool {
 				return adapter.count(testCase.setter) == maxTurnRetryAttempts+1
@@ -457,8 +457,8 @@ func TestNativeControlSetterFailuresRetryBoundedlyThenBlockTask(t *testing.T) {
 			if got := adapter.runCount(scope); got != 0 {
 				t.Fatalf("Harness received a turn despite its selected control failing: %d runs", got)
 			}
-			if got := len(rt.pendingAddressedSnapshotFor(scope)); got != 1 {
-				t.Fatalf("blocked instruction was lost or duplicated: %d pending", got)
+			if got := len(rt.pendingAddressedSnapshotFor(scope)); got != 0 {
+				t.Fatalf("blocked instruction remained as queue contention: %d pending", got)
 			}
 		})
 	}

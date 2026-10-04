@@ -67,6 +67,12 @@ type logicalSessionState struct {
 	// delivered trigger — the Task's collaboration request. It is what dates a
 	// Task's identity record for bounded retention (#473).
 	admittedSequence int64
+	// taskRequest keeps only the lifecycle correlation for a Human-created
+	// Task. Prompt, summary, and attachments stay in canonical Room history;
+	// this small token lets a fresh Human instruction resume acceptance after
+	// failed Runtime queue bookkeeping has been quarantined.
+	taskRequest         *types.WireCollabEvent
+	taskRequestAccepted bool
 	// rematerializing marks a scope whose state was seeded from the released
 	// Task ledger (#473): the adapter still holds this Task's exact native
 	// conversation, so the next session edge for the scope materializes THAT
@@ -120,7 +126,6 @@ func (r *ResidentRuntime) DiagnosticsSnapshot() map[string]any {
 		RetryAttempt        int    `json:"retryAttempt,omitempty"`
 		RetryFailureClass   string `json:"retryFailureClass,omitempty"`
 		RetryScheduled      bool   `json:"retryScheduled,omitempty"`
-		RecoveryClosed      bool   `json:"recoveryClosed,omitempty"`
 		Availability        string `json:"availability,omitempty"`
 		AvailabilityReason  string `json:"availabilityReason,omitempty"`
 	}
@@ -165,14 +170,11 @@ func (r *ResidentRuntime) DiagnosticsSnapshot() map[string]any {
 			if ref.pendingAddressed != nil && ref.pendingContexts != nil {
 				for _, sequence := range *ref.pendingAddressed {
 					context, ok := (*ref.pendingContexts)[sequence]
-					if ok && (context.delivered || context.superseded) {
+					if ok && context.delivered {
 						continue
 					}
 					item.HeadSequence = sequence
 					key := canonicalTurnKey{scope: normalizeScope(scope), target: sequence}
-					if r.turnRecoveryClosedLocked(scope, sequence) {
-						item.RecoveryClosed = true
-					}
 					if retry := r.turnRetries[key]; retry != nil {
 						item.RetryAttempt = retry.attempt
 						item.RetryFailureClass = retry.failureClass
@@ -187,8 +189,6 @@ func (r *ResidentRuntime) DiagnosticsSnapshot() map[string]any {
 			item.State = "running"
 		case item.LaneSequence > 0:
 			item.State = "preparing"
-		case item.RecoveryClosed:
-			item.State = "recovery_closed"
 		case item.RetryScheduled:
 			item.State = "retrying"
 		case item.QueuedCount > 0:
@@ -202,10 +202,12 @@ func (r *ResidentRuntime) DiagnosticsSnapshot() map[string]any {
 		facts := r.taskExecutionFacts[taskExecutions[index].scope]
 		taskExecutions[index].Availability = string(facts.availability)
 		taskExecutions[index].AvailabilityReason = facts.failureClass
+		if facts.retryAttempt > taskExecutions[index].RetryAttempt {
+			taskExecutions[index].RetryAttempt = facts.retryAttempt
+		}
 		if taskExecutions[index].CurrentTurnSequence == 0 && taskExecutions[index].Availability != "" {
-			if taskExecutions[index].Availability == string(types.TaskExecutionAvailabilityRecoveryClosed) &&
-				taskExecutions[index].RecoveryClosed {
-				taskExecutions[index].State = "recovery_closed"
+			if taskExecutions[index].Availability == string(types.TaskExecutionAvailabilityNeedsAttention) {
+				taskExecutions[index].State = "needs_attention"
 			} else {
 				taskExecutions[index].State = "blocked"
 			}
@@ -1611,15 +1613,6 @@ func (r *ResidentRuntime) acceptEvent(event types.RoomEvent) {
 		r.log("logical_scope_rejected", map[string]string{"reason": "invalid"})
 		return
 	}
-	if event.SupersedesThroughSequence != 0 &&
-		(scope == roomScope || !event.Addressed || event.Type != "text" ||
-			event.Participant.Kind != types.KindHuman ||
-			event.SupersedesThroughSequence < 0 ||
-			event.SupersedesThroughSequence >= event.Sequence) {
-		r.mu.Unlock()
-		r.log("task_instruction_replace_rejected", map[string]string{"reason": "invalid_boundary"})
-		return
-	}
 	newScope := scope != roomScope && !r.scopeStateExistsLocked(scope)
 	queuedChanged := false
 	claimed := false
@@ -1651,17 +1644,18 @@ func (r *ResidentRuntime) acceptEvent(event types.RoomEvent) {
 		r.mu.Lock()
 	}
 	r.eventBuffer.Add(event)
-	if event.SupersedesThroughSequence > 0 {
-		if ref := r.sessionRefLocked(scope); ref != nil {
-			r.supersedePendingHumanInstructionsLocked(scope, ref, event.SupersedesThroughSequence)
-		}
-	}
 	if newScope {
 		// The Task's first delivered trigger is its canonical collaboration
 		// request; that sequence is what bounds this Task's identity record.
 		state := r.scopedSessions[scope]
 		if state != nil && state.admittedSequence == 0 {
 			state.admittedSequence = event.Sequence
+			if request := humanTaskRequestFor([]types.RoomEvent{event}, r.participantID); request != nil {
+				request.Summary = ""
+				request.Details = nil
+				request.AttachmentIDs = nil
+				state.taskRequest = request
+			}
 		}
 	}
 	if newScope && (ref.rematerializing == nil || !*ref.rematerializing) {
@@ -1678,7 +1672,8 @@ func (r *ResidentRuntime) acceptEvent(event types.RoomEvent) {
 	// closing a Task this Agent opened). It is recorded on the scope the event
 	// already routed to, so it can never mark another Task terminal (#473).
 	r.observeTaskScopeTerminalLocked(scope, event)
-	if event.Addressed && !containsSequence(*ref.pendingAddressed, event.Sequence) {
+	if event.Addressed && event.Sequence > max(*ref.deliveredThrough, *ref.roomDeliveryFloor) &&
+		!containsSequence(*ref.pendingAddressed, event.Sequence) {
 		// Do not use BoundedPush here. An addressed trigger remains unacknowledged
 		// until RunTurn succeeds, so front eviction would silently lose a failed
 		// turn. When the bounded queue is full, keep every already-accepted
@@ -1697,11 +1692,13 @@ func (r *ResidentRuntime) acceptEvent(event types.RoomEvent) {
 				target: event.Sequence,
 				events: r.eventsForScopeLocked(scope, after, event.Sequence),
 			}
-			// A new ordinary message never re-arms or bypasses a failed canonical
-			// head. Bounded retries own transient recovery; an explicit Human
-			// replacement marks only earlier pending instructions as superseded.
+			// A new ordinary Room message never resets retry state. A Task that
+			// has reached needs-attention has already quarantined its failed
+			// Runtime queue; this new Human instruction is the escape hatch.
 			if scope == roomScope {
 				r.reopenTurnRecoveryLocked(scope)
+			} else if event.Participant.Kind == types.KindHuman {
+				r.clearTaskExecutionBlocker(scope)
 			}
 			// #409: an EXACT prepared adoption is claimed only once its own
 			// canonical Human-owned Task has actually been accepted into this
@@ -2202,7 +2199,7 @@ func (r *ResidentRuntime) runTurn(scope string, target int64) {
 	// A Human-originated Task becomes Working only after its scoped session
 	// is available and immediately before the first real cognition turn.
 	// Agent-originated collaboration keeps its explicit response semantics.
-	if request := humanTaskRequestFor(events, r.currentParticipantID()); request != nil {
+	if request := r.humanTaskRequestForScope(scope, events, r.currentParticipantID()); request != nil && !r.taskRequestAccepted(scope, request.RequestID) {
 		if _, err := r.CollabResponse(types.CollabResponseArgs{
 			RequestID: request.RequestID,
 			Decision:  "accepted",
@@ -2223,6 +2220,7 @@ func (r *ResidentRuntime) runTurn(scope string, target int64) {
 			r.markTurnFailedInPass(scope, target)
 			return
 		}
+		r.markTaskRequestAccepted(scope, request.RequestID)
 		r.mu.Lock()
 		// A successful canonical acceptance resolves the send-origin
 		// admission failure before cognition starts. Do not let the stale
@@ -2320,11 +2318,11 @@ func (r *ResidentRuntime) runTurn(scope string, target int64) {
 	// A Human must verify a published Task App before its capability-bearing
 	// Task is settled; otherwise the App loses its Task authorization first.
 	generatedAppNeedsHumanVerification := result.GeneratedApp != nil &&
-		humanTaskRequestFor(events, r.currentParticipantID()) != nil
+		r.humanTaskRequestForScope(scope, events, r.currentParticipantID()) != nil
 	if result.GeneratedApp != nil {
 		if err := r.publishGeneratedTaskOutput(scope, result.GeneratedApp); err != nil {
 			r.recordDeliveredTurnFailure(scope, "send", turnFailureSend, started, err)
-			r.settleHumanTask(events, "failed", "Agent Task App could not be published.")
+			r.settleHumanTask(scope, events, "failed", "Agent Task App could not be published.")
 			return
 		}
 		if generatedAppNeedsHumanVerification {
@@ -2337,7 +2335,7 @@ func (r *ResidentRuntime) runTurn(scope string, target int64) {
 	// an untruthful success claim, so consume the closed local intent before
 	// any SendText attempt. Confirmed leave hands cleanup to the daemon after
 	// this turn unwinds; rejected/failed intents use fixed truthful text.
-	if r.handleLifecycleIntent(input, result, events) {
+	if r.handleLifecycleIntent(scope, input, result, events) {
 		// A lifecycle intent ends this scope's work for this pass, exactly as a
 		// failed turn does: the resident is leaving, so re-launching its head
 		// turn would contradict the intent it just acted on.
@@ -2348,7 +2346,7 @@ func (r *ResidentRuntime) runTurn(scope string, target int64) {
 	text := strings.TrimSpace(result.Text)
 	if text == "" {
 		if !generatedAppNeedsHumanVerification {
-			r.settleHumanTask(events, "completed", "Agent completed the task.")
+			r.settleHumanTask(scope, events, "completed", "Agent completed the task.")
 		}
 		return
 	}
@@ -2358,13 +2356,13 @@ func (r *ResidentRuntime) runTurn(scope string, target int64) {
 		// Runtime owns its single Task settlement here; do not route it through
 		// failTurn, which settles still-pending Harness-delivery failures.
 		r.recordDeliveredTurnFailure(scope, "harness", turnFailureSend, started, err)
-		r.settleHumanTask(events, "failed", "Agent task failed before completion.")
+		r.settleHumanTask(scope, events, "failed", "Agent task failed before completion.")
 		return
 	}
 	sent, err := r.sendHarnessText(scope, handle, text, result.TargetParticipantIDs)
 	if err != nil {
 		r.recordDeliveredTurnFailure(scope, "send", turnFailureSend, started, err)
-		r.settleHumanTask(events, "failed", "Agent task failed before completion.")
+		r.settleHumanTask(scope, events, "failed", "Agent task failed before completion.")
 		return
 	}
 	r.mu.Lock()
@@ -2383,7 +2381,7 @@ func (r *ResidentRuntime) runTurn(scope string, target int64) {
 	// command itself. The Room deduplicates an explicit Harness result that
 	// raced this canonical completion.
 	if !generatedAppNeedsHumanVerification {
-		r.settleHumanTask(events, "completed", "Agent completed the task.")
+		r.settleHumanTask(scope, events, "completed", "Agent completed the task.")
 	}
 	// Voice Reply is additive: speak only after the text reply is
 	// persisted; a nil/unready output keeps the turn text-only.
@@ -2441,23 +2439,23 @@ func (r *ResidentRuntime) shouldRetryHumanTaskAcceptance() bool {
 	if r.lastErrorSource != "send" || r.participantID == "" {
 		return false
 	}
-	hasPendingRequest := func(ref *logicalSessionRef) bool {
+	hasPendingRequest := func(scope string, ref *logicalSessionRef) bool {
 		if ref == nil || ref.pendingAddressed == nil || ref.pendingContexts == nil {
 			return false
 		}
 		for _, target := range *ref.pendingAddressed {
 			pending, ok := (*ref.pendingContexts)[target]
-			if ok && humanTaskRequestFor(pending.events, r.participantID) != nil {
+			if ok && r.humanTaskRequestForScopeLocked(scope, pending.events, r.participantID) != nil {
 				return true
 			}
 		}
 		return false
 	}
-	if hasPendingRequest(r.sessionRefLocked(roomScope)) {
+	if hasPendingRequest(roomScope, r.sessionRefLocked(roomScope)) {
 		return true
 	}
 	for _, scope := range r.scopeOrder {
-		if hasPendingRequest(r.sessionRefLocked(scope)) {
+		if hasPendingRequest(scope, r.sessionRefLocked(scope)) {
 			return true
 		}
 	}

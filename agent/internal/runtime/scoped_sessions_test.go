@@ -429,8 +429,12 @@ func TestLegacyAdapterFailsClosedForTaskScope(t *testing.T) {
 	if adapter.ensureCalls != 1 || adapter.generationCalls != 1 || adapter.runCalls != 1 {
 		t.Fatalf("task scope called legacy adapter methods: ensure=%d generation=%d run=%d", adapter.ensureCalls, adapter.generationCalls, adapter.runCalls)
 	}
-	if got := rt.pendingAddressedSnapshotFor("task:T"); !reflect.DeepEqual(got, []int64{2}) {
-		t.Fatalf("unsupported task turn was incorrectly acknowledged: %v", got)
+	if got := rt.pendingAddressedSnapshotFor("task:T"); len(got) != 0 {
+		t.Fatalf("unsupported Task work remained as queue contention: %v", got)
+	}
+	projection, ok := rt.snapshotTaskExecution("task:T")
+	if !ok || projection.Availability != types.TaskExecutionAvailabilityNeedsAttention {
+		t.Fatalf("unsupported Task scope must require Human attention: %+v, ok=%v", projection, ok)
 	}
 	if status := rt.Status(); status.LastError != errScopedHarnessUnsupported.Error() {
 		t.Fatalf("unsupported task scope was not reported explicitly: %+v", status)

@@ -165,11 +165,12 @@ func (r *ResidentRuntime) failTurn(
 	if retryable {
 		r.scheduleTurnRetry(scope, target, failureClass, elapsedMs)
 		if r.turnRecoveryClosed(scope, target) {
-			r.failPendingHumanTasks([]string{scope}, "Agent task failed before completion.")
 			if taskExecutionScope(scope) &&
 				(preHarnessTaskFailure(err) || r.pendingUndeliveredFor(scope, target)) {
 				r.markTaskBlockedForFailure(scope, failureClass,
 					errors.Is(err, errTaskHarnessControlApplyFailed) || errors.Is(err, errTaskHarnessControlUnavailable))
+			} else if !taskExecutionScope(scope) {
+				r.failPendingHumanTasks([]string{scope}, "Agent task failed before completion.")
 			}
 		} else if taskExecutionScope(scope) {
 			// A canonical instruction with an armed retry is not waiting for an
@@ -186,11 +187,12 @@ func (r *ResidentRuntime) failTurn(
 	r.mu.Lock()
 	r.closeTurnRecoveryLocked(scope, target)
 	r.mu.Unlock()
-	r.failPendingHumanTasks([]string{scope}, "Agent task failed before completion.")
 	if taskExecutionScope(scope) &&
 		(preHarnessTaskFailure(err) || r.pendingUndeliveredFor(scope, target)) {
 		r.markTaskBlockedForFailure(scope, failureClass,
 			errors.Is(err, errTaskHarnessControlApplyFailed) || errors.Is(err, errTaskHarnessControlUnavailable))
+	} else if !taskExecutionScope(scope) {
+		r.failPendingHumanTasks([]string{scope}, "Agent task failed before completion.")
 	}
 }
 
@@ -401,7 +403,7 @@ func (r *ResidentRuntime) turnRecoveryClosedLocked(scope string, target int64) b
 // drain refuses to re-execute it for unrelated later Room traffic.
 func (r *ResidentRuntime) closeTurnRecoveryLocked(scope string, target int64) {
 	scope = normalizeScope(scope)
-	if scope == "" {
+	if scope == "" || taskExecutionScope(scope) {
 		return
 	}
 	ref := r.sessionRefLocked(scope)

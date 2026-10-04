@@ -992,12 +992,6 @@ type ClientMessage =
       text: string
     }
   | {
-      // Explicitly replace only not-yet-started instructions in one Task.
-      type: "task-replace-pending-and-send"
-      taskRequestId: string
-      text: string
-    }
-  | {
       // #409 Task Session Continuation, discovery. ONE bounded private
       // request/response exchange on this Human's own socket: it appends no
       // Room message, increments no sequence, wakes no waiter, and writes no
@@ -2587,9 +2581,6 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         kind: message.kind,
       },
       ...(message.text === undefined ? {} : { text: message.text }),
-      ...(message.supersedesThroughSequence === undefined
-        ? {}
-        : { supersedesThroughSequence: message.supersedesThroughSequence }),
       ...(message.actionType === undefined
         ? {}
         : { actionType: message.actionType }),
@@ -7842,7 +7833,6 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       text: string
       targets?: unknown
       taskRequestId?: unknown
-      supersedesThroughSequence?: number
     }
   ): Promise<
     | { ok: true; message: RoomMessage; taskRequestId?: string }
@@ -7882,11 +7872,6 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       kind: participant.kind,
       type: "text",
       text: input.text.trim().slice(0, 4000),
-      ...(taskRequest &&
-      taskRequest.ok === true &&
-      input.supersedesThroughSequence !== undefined
-        ? { supersedesThroughSequence: input.supersedesThroughSequence }
-        : {}),
       ...(taskRequest && taskRequest.ok === true
         ? {
             taskRequestId: taskRequest.requestId,
@@ -8753,52 +8738,6 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         selectedOptionId
       )
       if (result.ok === false) reject(result.error)
-      return
-    }
-
-    // Explicit replacement applies only to undelivered Task messages. Its
-    // boundary is persisted on the new canonical instruction, so disconnects
-    // and event replay cannot restore messages the Human replaced. Runtime
-    // independently protects any turn that has already started.
-    if (message.type === "task-replace-pending-and-send") {
-      const reject = (error: string) =>
-        socket.send(
-          JSON.stringify({
-            type: "error",
-            error,
-            taskRequestId: message.taskRequestId,
-          })
-        )
-      const text = typeof message.text === "string" ? message.text.trim() : ""
-      if (!text) {
-        reject("invalid_task_instruction")
-        return
-      }
-      const task = this.resolveInterruptTask(
-        room,
-        participant,
-        message.taskRequestId
-      )
-      if (task.ok === false) {
-        reject(task.error)
-        return
-      }
-      const execution = this.taskExecutionFor(
-        room,
-        task.executorAgentId,
-        task.requestId
-      )
-      if (!execution || execution.queuedCount === 0) {
-        reject("task_pending_instruction_unavailable")
-        return
-      }
-      const instruction = await this.appendHumanText(room, participant, {
-        text,
-        taskRequestId: task.requestId,
-        targets: [task.executorAgentId],
-        supersedesThroughSequence: room.nextMessageSequence,
-      })
-      if (instruction.ok === false) reject(instruction.error)
       return
     }
 

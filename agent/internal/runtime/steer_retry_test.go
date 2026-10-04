@@ -169,11 +169,10 @@ func TestSteerRetryIsTargetExactAndNeedsNoNewRoomEvent(t *testing.T) {
 	}
 }
 
-// TestSteerRetryStaysWithinTheBoundedBudget covers CASE B: a steered
-// instruction that keeps failing must stop inside the existing retry budget,
-// without unbounded state growth, and must not acknowledge or skip the ordinary
-// work waiting behind it.
-func TestSteerRetryStaysWithinTheBoundedBudget(t *testing.T) {
+// TestSteerRetryExhaustionQuarantinesTaskAndAllowsFreshHumanWork covers a
+// steered instruction that keeps failing. Once its bounded retry budget is
+// spent, stale queued work is quarantined and fresh Human input can proceed.
+func TestSteerRetryExhaustionQuarantinesTaskAndAllowsFreshHumanWork(t *testing.T) {
 	const scope = "task:req-T"
 	adapter := newFlakySteerAdapter("C", 99) // every C attempt fails
 	rt, log, stream := newSteerRetryRuntime(t, adapter)
@@ -189,15 +188,19 @@ func TestSteerRetryStaysWithinTheBoundedBudget(t *testing.T) {
 	rt.applyResidentTaskControl(steerControl("req-T", 1, 4))
 
 	waitFor(t, 5*time.Second, func() bool { return log.count("turn_retry_exhausted") == 1 }, "the bounded retry budget to be spent")
-	// The steer's recovery is closed, but the ordinary work behind it is NOT
-	// skipped: a later drain (any Room traffic re-enters the serial drain)
-	// delivers A and B, while the undelivered steer stays pending exactly once.
-	stream.results <- addressedEnvelope(roomEvent(50, false))
-	waitFor(t, 5*time.Second, func() bool { return rt.deliveredSeqFor(scope) == 3 }, "ordinary work to drain past the closed steer")
+	var attention types.TaskExecutionProjection
+	waitFor(t, time.Second, func() bool {
+		var ok bool
+		attention, ok = rt.snapshotTaskExecution(scope)
+		return ok && attention.Availability == types.TaskExecutionAvailabilityNeedsAttention
+	}, "retry exhaustion quarantines Task work")
+	if attention.QueuedCount != 0 || len(rt.pendingAddressedSnapshotFor(scope)) != 0 {
+		t.Fatalf("exhausted Task work remained as queue contention: projection=%+v pending=%v", attention, rt.pendingAddressedSnapshotFor(scope))
+	}
 	time.Sleep(150 * time.Millisecond)
 
-	if got := adapter.attemptOrder(scope); !reflect.DeepEqual(got, []string{"N", "C", "C", "C", "A", "B"}) {
-		t.Fatalf("attempt order = %v, want [N C C C A B] (initial + bounded retries)", got)
+	if got := adapter.attemptOrder(scope); !reflect.DeepEqual(got, []string{"N", "C", "C", "C"}) {
+		t.Fatalf("attempt order = %v, want [N C C C] (initial + bounded retries)", got)
 	}
 
 	rt.mu.Lock()
@@ -212,22 +215,29 @@ func TestSteerRetryStaysWithinTheBoundedBudget(t *testing.T) {
 	}
 	rt.mu.Unlock()
 
-	// The repeatedly failing steer stays pending and undelivered EXACTLY once,
-	// with bounded Runtime bookkeeping and no unbounded retry loop.
-	if !reflect.DeepEqual(ledger, []int64{4}) {
-		t.Fatalf("canonical ledger after the bounded failure = %v, want the undelivered steer only", ledger)
+	// Runtime queue metadata is discarded after exhaustion; Room history remains
+	// canonical and available for Human inspection/re-send.
+	if len(ledger) != 0 {
+		t.Fatalf("Task ledger after retry exhaustion = %v, want it quarantined", ledger)
 	}
-	if pendingContexts != 1 {
-		t.Fatalf("pending contexts = %d, want exactly the undelivered steer", pendingContexts)
+	if pendingContexts != 0 {
+		t.Fatalf("pending contexts = %d, want no quarantined contexts", pendingContexts)
 	}
-	if retryStates > 1 {
-		t.Fatalf("retry bookkeeping grew to %d entries", retryStates)
+	if retryStates != 0 {
+		t.Fatalf("retry bookkeeping retained %d exhausted entries", retryStates)
 	}
-	if !steerStillUndelivered(rt, scope, 4) {
-		t.Fatal("a failed steer was reported as delivered")
+	if got := rt.deliveredSeqFor(scope); got != 4 {
+		t.Fatalf("quarantined delivery cursor = %d, want 4", got)
 	}
 	if got := log.count("retry_started"); got != maxTurnRetryAttempts {
 		t.Fatalf("retry attempts started = %d, want the bounded budget %d", got, maxTurnRetryAttempts)
+	}
+
+	stream.results <- addressedEnvelope(scopedEvent(5, scope, "fresh Human instruction D"))
+	waitFor(t, time.Second, func() bool { return rt.currentCursor() >= 5 }, "fresh Human instruction admission")
+	waitFor(t, time.Second, func() bool { return len(adapter.attemptOrder(scope)) == 5 }, "fresh instruction reaches Harness once")
+	if got := adapter.attemptOrder(scope); !reflect.DeepEqual(got, []string{"N", "C", "C", "C", "fresh Human instruction D"}) {
+		t.Fatalf("fresh instruction did not recover once: %v", got)
 	}
 }
 

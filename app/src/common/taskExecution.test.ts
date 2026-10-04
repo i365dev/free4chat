@@ -99,7 +99,7 @@ describe("Task execution labels (#421)", () => {
         currentTurnSequence: 9,
         phase: "running",
         queuedCount: 2,
-        availability: "recovery_closed",
+        availability: "needs_attention",
       })
     ).toEqual({ label: "Running", detail: "2 queued" })
   })
@@ -121,7 +121,7 @@ describe("Task execution labels (#421)", () => {
     })
   })
 
-  it("renders control and recovery blockers as blocked, never queued", () => {
+  it("renders unavailable or exhausted delivery as needs attention, never queued", () => {
     expect(
       taskExecutionLabel({
         phase: "queued",
@@ -129,18 +129,18 @@ describe("Task execution labels (#421)", () => {
         availability: "control_unavailable",
       })
     ).toEqual({
-      label: "Task blocked",
-      detail: "Harness control unavailable · instructions retained",
+      label: "Needs attention",
+      detail: "Recent instructions may not have reached the Agent",
     })
     expect(
       taskExecutionLabel({
         phase: "queued",
         queuedCount: 2,
-        availability: "recovery_closed",
+        availability: "needs_attention",
       })
     ).toEqual({
-      label: "Task blocked",
-      detail: "Automatic recovery stopped · instructions retained",
+      label: "Needs attention",
+      detail: "Recent instructions may not have reached the Agent",
     })
   })
 

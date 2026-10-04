@@ -101,7 +101,6 @@ const baseHookReturn = {
   participants: [] as unknown[],
   messages: [] as unknown[],
   sendTextMessage: vi.fn(),
-  sendTaskReplacePendingAndSend: vi.fn(() => true),
   sendFileMessage: vi.fn(),
   sendActionMessage: vi.fn(),
   getLocalRoomAuth: vi.fn(() => null),
@@ -1928,9 +1927,6 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       "Running"
     )
     expect(screen.queryByTestId("task-execution-status")).toBeNull()
-    expect(
-      screen.queryByTestId("task-replace-pending-and-send")
-    ).not.toBeInTheDocument()
     running.unmount()
 
     mockUseSfuChatRoom.mockReturnValue({
@@ -1955,21 +1951,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     expect(screen.getByTestId("task-interrupt")).toBeInTheDocument()
     fireEvent.click(screen.getByTestId("task-interrupt"))
     expect(sendTaskInterrupt).toHaveBeenCalledWith("task-exec", 42)
-    const interruptCallsBeforeReplacement = sendTaskInterrupt.mock.calls.length
-    fireEvent.change(
-      screen.getByRole("textbox", {
-        name: "Message the room or @ an Agent",
-      }),
-      { target: { value: "replace only the waiting messages" } }
-    )
-    fireEvent.click(screen.getByTestId("task-replace-pending-and-send"))
-    expect(baseHookReturn.sendTaskReplacePendingAndSend).toHaveBeenCalledWith(
-      "task-exec",
-      "replace only the waiting messages"
-    )
-    expect(sendTaskInterrupt).toHaveBeenCalledTimes(
-      interruptCallsBeforeReplacement
-    )
+    expect(screen.queryByTestId("task-replace-pending-and-send")).toBeNull()
     queuedBehind.unmount()
 
     // Queued but not current: no interrupt control is offered.
@@ -1992,17 +1974,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       "Queued · 1 queued"
     )
     expect(screen.queryByTestId("task-interrupt")).not.toBeInTheDocument()
-    fireEvent.change(
-      screen.getByRole("textbox", {
-        name: "Message the room or @ an Agent",
-      }),
-      { target: { value: "replace the waiting instructions" } }
-    )
-    fireEvent.click(screen.getByTestId("task-replace-pending-and-send"))
-    expect(baseHookReturn.sendTaskReplacePendingAndSend).toHaveBeenCalledWith(
-      "task-exec",
-      "replace the waiting instructions"
-    )
+    expect(screen.queryByTestId("task-replace-pending-and-send")).toBeNull()
     queuedOnly.unmount()
 
     // Interrupting: the interrupt control is disabled.
@@ -2060,16 +2032,16 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
           queuedCount: 1,
           availability: "control_unavailable" as const,
         },
-        "Task blocked",
+        "Needs attention",
       ],
       [
         {
           agentParticipantId: "agent-codex",
           taskRequestId: "task-exec",
           queuedCount: 1,
-          availability: "recovery_closed" as const,
+          availability: "needs_attention" as const,
         },
-        "Task blocked",
+        "Needs attention",
       ],
     ] as const) {
       mockUseSfuChatRoom.mockReturnValue({
@@ -2084,23 +2056,23 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       expect(screen.getByTestId("task-agent-activity")).toHaveTextContent(
         expected
       )
-      if (expected === "Task blocked") {
+      if (expected === "Needs attention") {
         expect(screen.queryByTestId("task-interrupt")).not.toBeInTheDocument()
-        fireEvent.change(
-          screen.getByRole("textbox", {
-            name: "Message the room or @ an Agent",
-          }),
-          { target: { value: "replace the blocked waiting instruction" } }
+        expect(screen.getByTestId("task-agent-activity")).toHaveTextContent(
+          "Recent instructions may not have reached the Agent"
         )
-        expect(
-          screen.getByTestId("task-replace-pending-and-send")
-        ).toBeInTheDocument()
-        fireEvent.click(screen.getByTestId("task-replace-pending-and-send"))
-        expect(
-          baseHookReturn.sendTaskReplacePendingAndSend
-        ).toHaveBeenCalledWith(
-          "task-exec",
-          "replace the blocked waiting instruction"
+        const composer = screen.getByRole("textbox", {
+          name: "Message the room or @ an Agent",
+        })
+        expect(composer).toBeEnabled()
+        fireEvent.change(composer, {
+          target: { value: "send a fresh instruction" },
+        })
+        fireEvent.click(screen.getByRole("button", { name: "Send message" }))
+        expect(baseHookReturn.sendTextMessage).toHaveBeenCalledWith(
+          "send a fresh instruction",
+          [],
+          "task-exec"
         )
       }
       view.unmount()
@@ -2327,7 +2299,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     )
   })
 
-  it("keeps an orphaned Task's composer reachable only for an explicit replacement", () => {
+  it("keeps an orphaned Task's composer reachable for explicit Agent handoff", () => {
     const taskRequest: Message = {
       peerId: "human-local",
       name: "Hannah",
