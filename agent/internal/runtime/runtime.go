@@ -203,7 +203,12 @@ func (r *ResidentRuntime) DiagnosticsSnapshot() map[string]any {
 		taskExecutions[index].Availability = string(facts.availability)
 		taskExecutions[index].AvailabilityReason = facts.failureClass
 		if taskExecutions[index].CurrentTurnSequence == 0 && taskExecutions[index].Availability != "" {
-			taskExecutions[index].State = "blocked"
+			if taskExecutions[index].Availability == string(types.TaskExecutionAvailabilityRecoveryClosed) &&
+				taskExecutions[index].RecoveryClosed {
+				taskExecutions[index].State = "recovery_closed"
+			} else {
+				taskExecutions[index].State = "blocked"
+			}
 		}
 		taskExecutions[index].scope = ""
 	}
@@ -225,7 +230,13 @@ func (r *ResidentRuntime) DiagnosticsSnapshot() map[string]any {
 		"tasks":          taskExecutions,
 	}
 	if diagnostics, ok := r.options.Adapter.(types.HarnessDiagnostics); ok {
-		view["harness"] = diagnostics.DiagnosticsSnapshot()
+		snapshot := diagnostics.DiagnosticsSnapshot()
+		for index := range snapshot.Lanes {
+			if snapshot.Lanes[index].Scope != "" {
+				snapshot.Lanes[index].Scope = diagnosticScopeKey(snapshot.Lanes[index].Scope)
+			}
+		}
+		view["harness"] = snapshot
 	}
 	return view
 }
@@ -1878,6 +1889,12 @@ func (r *ResidentRuntime) finishTurnLane(scope string, target int64) {
 	}
 	r.turnIdleCond.Broadcast()
 	r.mu.Unlock()
+	if taskExecutionScope(scope) {
+		// Recompute after releasing the lane. A pre-Harness failure can settle
+		// with no CurrentTurnSequence but with retrying or blocked work; the
+		// prior publication happened while the lane still masked its target.
+		r.publishTaskExecution(scope)
+	}
 }
 
 // turnLaneAvailableLocked reports whether one more turn could start right

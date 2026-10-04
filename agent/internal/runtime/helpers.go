@@ -1054,12 +1054,10 @@ func (r *ResidentRuntime) nextPendingTargetLocked(scope string, ref *logicalSess
 	if ref == nil || ref.pendingAddressed == nil || len(*ref.pendingAddressed) == 0 {
 		return 0, false
 	}
-	if taskControlUnavailable(r, scope) {
+	if taskExecutionBlocked(r, scope) {
 		return 0, false
 	}
 	head := int64(0)
-	headFound := false
-	closedHead := false
 	for _, sequence := range *ref.pendingAddressed {
 		context, ok := (*ref.pendingContexts)[sequence]
 		if ok && (context.delivered || context.superseded) {
@@ -1069,23 +1067,22 @@ func (r *ResidentRuntime) nextPendingTargetLocked(scope string, ref *logicalSess
 			continue
 		}
 		if r.turnRecoveryClosedLocked(scope, sequence) {
-			if !headFound {
-				closedHead = true
-				continue
+			// Only a steered target may pass an earlier open instruction. A
+			// permanently closed canonical head is a Human decision point: a
+			// later ordinary message cannot silently bypass it.
+			if head == 0 {
+				return 0, false
 			}
 			continue
 		}
-		if !headFound {
-			head, headFound = sequence, true
+		if head == 0 {
+			head = sequence
 		}
 		if ok && context.steer {
 			return sequence, true
 		}
 	}
-	if closedHead {
-		return 0, false
-	}
-	if !headFound {
+	if head == 0 {
 		return 0, false
 	}
 	return head, true
@@ -1218,7 +1215,7 @@ func (r *ResidentRuntime) supersedePendingHumanTextLocked(scope string, ref *log
 	}
 	if count > 0 {
 		r.collapseDeliveredPrefixLocked(scope, ref)
-		r.clearTaskControlUnavailable(scope)
+		r.clearTaskExecutionBlocker(scope)
 		r.turnIdleCond.Broadcast()
 		r.wakeTurnRetryClock()
 	}

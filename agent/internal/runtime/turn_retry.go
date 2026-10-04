@@ -105,6 +105,18 @@ func permanentTurnFailure(err error) bool {
 	return errors.Is(err, errScopedHarnessUnsupported) || errors.Is(err, errAdoptedSessionUnavailable) || errors.Is(err, errTaskHarnessControlUnavailable)
 }
 
+// preHarnessTaskFailure reports failures that prevent an accepted Task
+// instruction from reaching its selected Harness session. These failures
+// leave a Human recovery decision to make; errors returned by an actual
+// Harness turn are terminal turn outcomes and must not poison future work in
+// the same Task scope after their canonical request has been settled.
+func preHarnessTaskFailure(err error) bool {
+	return errors.Is(err, errScopedHarnessUnsupported) ||
+		errors.Is(err, errAdoptedSessionUnavailable) ||
+		errors.Is(err, errTaskHarnessControlUnavailable) ||
+		errors.Is(err, errTaskHarnessControlApplyFailed)
+}
+
 // turnRetryIndexFor reports how many autonomous retries the canonical turn
 // identified by (scope, target) has already had scheduled. 0 means the next
 // event describes the initial attempt.
@@ -153,10 +165,16 @@ func (r *ResidentRuntime) failTurn(
 	if retryable {
 		r.scheduleTurnRetry(scope, target, failureClass, elapsedMs)
 		if r.turnRecoveryClosed(scope, target) {
-			if errors.Is(err, errTaskHarnessControlApplyFailed) || errors.Is(err, errTaskHarnessControlUnavailable) {
-				r.markTaskControlUnavailable(scope, failureClass)
+			if taskExecutionScope(scope) && preHarnessTaskFailure(err) {
+				r.markTaskBlockedForFailure(scope, failureClass,
+					errors.Is(err, errTaskHarnessControlApplyFailed) || errors.Is(err, errTaskHarnessControlUnavailable))
 			}
 			r.failPendingHumanTasks([]string{scope}, "Agent task failed before completion.")
+		} else if taskExecutionScope(scope) {
+			// A canonical instruction with an armed retry is not waiting for an
+			// execution lane. Publish the distinct retrying phase immediately so
+			// Room UI never reports false lane contention during back-off.
+			r.publishTaskExecution(scope)
 		}
 		return
 	}
@@ -167,8 +185,9 @@ func (r *ResidentRuntime) failTurn(
 	r.mu.Lock()
 	r.closeTurnRecoveryLocked(scope, target)
 	r.mu.Unlock()
-	if errors.Is(err, errTaskHarnessControlUnavailable) {
-		r.markTaskControlUnavailable(scope, failureClass)
+	if taskExecutionScope(scope) && preHarnessTaskFailure(err) {
+		r.markTaskBlockedForFailure(scope, failureClass,
+			errors.Is(err, errTaskHarnessControlApplyFailed) || errors.Is(err, errTaskHarnessControlUnavailable))
 	}
 	r.failPendingHumanTasks([]string{scope}, "Agent task failed before completion.")
 }

@@ -32,22 +32,27 @@ export interface AgentActivityProjection {
 // control truth only, which is why "running with 2 queued" is one projection
 // rather than an enum value. The Room stores it transiently and the browser
 // only renders it; neither derives it from Room history.
-// #421 adds "queued": accepted work that NO execution lane is running yet,
-// because this Harness's bounded cross-session concurrency is saturated or the
-// provider is serial. It is valid ONLY with no current turn and a positive
-// queuedCount, so "waiting for capacity" can never be confused with "running"
-// and never looks like a hang.
-export type TaskExecutionPhase = "running" | "interrupting" | "queued"
+// #421 adds "queued": executable work waiting for an execution lane. "retrying"
+// is a separate bounded back-off after a failed attempt, not lane contention.
+// Both are valid only with no current turn and positive queuedCount.
+export type TaskExecutionPhase =
+  | "running"
+  | "interrupting"
+  | "queued"
+  | "retrying"
 
 export type TaskExecutionOutcome = "interrupted"
 
-export type TaskExecutionAvailability = "session_lost" | "control_unavailable"
+export type TaskExecutionAvailability =
+  | "session_lost"
+  | "control_unavailable"
+  | "recovery_closed"
 
 export interface TaskExecutionProjection {
   agentParticipantId: string
   taskRequestId: string
   // Canonical Room sequence of the exact turn the Runtime currently owns.
-  // Absent means no turn is current.
+  // Absent means no turn is current (for queued, retrying, or blocked state).
   currentTurnSequence?: number
   phase?: TaskExecutionPhase
   queuedCount: number

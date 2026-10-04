@@ -312,7 +312,7 @@ func TestTaskExecutionSessionLostOnlyForRealHarnessDeath(t *testing.T) {
 }
 
 func TestExplicitTaskReplacementUnparksClosedHeadWithoutReplayingOldMessages(t *testing.T) {
-	rt, adapter, _ := newExecutionRuntime(t)
+	rt, adapter, client := newExecutionRuntime(t)
 	defer rt.Stop()
 
 	// The Task's original instruction has already reached the Harness. Later
@@ -322,16 +322,26 @@ func TestExplicitTaskReplacementUnparksClosedHeadWithoutReplayingOldMessages(t *
 	rt.drainTurns()
 	rt.acceptEvent(scopedEvent(101, "task:req-T", "old queued instruction"))
 	rt.failTurn(
-		"task:req-T", 101, "harness", turnFailureOther, time.Now(),
-		errors.New("native control unavailable"), false,
+		"task:req-T", 101, "harness", turnFailureSession, time.Now(),
+		errAdoptedSessionUnavailable, false,
 	)
 	rt.acceptEvent(scopedEvent(102, "task:req-T", "another queued instruction"))
+	rt.drainTurns()
 
 	if scope, target, ok := rt.nextRunnableTurn(); ok {
 		t.Fatalf("ordinary Task message bypassed a closed canonical head: scope=%s target=%d", scope, target)
 	}
+	if got := adapter.runCount("task:req-T"); got != 1 {
+		t.Fatalf("later Human traffic retried/bypassed the pre-Harness failed head: run count=%d", got)
+	}
 	if got := rt.pendingAddressedSnapshotFor("task:req-T"); !reflect.DeepEqual(got, []int64{101, 102}) {
 		t.Fatalf("queued instructions changed before Human replacement: %v", got)
+	}
+	blocked := waitForExecution(t, client, "req-T", "closed canonical head projects blocked", func(p types.TaskExecutionProjection) bool {
+		return p.Availability == types.TaskExecutionAvailabilityRecoveryClosed && p.QueuedCount == 2
+	})
+	if blocked.Phase == types.TaskExecutionPhaseQueued || blocked.CurrentTurnSequence != 0 || blocked.QueuedCount != 2 {
+		t.Fatalf("a permanently failed canonical head was presented as lane contention: %+v", blocked)
 	}
 
 	// Only the explicit replace command marks earlier Human text as superseded.
@@ -349,6 +359,16 @@ func TestExplicitTaskReplacementUnparksClosedHeadWithoutReplayingOldMessages(t *
 	}
 	if got := rt.pendingAddressedSnapshotFor("task:req-T"); len(got) != 0 {
 		t.Fatalf("successfully replaced Task messages remained pending: %v", got)
+	}
+	// Reconnect reconciliation and duplicate event replay cannot recreate an
+	// instruction whose canonical pending context was explicitly superseded.
+	rt.reconcileActivityTransport()
+	rt.acceptEvent(latest)
+	rt.drainTurns()
+	runs, details = adapter.scopedRunSnapshot()
+	if !reflect.DeepEqual(runs, []string{"task:req-T", "task:req-T"}) ||
+		!reflect.DeepEqual(details["task:req-T"], []string{"initial task", "latest Human instruction"}) {
+		t.Fatalf("event replay resurrected a superseded instruction: runs=%v details=%v", runs, details)
 	}
 }
 
@@ -380,11 +400,61 @@ func TestExplicitTaskReplacementNeverInterruptsTheRunningTurn(t *testing.T) {
 	}
 }
 
+func TestExplicitReplacementStaysBlockedWhenSelectedControlIsStillUnavailable(t *testing.T) {
+	rt, adapter, client := newExecutionRuntime(t)
+	defer rt.Stop()
+
+	// The Task's existing session works until a Human selects a native control
+	// that this adapter cannot apply. The failed second instruction is never
+	// delivered to the Harness.
+	initial := startTurn(rt, scopedEvent(130, "task:req-T", "previous turn completes"))
+	waitForActiveScope(t, rt, "task:req-T")
+	adapter.releaseTurn()
+	waitForDone(t, initial, "previous turn to complete")
+	rt.mu.Lock()
+	rt.taskIdentities["task:req-T"] = &taskIdentity{modeID: "workspace"}
+	rt.mu.Unlock()
+	rt.acceptEvent(scopedEvent(131, "task:req-T", "selected native mode instruction"))
+	rt.drainTurns()
+	blocked := waitForExecution(t, client, "req-T", "unavailable selected control blocks Task", func(p types.TaskExecutionProjection) bool {
+		return p.Availability == types.TaskExecutionAvailabilityControlUnavailable
+	})
+	if blocked.Phase == types.TaskExecutionPhaseQueued || adapter.runCount("task:req-T") != 1 {
+		t.Fatalf("pre-Harness control failure was shown as queue contention or delivered: projection=%+v runs=%d", blocked, adapter.runCount("task:req-T"))
+	}
+
+	rt.acceptEvent(scopedEvent(132, "task:req-T", "later ordinary instruction"))
+	rt.drainTurns()
+	if adapter.runCount("task:req-T") != 1 || !reflect.DeepEqual(rt.pendingAddressedSnapshotFor("task:req-T"), []int64{131, 132}) {
+		t.Fatalf("ordinary Human message bypassed or retried the failed head: runs=%d pending=%v", adapter.runCount("task:req-T"), rt.pendingAddressedSnapshotFor("task:req-T"))
+	}
+
+	latest := scopedEvent(133, "task:req-T", "explicit latest replacement")
+	latest.SupersedesThroughSequence = 132
+	rt.acceptEvent(latest)
+	rt.drainTurns()
+	stillBlocked := waitForExecution(t, client, "req-T", "still-unavailable control re-blocks replacement", func(p types.TaskExecutionProjection) bool {
+		return p.Availability == types.TaskExecutionAvailabilityControlUnavailable && p.QueuedCount == 1
+	})
+	if stillBlocked.Phase == types.TaskExecutionPhaseQueued || adapter.runCount("task:req-T") != 1 ||
+		!reflect.DeepEqual(rt.pendingAddressedSnapshotFor("task:req-T"), []int64{133}) {
+		t.Fatalf("replacement bypassed a genuinely unavailable native control: projection=%+v runs=%d pending=%v", stillBlocked, adapter.runCount("task:req-T"), rt.pendingAddressedSnapshotFor("task:req-T"))
+	}
+	// Replaying the explicit boundary cannot create an autonomous retry or a
+	// second blocked attempt while the underlying provider limitation remains.
+	rt.acceptEvent(latest)
+	rt.drainTurns()
+	time.Sleep(20 * time.Millisecond)
+	if adapter.runCount("task:req-T") != 1 || !reflect.DeepEqual(rt.pendingAddressedSnapshotFor("task:req-T"), []int64{133}) {
+		t.Fatalf("replayed replacement caused duplicate work: runs=%d pending=%v", adapter.runCount("task:req-T"), rt.pendingAddressedSnapshotFor("task:req-T"))
+	}
+}
+
 func TestDiagnosticsSnapshotIdentifiesLiveTaskTurnWithoutTaskContent(t *testing.T) {
 	rt, adapter, _ := newExecutionRuntime(t)
 	defer rt.Stop()
 	adapter.blockNextTurn()
-	drained := startTurn(rt, scopedEvent(120, "task:req-private", "private prompt content"))
+	drained := startTurn(rt, scopedEvent(120, "task:req-private", "private prompt content /private/project-path credential-secret model-secret"))
 	waitForActiveScope(t, rt, "task:req-private")
 
 	diagnostic := rt.DiagnosticsSnapshot()
@@ -408,8 +478,10 @@ func TestDiagnosticsSnapshotIdentifiesLiveTaskTurnWithoutTaskContent(t *testing.
 	if !ok || row["scopeKind"] != "task" || row["state"] != "running" || row["currentTurnSequence"] != float64(120) {
 		t.Fatalf("live Task turn was not diagnosed precisely: %#v", rows[0])
 	}
-	if strings.Contains(string(encoded), "req-private") || strings.Contains(string(encoded), "private prompt content") {
-		t.Fatalf("diagnostics exposed Task identity or prompt content: %s", encoded)
+	for _, forbidden := range []string{"req-private", "private prompt content", "/private/project-path", "credential-secret", "model-secret", "native-session-secret"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("diagnostics exposed sensitive Task/Harness data %q: %s", forbidden, encoded)
+		}
 	}
 	adapter.releaseTurn()
 	waitForDone(t, drained, "diagnostic Task turn to settle")
@@ -421,6 +493,117 @@ func TestDiagnosticsSnapshotIdentifiesLiveTaskTurnWithoutTaskContent(t *testing.
 	if !strings.Contains(string(blocked), `"state":"blocked"`) ||
 		!strings.Contains(string(blocked), `"availabilityReason":"HARNESS_CONTROL_UNAVAILABLE"`) {
 		t.Fatalf("blocked Task diagnostics omit the failure class: %s", blocked)
+	}
+}
+
+type taskDiagnosticsAdapter struct {
+	*interruptAdapter
+}
+
+func (a *taskDiagnosticsAdapter) DiagnosticsSnapshot() types.HarnessDiagnosticSnapshot {
+	return types.HarnessDiagnosticSnapshot{
+		Provider: "test",
+		Capacity: 1,
+		Lanes: []types.HarnessLaneDiagnostic{{
+			Lane:        0,
+			State:       "idle",
+			Scope:       "task:req-provider-private",
+			SessionHash: "opaque-session-hash",
+		}},
+	}
+}
+
+func TestDiagnosticsDistinguishRunningRetryingRecoveryClosedAndBlocked(t *testing.T) {
+	rt := NewResidentRuntime(Options{
+		InstanceID: "diagnostics-state-machine",
+		RoomID:     "room-diagnostics-state-machine",
+		Name:       "Agent",
+		Client:     newExecutionClient(),
+		Adapter:    &taskDiagnosticsAdapter{interruptAdapter: newInterruptAdapter()},
+	})
+	rt.adoptJoin(types.JoinResult{
+		ParticipantID: "agent", ParticipantHandle: "room-secret", Cursor: 0,
+		ExpiresAt: time.Now().Add(time.Hour).UnixMilli(),
+	})
+	defer rt.Stop()
+
+	scopes := []string{
+		"task:req-running-private",
+		"task:req-retrying-private",
+		"task:req-recovery-private",
+		"task:req-blocked-private",
+	}
+	sequences := []int64{501, 502, 503, 504}
+	for index, scope := range scopes {
+		rt.acceptEvent(scopedEvent(sequences[index], scope, "prompt-private /private/path model-private credential-private"))
+	}
+	rt.mu.Lock()
+	rt.taskIdentities[scopes[0]] = &taskIdentity{
+		projectCwd:    "/private/path",
+		configOptions: map[string]string{"model": "model-private"},
+	}
+	rt.turnRetries[canonicalTurnKey{scope: scopes[1], target: sequences[1]}] = &turnRetryState{
+		attempt:      1,
+		failureClass: turnFailureTimeout,
+		plan: &turnRetryPlan{
+			scope: scopes[1], target: sequences[1], failureClass: turnFailureTimeout,
+			attempt: 1, dueAt: time.Now().Add(time.Minute),
+		},
+	}
+	rt.closeTurnRecoveryLocked(scopes[2], sequences[2])
+	rt.mu.Unlock()
+	rt.beginActivity(scopes[0], sequences[0])
+	rt.markTaskRecoveryClosed(scopes[2], turnFailureSession)
+	rt.markTaskControlUnavailable(scopes[3], "HARNESS_CONTROL_UNAVAILABLE")
+
+	encoded, err := json.Marshal(rt.DiagnosticsSnapshot())
+	if err != nil {
+		t.Fatalf("encode execution diagnostics: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("decode execution diagnostics: %v", err)
+	}
+	tasks, ok := decoded["execution"].(map[string]any)["tasks"].([]any)
+	if !ok || len(tasks) != len(scopes) {
+		t.Fatalf("bounded task diagnostics missing: %s", encoded)
+	}
+	want := map[string]string{
+		scopes[0]: "running",
+		scopes[1]: "retrying",
+		scopes[2]: "recovery_closed",
+		scopes[3]: "blocked",
+	}
+	seen := make(map[string]bool, len(want))
+	for _, raw := range tasks {
+		row := raw.(map[string]any)
+		for scope, state := range want {
+			if row["scopeKey"] == diagnosticScopeKey(scope) {
+				if row["state"] != state {
+					t.Fatalf("Task diagnostic %s state = %v, want %s: %s", diagnosticScopeKey(scope), row["state"], state, encoded)
+				}
+				if scope == scopes[1] && row["retryFailureClass"] != turnFailureTimeout {
+					t.Fatalf("retry failure class is not visible: %#v", row)
+				}
+				if scope == scopes[2] && row["availabilityReason"] != turnFailureSession {
+					t.Fatalf("closed-head failure class is not visible: %#v", row)
+				}
+				seen[scope] = true
+			}
+		}
+	}
+	for scope := range want {
+		if !seen[scope] {
+			t.Fatalf("Task diagnostic missing for %s: %s", diagnosticScopeKey(scope), encoded)
+		}
+	}
+	for _, forbidden := range []string{
+		"req-running-private", "req-retrying-private", "req-recovery-private", "req-blocked-private",
+		"prompt-private", "/private/path", "credential-private", "model-private", "native-session-secret", "req-provider-private",
+	} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("diagnostics exposed sensitive value %q: %s", forbidden, encoded)
+		}
 	}
 }
 

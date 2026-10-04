@@ -17,6 +17,7 @@ describe("Task execution projection shape (#421)", () => {
     expect(isTaskExecutionPhase("running")).toBe(true)
     expect(isTaskExecutionPhase("interrupting")).toBe(true)
     expect(isTaskExecutionPhase("queued")).toBe(true)
+    expect(isTaskExecutionPhase("retrying")).toBe(true)
     expect(isTaskExecutionPhase("waiting")).toBe(false)
     expect(isTaskExecutionPhase(undefined)).toBe(false)
   })
@@ -29,6 +30,12 @@ describe("Task execution projection shape (#421)", () => {
         queuedCount: 0,
       })
     ).toBe(true)
+    expect(
+      isValidTaskExecutionShape({ phase: "retrying", queuedCount: 1 })
+    ).toBe(true)
+    expect(
+      isValidTaskExecutionShape({ phase: "retrying", queuedCount: 0 })
+    ).toBe(false)
     expect(
       isValidTaskExecutionShape({
         currentTurnSequence: 7,
@@ -95,6 +102,36 @@ describe("Task execution labels (#421)", () => {
         availability: "session_lost",
       })
     ).toEqual({ label: "Session lost" })
+  })
+
+  it("does not label bounded retries as lane contention", () => {
+    expect(taskExecutionLabel({ phase: "retrying", queuedCount: 1 })).toEqual({
+      label: "Retrying",
+      detail: "1 retained instruction",
+    })
+  })
+
+  it("renders control and recovery blockers as blocked, never queued", () => {
+    expect(
+      taskExecutionLabel({
+        phase: "queued",
+        queuedCount: 2,
+        availability: "control_unavailable",
+      })
+    ).toEqual({
+      label: "Task blocked",
+      detail: "Harness control unavailable · instructions retained",
+    })
+    expect(
+      taskExecutionLabel({
+        phase: "queued",
+        queuedCount: 2,
+        availability: "recovery_closed",
+      })
+    ).toEqual({
+      label: "Task blocked",
+      detail: "Automatic recovery stopped · instructions retained",
+    })
   })
 
   it("keeps the legacy depth-only projection rendering as before", () => {

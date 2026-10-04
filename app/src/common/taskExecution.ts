@@ -13,13 +13,18 @@ export const MAX_TASK_EXECUTION_QUEUED_COUNT = 64
 export function isTaskExecutionPhase(
   value: unknown
 ): value is TaskExecutionPhase {
-  return value === "running" || value === "interrupting" || value === "queued"
+  return (
+    value === "running" ||
+    value === "interrupting" ||
+    value === "queued" ||
+    value === "retrying"
+  )
 }
 
 /**
  * #421: the closed shape rule for one Task execution projection, shared by the
  * Room's ingest validation and by any Browser-side check. A phase that claims
- * a running turn without one, or a QUEUED phase with nothing waiting, is
+ * a running turn without one, or a QUEUED/RETRYING phase with nothing waiting, is
  * rejected rather than stored or rendered.
  */
 export function isValidTaskExecutionShape(projection: {
@@ -34,9 +39,14 @@ export function isValidTaskExecutionShape(projection: {
   if (projection.currentTurnSequence !== undefined) {
     // A current turn is running or being interrupted; "queued" describes the
     // absence of one.
-    return projection.phase !== undefined && projection.phase !== "queued"
+    return (
+      projection.phase !== undefined &&
+      projection.phase !== "queued" &&
+      projection.phase !== "retrying"
+    )
   }
-  if (projection.phase === "queued") return projection.queuedCount > 0
+  if (projection.phase === "queued" || projection.phase === "retrying")
+    return projection.queuedCount > 0
   return projection.phase === undefined
 }
 
@@ -85,7 +95,11 @@ export function taskControlNoticeMessage(notice: TaskControlNotice): string {
 export function isTaskExecutionAvailability(
   value: unknown
 ): value is TaskExecutionAvailability {
-  return value === "session_lost" || value === "control_unavailable"
+  return (
+    value === "session_lost" ||
+    value === "control_unavailable" ||
+    value === "recovery_closed"
+  )
 }
 
 /**
@@ -110,6 +124,11 @@ export function taskExecutionLabel(projection: {
       label: "Task blocked",
       detail: "Harness control unavailable · instructions retained",
     }
+  if (projection.availability === "recovery_closed")
+    return {
+      label: "Task blocked",
+      detail: "Automatic recovery stopped · instructions retained",
+    }
   if (projection.currentTurnSequence !== undefined) {
     const label =
       projection.phase === "interrupting" ? "Interrupting" : "Running"
@@ -131,6 +150,14 @@ export function taskExecutionLabel(projection: {
               projection.queuedCount
             )}`
           : "waiting for an execution lane",
+    }
+  }
+  if (projection.phase === "retrying") {
+    return {
+      label: "Retrying",
+      detail: `${projection.queuedCount} retained instruction${
+        projection.queuedCount === 1 ? "" : "s"
+      }`,
     }
   }
   if (projection.queuedCount > 0) {

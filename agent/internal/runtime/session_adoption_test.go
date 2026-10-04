@@ -56,6 +56,10 @@ type adoptionAdapter struct {
 	configs                    map[string]map[string]string
 	roomControlsUnavailable    bool
 	controlsDisappearOnModeSet bool
+	setModeErr                 error
+	setConfigErr               error
+	omitWorkspaceMode          bool
+	omitModelValue             string
 	// loadHook runs INSIDE LoadSession, after the Runtime has committed the
 	// adopted ownership for the scope and before the load reports success. It
 	// is how a test deterministically places a Harness death in the load
@@ -269,21 +273,38 @@ func (a *adoptionAdapter) SessionControlsFor(scope string) *types.HarnessSession
 	if modelValue == "" {
 		modelValue = "gpt-a"
 	}
+	modes := []types.HarnessSessionMode{{ID: "observe"}, {ID: "workspace"}}
+	if a.omitWorkspaceMode {
+		modes = []types.HarnessSessionMode{{ID: "observe"}}
+	}
+	modelOptions := []types.HarnessSessionConfigValue{{Value: "gpt-a"}, {Value: "gpt-b"}}
+	if a.omitModelValue != "" {
+		filtered := modelOptions[:0]
+		for _, option := range modelOptions {
+			if option.Value != a.omitModelValue {
+				filtered = append(filtered, option)
+			}
+		}
+		modelOptions = filtered
+	}
 	return &types.HarnessSessionControls{
 		CurrentModeID: mode,
-		Modes:         []types.HarnessSessionMode{{ID: "observe"}, {ID: "workspace"}},
+		Modes:         modes,
 		ConfigOptions: []types.HarnessSessionConfigOption{{
 			ID: "model", Name: "Model", Type: "select", CurrentValue: modelValue,
-			Options: []types.HarnessSessionConfigValue{{Value: "gpt-a"}, {Value: "gpt-b"}},
+			Options: modelOptions,
 		}},
 	}
 }
 
 func (a *adoptionAdapter) SetModeFor(scope, modeID string) error {
+	a.record("mode:" + scope + ":" + modeID)
+	if a.setModeErr != nil {
+		return a.setModeErr
+	}
 	a.recordMu.Lock()
 	a.modes[scope] = modeID
 	a.recordMu.Unlock()
-	a.record("mode:" + scope + ":" + modeID)
 	return nil
 }
 
@@ -300,6 +321,146 @@ func TestApplyTaskSessionControlsReturnsErrorWhenSessionDisappearsAfterModeSet(t
 	err := runtime.applyTaskSessionControls("task:controls-race")
 	if err == nil || !strings.Contains(err.Error(), "became unavailable") {
 		t.Fatalf("expected bounded controls-unavailable error, got %v", err)
+	}
+}
+
+func TestApplyTaskSessionControlsDoesNotResendAlreadyEffectiveValues(t *testing.T) {
+	const scope = "task:already-effective-controls"
+	adapter := newAdoptionAdapter("codex")
+	adapter.modes[scope] = "workspace"
+	adapter.configs[scope] = map[string]string{"model": "gpt-b"}
+	runtime := &ResidentRuntime{
+		options: Options{Adapter: adapter},
+		taskIdentities: map[string]*taskIdentity{
+			scope: {modeID: "workspace", configOptions: map[string]string{"model": "gpt-b"}},
+		},
+	}
+
+	if err := runtime.applyTaskSessionControls(scope); err != nil {
+		t.Fatalf("already-effective controls must remain valid: %v", err)
+	}
+	for _, event := range adapter.recorded() {
+		if strings.HasPrefix(event, "mode:") || strings.HasPrefix(event, "config:") {
+			t.Fatalf("Runtime resent an already-effective native control: %v", adapter.recorded())
+		}
+	}
+}
+
+func TestApplyTaskSessionControlsFailsClosedWhenSelectionIsNoLongerAdvertised(t *testing.T) {
+	for _, testCase := range []struct {
+		name       string
+		selection  *taskIdentity
+		configure  func(*adoptionAdapter)
+		wantReason string
+		setter     string
+	}{
+		{
+			name:       "mode",
+			selection:  &taskIdentity{modeID: "workspace"},
+			configure:  func(adapter *adoptionAdapter) { adapter.omitWorkspaceMode = true },
+			wantReason: "mode_not_advertised",
+			setter:     "mode:",
+		},
+		{
+			name:      "config",
+			selection: &taskIdentity{configOptions: map[string]string{"model": "gpt-b"}},
+			configure: func(adapter *adoptionAdapter) {
+				adapter.omitModelValue = "gpt-b"
+			},
+			wantReason: "config_not_advertised",
+			setter:     "config:",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			const scope = "task:unadvertised-control"
+			adapter := newAdoptionAdapter("codex")
+			testCase.configure(adapter)
+			runtime := &ResidentRuntime{
+				options:        Options{Adapter: adapter},
+				taskIdentities: map[string]*taskIdentity{scope: testCase.selection},
+			}
+			err := runtime.applyTaskSessionControls(scope)
+			var controlErr *taskControlError
+			if !errors.As(err, &controlErr) || controlErr.reason != testCase.wantReason {
+				t.Fatalf("selected native control must fail closed with %q, got %v", testCase.wantReason, err)
+			}
+			for _, event := range adapter.recorded() {
+				if strings.HasPrefix(event, testCase.setter) {
+					t.Fatalf("Runtime attempted to substitute an unadvertised native value: %v", adapter.recorded())
+				}
+			}
+		})
+	}
+}
+
+func TestNativeControlSetterFailuresRetryBoundedlyThenBlockTask(t *testing.T) {
+	for _, testCase := range []struct {
+		name      string
+		selection *taskIdentity
+		configure func(*adoptionAdapter)
+		setter    string
+	}{
+		{
+			name:      "mode setter",
+			selection: &taskIdentity{modeID: "workspace"},
+			configure: func(adapter *adoptionAdapter) { adapter.setModeErr = errors.New("mode setter unavailable") },
+			setter:    "mode:task:req-control-retry:workspace",
+		},
+		{
+			name:      "config setter",
+			selection: &taskIdentity{configOptions: map[string]string{"model": "gpt-b"}},
+			configure: func(adapter *adoptionAdapter) { adapter.setConfigErr = errors.New("config setter unavailable") },
+			setter:    "config:task:req-control-retry:model:gpt-b",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			client, stream := newResidentTurnRetryClient(t)
+			execution := newExecutionClient()
+			combined := &residentExecutionTestClient{
+				residentTestClient: client,
+				execution:          execution,
+			}
+			adapter := newAdoptionAdapter("codex")
+			testCase.configure(adapter)
+			rt := newTurnRetryRuntime(t, adapter, combined, silentLog)
+			defer rt.Stop()
+			rt.turnRetryDelay = func(int) time.Duration { return 60 * time.Millisecond }
+			const scope = "task:req-control-retry"
+			rt.mu.Lock()
+			rt.taskIdentities[scope] = testCase.selection
+			rt.mu.Unlock()
+			if err := rt.Start(); err != nil {
+				t.Fatal(err)
+			}
+
+			stream.results <- addressedEnvelope(scopedEvent(301, scope, "sensitive instruction"))
+			waitFor(t, time.Second, func() bool { return rt.currentCursor() >= 301 }, "native-control Task event admission")
+			retrying := waitForExecution(t, execution, "req-control-retry", "bounded native-control retry is distinguishable from lane contention", func(p types.TaskExecutionProjection) bool {
+				return p.Phase == types.TaskExecutionPhaseRetrying
+			})
+			if retrying.Availability != "" || retrying.QueuedCount != 1 {
+				t.Fatalf("scheduled pre-Harness retry projection is invalid: %+v", retrying)
+			}
+			blocked := waitForExecution(t, execution, "req-control-retry", "native control failure becomes blocked", func(p types.TaskExecutionProjection) bool {
+				return p.Availability == types.TaskExecutionAvailabilityControlUnavailable
+			})
+			if blocked.CurrentTurnSequence != 0 || blocked.Phase != "" || blocked.QueuedCount != 1 {
+				t.Fatalf("failed pre-Harness control application was projected as lane contention: %+v", blocked)
+			}
+			waitFor(t, 2*time.Second, func() bool {
+				return adapter.count(testCase.setter) == maxTurnRetryAttempts+1
+			}, "bounded setter attempts")
+			time.Sleep(20 * time.Millisecond)
+			if got := adapter.count(testCase.setter); got != maxTurnRetryAttempts+1 {
+				t.Fatalf("native setter retried without bound: got %d calls", got)
+			}
+			if got := adapter.runCount(scope); got != 0 {
+				t.Fatalf("Harness received a turn despite its selected control failing: %d runs", got)
+			}
+			if got := len(rt.pendingAddressedSnapshotFor(scope)); got != 1 {
+				t.Fatalf("blocked instruction was lost or duplicated: %d pending", got)
+			}
+		})
 	}
 }
 
@@ -364,6 +525,10 @@ func TestEnsureHarnessSessionAppliesProviderFallbackToUnconfiguredProjectTask(t 
 }
 
 func (a *adoptionAdapter) SetConfigOptionFor(scope, configID, value string) error {
+	a.record("config:" + scope + ":" + configID + ":" + value)
+	if a.setConfigErr != nil {
+		return a.setConfigErr
+	}
 	if configID != "model" || (value != "gpt-a" && value != "gpt-b") {
 		return errors.New("unadvertised native config selection")
 	}
@@ -373,7 +538,6 @@ func (a *adoptionAdapter) SetConfigOptionFor(scope, configID, value string) erro
 	}
 	a.configs[scope][configID] = value
 	a.recordMu.Unlock()
-	a.record("config:" + scope + ":" + configID + ":" + value)
 	return nil
 }
 

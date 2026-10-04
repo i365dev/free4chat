@@ -89,8 +89,18 @@ func (r *ResidentRuntime) snapshotTaskExecution(scope string) (types.TaskExecuti
 	// over-report it (#484).
 	r.mu.Lock()
 	queued := 0
+	retrying := false
 	if ref := r.sessionRefLocked(scope); ref != nil {
 		queued = r.undeliveredDeliveryCountLocked(scope, ref, currentTurn)
+	}
+	if currentTurn == 0 {
+		for key, retry := range r.turnRetries {
+			if key.scope == normalizeScope(scope) && retry != nil && retry.attempt > 0 &&
+				!r.turnRecoveryClosedLocked(scope, key.target) {
+				retrying = true
+				break
+			}
+		}
 	}
 	r.mu.Unlock()
 
@@ -111,6 +121,8 @@ func (r *ResidentRuntime) snapshotTaskExecution(scope string) (types.TaskExecuti
 		if interrupting {
 			projection.Phase = types.TaskExecutionPhaseInterrupting
 		}
+	case queued > 0 && projection.Availability == "" && retrying:
+		projection.Phase = types.TaskExecutionPhaseRetrying
 	case queued > 0 && projection.Availability == "":
 		// Accepted work that no execution lane is running. This is the
 		// truthful "waiting for capacity" state (#421): a Task behind the
@@ -372,10 +384,12 @@ func (r *ResidentRuntime) markTaskSessionLost(scope string) {
 	r.publishTaskExecution(scope)
 }
 
-func taskControlUnavailable(r *ResidentRuntime, scope string) bool {
+func taskExecutionBlocked(r *ResidentRuntime, scope string) bool {
 	r.taskExecutionMu.Lock()
 	defer r.taskExecutionMu.Unlock()
-	return r.taskExecutionFacts[scope].availability == types.TaskExecutionAvailabilityControlUnavailable
+	availability := r.taskExecutionFacts[scope].availability
+	return availability == types.TaskExecutionAvailabilityControlUnavailable ||
+		availability == types.TaskExecutionAvailabilityRecoveryClosed
 }
 
 func (r *ResidentRuntime) markTaskControlUnavailable(scope, failureClass string) {
@@ -388,10 +402,35 @@ func (r *ResidentRuntime) markTaskControlUnavailable(scope, failureClass string)
 	r.publishTaskExecution(scope)
 }
 
-func (r *ResidentRuntime) clearTaskControlUnavailable(scope string) {
+func (r *ResidentRuntime) markTaskRecoveryClosed(scope, failureClass string) {
+	r.taskExecutionMu.Lock()
+	if r.taskExecutionFacts[scope].availability == types.TaskExecutionAvailabilitySessionLost {
+		// Session loss is already the more specific provider fact. Keep it as
+		// the public availability while still blocking this Task's queue.
+		r.taskExecutionMu.Unlock()
+		return
+	}
+	r.taskExecutionFacts[scope] = taskExecutionFacts{
+		availability: types.TaskExecutionAvailabilityRecoveryClosed,
+		failureClass: failureClass,
+	}
+	r.taskExecutionMu.Unlock()
+	r.publishTaskExecution(scope)
+}
+
+func (r *ResidentRuntime) markTaskBlockedForFailure(scope, failureClass string, controlUnavailable bool) {
+	if controlUnavailable {
+		r.markTaskControlUnavailable(scope, failureClass)
+		return
+	}
+	r.markTaskRecoveryClosed(scope, failureClass)
+}
+
+func (r *ResidentRuntime) clearTaskExecutionBlocker(scope string) {
 	r.taskExecutionMu.Lock()
 	facts := r.taskExecutionFacts[scope]
-	if facts.availability == types.TaskExecutionAvailabilityControlUnavailable {
+	if facts.availability == types.TaskExecutionAvailabilityControlUnavailable ||
+		facts.availability == types.TaskExecutionAvailabilityRecoveryClosed {
 		facts.availability = ""
 		facts.failureClass = ""
 		r.taskExecutionFacts[scope] = facts

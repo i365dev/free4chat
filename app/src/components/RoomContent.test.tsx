@@ -1892,12 +1892,14 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       state: "working" as const,
       turnSequence: 42,
     }
+    const sendTaskInterrupt = vi.fn(() => true)
     const base = {
       ...baseHookReturn,
       connectionStatus: "connected",
       messages: [taskRequest],
       participants,
       agentActivities: [activity],
+      sendTaskInterrupt,
       localParticipantId: "human-local",
       getLocalRoomAuth: vi.fn(() => ({ participantId: "human-local" })),
     }
@@ -1926,6 +1928,9 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       "Running"
     )
     expect(screen.queryByTestId("task-execution-status")).toBeNull()
+    expect(
+      screen.queryByTestId("task-replace-pending-and-send")
+    ).not.toBeInTheDocument()
     running.unmount()
 
     mockUseSfuChatRoom.mockReturnValue({
@@ -1947,6 +1952,10 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     expect(screen.getByTestId("task-agent-activity")).toHaveTextContent(
       "Running · 2 queued"
     )
+    expect(screen.getByTestId("task-interrupt")).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId("task-interrupt"))
+    expect(sendTaskInterrupt).toHaveBeenCalledWith("task-exec", 42)
+    const interruptCallsBeforeReplacement = sendTaskInterrupt.mock.calls.length
     fireEvent.change(
       screen.getByRole("textbox", {
         name: "Message the room or @ an Agent",
@@ -1957,6 +1966,9 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     expect(baseHookReturn.sendTaskReplacePendingAndSend).toHaveBeenCalledWith(
       "task-exec",
       "replace only the waiting messages"
+    )
+    expect(sendTaskInterrupt).toHaveBeenCalledTimes(
+      interruptCallsBeforeReplacement
     )
     queuedBehind.unmount()
 
@@ -2041,6 +2053,24 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         },
         "Session lost",
       ],
+      [
+        {
+          agentParticipantId: "agent-codex",
+          taskRequestId: "task-exec",
+          queuedCount: 1,
+          availability: "control_unavailable" as const,
+        },
+        "Task blocked",
+      ],
+      [
+        {
+          agentParticipantId: "agent-codex",
+          taskRequestId: "task-exec",
+          queuedCount: 1,
+          availability: "recovery_closed" as const,
+        },
+        "Task blocked",
+      ],
     ] as const) {
       mockUseSfuChatRoom.mockReturnValue({
         ...base,
@@ -2054,6 +2084,25 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       expect(screen.getByTestId("task-agent-activity")).toHaveTextContent(
         expected
       )
+      if (expected === "Task blocked") {
+        expect(screen.queryByTestId("task-interrupt")).not.toBeInTheDocument()
+        fireEvent.change(
+          screen.getByRole("textbox", {
+            name: "Message the room or @ an Agent",
+          }),
+          { target: { value: "replace the blocked waiting instruction" } }
+        )
+        expect(
+          screen.getByTestId("task-replace-pending-and-send")
+        ).toBeInTheDocument()
+        fireEvent.click(screen.getByTestId("task-replace-pending-and-send"))
+        expect(
+          baseHookReturn.sendTaskReplacePendingAndSend
+        ).toHaveBeenCalledWith(
+          "task-exec",
+          "replace the blocked waiting instruction"
+        )
+      }
       view.unmount()
     }
   })
