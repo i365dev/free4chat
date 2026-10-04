@@ -63,9 +63,9 @@ type logicalSessionState struct {
 	liveTranscriptDeliveredThrough int64
 	liveTranscriptDeliveryFloor    int64
 	sourceCursors                  map[string]int64
-	// admittedSequence is the canonical Room sequence of this scope's FIRST
-	// delivered trigger — the Task's collaboration request. It is what dates a
-	// Task's identity record for bounded retention (#473).
+	// admittedSequence is the canonical Room sequence of this Task's Human
+	// collaboration request. Earlier scoped events (for example attachment
+	// replay) may create the logical scope but do not date Task identity (#473).
 	admittedSequence int64
 	// taskRequest keeps only the lifecycle correlation for a Human-created
 	// Task. Prompt, summary, and attachments stay in canonical Room history;
@@ -1644,17 +1644,24 @@ func (r *ResidentRuntime) acceptEvent(event types.RoomEvent) {
 		r.mu.Lock()
 	}
 	r.eventBuffer.Add(event)
-	if newScope {
-		// The Task's first delivered trigger is its canonical collaboration
-		// request; that sequence is what bounds this Task's identity record.
-		state := r.scopedSessions[scope]
-		if state != nil && state.admittedSequence == 0 {
-			state.admittedSequence = event.Sequence
-			if request := humanTaskRequestFor([]types.RoomEvent{event}, r.participantID); request != nil {
-				request.Summary = ""
-				request.Details = nil
-				request.AttachmentIDs = nil
-				state.taskRequest = request
+	if state := r.scopedSessions[scope]; state != nil {
+		// Attachment replay can create this scope before its canonical Task
+		// request arrives. Capture correlation whenever that request is observed,
+		// independent of which event created the scope. Keep only fields needed
+		// to accept/settle the Task; Human content is never retained here.
+		if request := humanTaskRequestFor([]types.RoomEvent{event}, r.participantID); request != nil &&
+			request.RequestID == taskRequestIDForScope(scope) {
+			if state.admittedSequence == 0 {
+				state.admittedSequence = event.Sequence
+				if identity := r.taskIdentities[scope]; identity != nil {
+					identity.requestSequence = event.Sequence
+				}
+			}
+			if state.taskRequest == nil {
+				state.taskRequest = &types.WireCollabEvent{
+					RequestID:           request.RequestID,
+					TargetParticipantID: request.TargetParticipantID,
+				}
 			}
 		}
 	}

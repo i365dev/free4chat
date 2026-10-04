@@ -1002,9 +1002,9 @@ func TestFinalHarnessFailureQuarantinesTaskForHumanRecovery(t *testing.T) {
 	}
 }
 
-func TestNewHumanInstructionRecoversUnacceptedTaskRequestWithoutReplayingItsContent(t *testing.T) {
+func TestAttachmentFirstTaskRecoveryRetainsOnlyCanonicalRequestCorrelation(t *testing.T) {
 	client := newExecutionClient()
-	adapter := &fakeAdapter{name: "pi"}
+	adapter := &fakeAdapter{name: "pi", scopedTurnResults: []types.HarnessTurnResult{{}}}
 	rt := NewResidentRuntime(Options{
 		InstanceID: "unaccepted-task-recovery",
 		RoomID:     "room-unaccepted-task-recovery",
@@ -1021,26 +1021,68 @@ func TestNewHumanInstructionRecoversUnacceptedTaskRequestWithoutReplayingItsCont
 	defer rt.Stop()
 
 	const scope = "task:req-recover"
-	initial := taskRequestEvent(1, scope, "req-recover", "human-1")
+	attachment := roomEvent(1, false)
+	attachment.ScopeID = scope
+	attachment.Type = "image"
+	attachment.Attachment = &types.RoomAttachmentMetadata{
+		ID: "private-attachment-id", FileName: "private-attachment.png", MimeType: "image/png", Size: 42,
+	}
+	rt.acceptEvent(attachment)
+	rt.mu.Lock()
+	identity := rt.recordTaskIdentityLocked(scope)
+	if state := rt.scopedSessions[scope]; state == nil || state.admittedSequence != 0 {
+		rt.mu.Unlock()
+		t.Fatalf("pre-Task attachment incorrectly established the Task request sequence: state=%+v", state)
+	}
+	if identity.requestSequence != 0 {
+		rt.mu.Unlock()
+		t.Fatalf("pre-Task attachment incorrectly dated Task identity: %+v", identity)
+	}
+	rt.mu.Unlock()
+
+	initial := taskRequestEvent(2, scope, "req-recover", "human-1")
 	initial.Collab.Summary = "private initial summary"
 	initial.Collab.Details = map[string]string{"task": "private initial details"}
+	initial.Collab.AttachmentIDs = []string{"private-attachment-id"}
 	rt.acceptEvent(initial)
+	rt.mu.Lock()
+	state := rt.scopedSessions[scope]
+	identity = rt.taskIdentities[scope]
+	if state == nil || state.admittedSequence != 2 || identity == nil || identity.requestSequence != 2 {
+		rt.mu.Unlock()
+		t.Fatalf("canonical Task request did not date lifecycle identity: state=%+v identity=%+v", state, identity)
+	}
+	retained := state.taskRequest
+	if retained == nil || retained.RequestID != "req-recover" || retained.TargetParticipantID != "agent" ||
+		retained.Summary != "" || retained.Details != nil || len(retained.AttachmentIDs) != 0 || retained.FromParticipantID != "" {
+		rt.mu.Unlock()
+		t.Fatalf("Runtime retained more than the sanitized Task lifecycle correlation: %+v", retained)
+	}
+	rt.mu.Unlock()
+
 	// Fail before Harness admission/acceptance. The new Human instruction must
 	// be able to resume the canonical Task without retaining or replaying this
 	// prompt as Runtime-owned execution work.
-	rt.failTurn(scope, 1, "harness", turnFailureSession, time.Now(), errScopedHarnessUnsupported, false)
+	rt.failTurn(scope, 2, "harness", turnFailureSession, time.Now(), errScopedHarnessUnsupported, false)
 	if got := rt.pendingAddressedSnapshotFor(scope); len(got) != 0 {
 		t.Fatalf("unaccepted initial request remained as queue contention: %v", got)
 	}
+	if responses := client.snapshotCollabResponses(); len(responses) != 0 {
+		t.Fatalf("pre-Harness failure unexpectedly accepted the Task: %+v", responses)
+	}
 
-	waitForDone(t, startTurn(rt, scopedEvent(2, scope, "fresh Human instruction C")), "fresh Human recovery instruction")
+	waitForDone(t, startTurn(rt, scopedEvent(3, scope, "fresh Human instruction C")), "fresh Human recovery instruction")
 	responses := client.snapshotCollabResponses()
-	if len(responses) != 1 || responses[0].RequestID != "req-recover" {
+	if len(responses) != 1 || responses[0].RequestID != "req-recover" || responses[0].Decision != "accepted" {
 		t.Fatalf("recovery did not accept the canonical Task exactly once: %+v", responses)
 	}
-	_, contexts := adapter.scopedRunSnapshot()
-	if got := contexts[scope]; len(got) != 1 || got[0] != "fresh Human instruction C" {
-		t.Fatalf("recovery replayed old Task content instead of only C: %v", got)
+	runs, contexts := adapter.scopedRunSnapshot()
+	if got := contexts[scope]; len(runs) != 1 || len(got) != 1 || got[0] != "fresh Human instruction C" {
+		t.Fatalf("recovery did not send only C to Harness exactly once: runs=%v contexts=%v", runs, got)
+	}
+	results := client.snapshotCollabResults()
+	if len(results) != 1 || results[0].RequestID != "req-recover" || results[0].Status != "completed" {
+		t.Fatalf("recovery completion did not correlate to the original Task: %+v", results)
 	}
 }
 
