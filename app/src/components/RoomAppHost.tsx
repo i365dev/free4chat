@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 
 import {
   decodeRoomAppClientMessage,
+  isBoundedRoomAppLocalRecovery,
   isRoomAppAllowlisted,
   projectRoomAppParticipants,
   serializedRoomAppBytes,
@@ -104,6 +105,35 @@ function handshakeToken(): string {
 const NO_ROOM_APP_AGENT_SUBSCRIBE = () => () => undefined
 const NO_ROOM_APP_AGENT_HOST_STATE = () => undefined
 const NO_ROOM_APP_AGENT_RESPONSE = () => false
+
+function localRecoveryStorageKey(appInstanceId: string): string {
+  return `free4chat:room-app-recovery:v1:${appInstanceId}`
+}
+
+function readLocalRecovery(appInstanceId: string): string | null {
+  try {
+    const snapshot = window.sessionStorage.getItem(
+      localRecoveryStorageKey(appInstanceId)
+    )
+    if (snapshot === null || !isBoundedRoomAppLocalRecovery(snapshot))
+      return null
+    return snapshot
+  } catch {
+    return null
+  }
+}
+
+function writeLocalRecovery(appInstanceId: string, snapshot: string): void {
+  if (!isBoundedRoomAppLocalRecovery(snapshot)) return
+  try {
+    window.sessionStorage.setItem(
+      localRecoveryStorageKey(appInstanceId),
+      snapshot
+    )
+  } catch {
+    // Session storage is a best-effort, tab-local recovery cache.
+  }
+}
 
 export default function RoomAppHost({
   app,
@@ -270,8 +300,16 @@ export default function RoomAppHost({
           appInstanceId,
           self,
           participants: projected,
+          ...(app.source === "generated"
+            ? {}
+            : { localRecovery: readLocalRecovery(appInstanceId) }),
           ...(sharedState ? { shared: sharedState } : {}),
         })
+        return
+      }
+      if (message.type === "setLocalRecovery") {
+        if (readyRef.current && app.source !== "generated")
+          writeLocalRecovery(appInstanceId, message.snapshot)
         return
       }
       if (message.type === "agentResponse") {
