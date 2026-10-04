@@ -252,6 +252,15 @@ func (r *ResidentRuntime) scheduleTurnRetry(scope string, target int64, failureC
 			"failureClass": failureClass,
 			"retryAttempt": strconv.Itoa(maxTurnRetryAttempts),
 		})
+		// Retry exhaustion can be reached outside failTurn (for example when
+		// the frozen Room context cannot be recovered). Publish the same
+		// fail-closed state for any retained, undelivered Task head here so all
+		// bounded retry entry points project recovery accurately.
+		if taskExecutionScope(scope) && r.pendingUndeliveredFor(scope, target) {
+			r.markTaskBlockedForFailure(scope, failureClass,
+				failureClass == "HARNESS_CONTROL_UNAVAILABLE" ||
+					failureClass == "HARNESS_CONTROL_APPLY_FAILED")
+		}
 		return
 	}
 	delay := RetryDelay(attempt - 1)

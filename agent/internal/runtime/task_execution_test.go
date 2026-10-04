@@ -696,6 +696,49 @@ func TestDiagnosticsDistinguishRunningRetryingRecoveryClosedAndBlocked(t *testin
 	}
 }
 
+func TestDirectContextRetryExhaustionProjectsTaskBlocked(t *testing.T) {
+	rt, adapter, client := newExecutionRuntime(t)
+	defer rt.Stop()
+
+	const scope = "task:req-T"
+	const sequence = int64(205)
+	event := scopedEvent(sequence, scope, "instruction with unavailable context")
+	rt.acceptEvent(event)
+	// Model local snapshot loss followed by a failed authenticated Room read.
+	rt.mu.Lock()
+	ref := rt.sessionRefLocked(scope)
+	pending := (*ref.pendingContexts)[sequence]
+	pending.events = nil
+	(*ref.pendingContexts)[sequence] = pending
+	rt.eventBuffer.Clear()
+	client.fakeClient.contextErr = errors.New("room context unavailable")
+	rt.mu.Unlock()
+
+	for range maxTurnRetryAttempts + 1 {
+		rt.runTurn(scope, sequence)
+	}
+	blocked := waitForExecution(t, client, "req-T", "direct context retry exhaustion projects blocked", func(p types.TaskExecutionProjection) bool {
+		return p.Availability == types.TaskExecutionAvailabilityRecoveryClosed && p.QueuedCount == 1
+	})
+	if blocked.Phase == types.TaskExecutionPhaseQueued || blocked.CurrentTurnSequence != 0 {
+		t.Fatalf("closed direct-context retry was presented as lane contention: %+v", blocked)
+	}
+
+	rt.acceptEvent(scopedEvent(sequence+1, scope, "ordinary later instruction"))
+	if _, _, ok := rt.nextRunnableTurn(); ok {
+		t.Fatal("ordinary later input bypassed a direct-context recovery-closed head")
+	}
+	if got := adapter.runCount(scope); got != 0 {
+		t.Fatalf("context-unavailable turn reached Harness unexpectedly: runs=%d", got)
+	}
+	later := waitForExecution(t, client, "req-T", "later ordinary input remains behind blocked head", func(p types.TaskExecutionProjection) bool {
+		return p.Availability == types.TaskExecutionAvailabilityRecoveryClosed && p.QueuedCount == 2
+	})
+	if later.Phase == types.TaskExecutionPhaseQueued {
+		t.Fatalf("later ordinary input changed blocked head back to queued: %+v", later)
+	}
+}
+
 func TestTaskExecutionPublicationIsBestEffort(t *testing.T) {
 	rt, adapter, client := newExecutionRuntime(t)
 	defer rt.Stop()
