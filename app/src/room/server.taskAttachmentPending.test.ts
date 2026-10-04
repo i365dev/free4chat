@@ -20,6 +20,7 @@ import {
  */
 
 type CapturedUpload = {
+  action?: string
   taskRequestId: string | null
   pending: string | null
   taskWake: string | null
@@ -31,13 +32,18 @@ function envCapturing(uploads: CapturedUpload[]): RoomProtocolEnv {
     get: () => ({
       fetch: (
         _url: string | URL,
-        init?: { headers?: { get: (name: string) => string | null } }
+        init?: {
+          headers?: HeadersInit
+          body?: BodyInit | null
+        }
       ) => {
-        const header = (name: string) =>
-          init?.headers?.get(name) ??
-          init?.headers?.get(name.toLowerCase()) ??
-          null
+        const headers = new Headers(init?.headers)
+        const header = (name: string) => headers.get(name)
         uploads.push({
+          action:
+            typeof init?.body === "string"
+              ? (JSON.parse(init.body) as { action?: string }).action
+              : undefined,
           taskRequestId: header("X-Task-Request-Id"),
           pending: header(TASK_ATTACHMENT_PENDING_HEADER),
           taskWake: header(TASK_ATTACHMENT_WAKE_HEADER),
@@ -76,6 +82,36 @@ function upload(
 const PRE_TASK_ID = "6f1c2f9c-0b3a-4a1f-9d5a-2b8f7c0e4d21"
 
 describe("Worker pre-Task attachment transport (#421)", () => {
+  it("forwards authenticated cleanup for the exact provisional Task brief", async () => {
+    const uploads: CapturedUpload[] = []
+    const response = await handleRoomRequest(
+      new Request("https://www.free4.chat/api/room/attachments/discard", {
+        method: "POST",
+        headers: {
+          Origin: "http://localhost:3000",
+          "Content-Type": "application/json",
+          "X-Room-Id": "test-room",
+          "X-Room-Participant-Id": "human-1",
+          "X-Room-Participant-Token": "tok-human",
+        },
+        body: JSON.stringify({
+          attachmentId: "att-1",
+          taskRequestId: PRE_TASK_ID,
+        }),
+      }),
+      envCapturing(uploads)
+    )
+    expect(response.status).toBe(200)
+    expect(uploads).toEqual([
+      {
+        action: "human-discard-task-attachment",
+        taskRequestId: null,
+        pending: null,
+        taskWake: null,
+      },
+    ])
+  })
+
   it("forwards the canonical pre-Task marker and the pinned Task id", async () => {
     const uploads: CapturedUpload[] = []
     const response = await upload(envCapturing(uploads), {

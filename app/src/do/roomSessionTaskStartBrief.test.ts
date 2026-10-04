@@ -90,7 +90,10 @@ function harness() {
       put: async (key: string, value: unknown) => {
         store.set(key, value)
       },
-      delete: async () => undefined,
+      delete: async (key: string | string[]) => {
+        for (const entry of Array.isArray(key) ? key : [key])
+          store.delete(entry)
+      },
       setAlarm: async () => undefined,
       deleteAlarm: async () => undefined,
       getAlarm: async () => undefined,
@@ -153,6 +156,21 @@ function harness() {
           body,
         })
       ),
+    discard: (attachmentId: string, taskRequestId: string) =>
+      session.fetch(
+        new Request("https://room/control", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "human-discard-task-attachment",
+            participantId: "human-1",
+            token: "human-1-token",
+            attachmentId,
+            taskRequestId,
+          }),
+        })
+      ),
+    storage: store,
   }
 }
 
@@ -178,6 +196,45 @@ async function stageBrief(
 }
 
 describe("Start Task large brief (#421)", () => {
+  it("discards only the exact failed pre-Task brief and its chunks", async () => {
+    const test = harness()
+    const requestId = crypto.randomUUID()
+    const attachmentId = await stageBrief(test, requestId)
+    expect(test.storage.has(`attachment:${attachmentId}:0`)).toBe(true)
+
+    const response = await test.discard(attachmentId, requestId)
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({ ok: true, removed: true })
+    expect(test.stored().attachments).toEqual([])
+    expect(test.storage.has(`attachment:${attachmentId}:0`)).toBe(false)
+  })
+
+  it("does not let a provisional brief evict existing Room attachments", async () => {
+    const test = harness()
+    const existing = Array.from({ length: 8 }, (_, index) => ({
+      id: `existing-${index}`,
+      senderId: "human-1",
+      senderName: "human-1",
+      senderKind: "human" as const,
+      mimeType: "text/markdown" as const,
+      fileName: `existing-${index}.md`,
+      size: 1,
+      chunkCount: 1,
+      createdAt: index,
+      sequence: index + 1,
+    }))
+    const stored = test.stored()
+    stored.attachments = existing
+    test.storage.set("room", stored)
+
+    const response = await test.upload("human-1", "brief", {
+      "X-Task-Request-Id": crypto.randomUUID(),
+      [TASK_ATTACHMENT_PENDING_HEADER]: "1",
+    })
+    expect(response.status).toBe(409)
+    expect(test.stored().attachments).toEqual(existing)
+  })
+
   it("stages a pre-Task brief against the pinned canonical Task id", async () => {
     const test = harness()
     const requestId = crypto.randomUUID()

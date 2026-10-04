@@ -1724,6 +1724,11 @@ describe("useSfuChatRoom Live Transcript RoomState wiring (#177 PR3)", () => {
       })
       expect(starts()).toHaveLength(1)
       expect(starts()[0].attachmentIds).toEqual(["retry-attachment"])
+      expect(
+        fetchMock.mock.calls.some(([input]) =>
+          String(input).endsWith("/api/room/attachments/discard")
+        )
+      ).toBe(true)
 
       act(() =>
         socket.onmessage?.({
@@ -1735,6 +1740,82 @@ describe("useSfuChatRoom Live Transcript RoomState wiring (#177 PR3)", () => {
         })
       )
       await expect(retry).resolves.toEqual({ ok: true })
+    } finally {
+      vi.useRealTimers()
+      unmount()
+    }
+  })
+
+  it("starts the Runtime reply timeout only after brief staging completes", async () => {
+    const fetchMock = global.fetch as unknown as ReturnType<typeof vi.fn>
+    const originalFetch = fetchMock.getMockImplementation() as
+      | ((input: RequestInfo | URL, init?: RequestInit) => Promise<Response>)
+      | undefined
+    let finishUpload: ((response: Response) => void) | undefined
+    fetchMock.mockImplementation((input) => {
+      if (String(input).endsWith("/api/room/attachments"))
+        return new Promise<Response>((resolve) => {
+          finishUpload = resolve
+        })
+      return originalFetch!(input)
+    })
+    const { result, unmount } = renderHook(() =>
+      useSfuChatRoom("project-brief-response-timeout-room", "Guest", "audio")
+    )
+    await waitFor(() => expect(RecordingWebSocket.instances).toHaveLength(1))
+    await waitFor(() =>
+      expect(result.current.getLocalRoomAuth()).toMatchObject({
+        participantId: "human-a",
+      })
+    )
+    const socket = RecordingWebSocket.instances[0]
+    act(() => socket.onopen?.())
+    const brief = new File(["staged later"], "task-brief.md", {
+      type: "text/markdown",
+    })
+    vi.useFakeTimers()
+    try {
+      let completed = false
+      const pending = result.current.startTaskWithSession(
+        "agent-pi",
+        null,
+        "Start with the brief",
+        "project-token-1",
+        undefined,
+        {},
+        brief
+      )
+      void pending.then(() => {
+        completed = true
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20_000)
+      })
+      await act(async () => {
+        finishUpload?.(
+          (await jsonResponse({
+            attachment: { id: "staged-before-prepare" },
+          })) as Response
+        )
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      const frame = JSON.parse(socket.sent.at(-1) ?? "{}")
+      expect(frame.type).toBe("task-session-start")
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(24_000)
+      })
+      expect(completed).toBe(false)
+      act(() =>
+        socket.onmessage?.({
+          data: JSON.stringify({
+            type: "task-session-start-result",
+            requestId: frame.requestId,
+            ok: true,
+          }),
+        })
+      )
+      await expect(pending).resolves.toEqual({ ok: true })
     } finally {
       vi.useRealTimers()
       unmount()

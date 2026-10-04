@@ -4895,18 +4895,53 @@ export function useSfuChatRoom(
         }
       }
       const requestId = crypto.randomUUID()
+      const discardStagedBrief = async (attachmentId: string) => {
+        const session = sessionRef.current
+        if (!session || !taskRequestId) return
+        try {
+          await fetch("/api/room/attachments/discard", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Room-Id": roomName,
+              "X-Room-Participant-Id": session.participantId,
+              "X-Room-Participant-Token": session.participantToken,
+            },
+            body: JSON.stringify({ attachmentId, taskRequestId }),
+          })
+        } catch {
+          // A failed cleanup is bounded by normal attachment retention/expiry.
+        }
+      }
+      let stagedAttachmentId: string | null = null
       return new Promise<TaskSessionStartResult>((settle) => {
-        const timeout = setTimeout(() => {
-          pendingTaskSessionRequestsRef.current.delete(requestId)
-          settle({ ok: false, error: "session_continuation_unavailable" })
-        }, TASK_SESSION_CLIENT_TIMEOUT_MS)
-        const pendingRequest = {
+        const pendingRequest: {
+          kind: "start"
+          settle: (
+            result: TaskSessionListResult | TaskSessionStartResult
+          ) => void
+          timeout: ReturnType<typeof setTimeout>
+        } = {
           kind: "start",
           settle: settle as (
             result: TaskSessionListResult | TaskSessionStartResult
           ) => void,
-          timeout,
-        } as const
+          timeout: setTimeout(() => undefined, 0),
+        }
+        clearTimeout(pendingRequest.timeout)
+        const armTimeout = () => {
+          clearTimeout(pendingRequest.timeout)
+          pendingRequest.timeout = setTimeout(() => {
+            if (
+              pendingTaskSessionRequestsRef.current.get(requestId) !==
+              pendingRequest
+            )
+              return
+            pendingTaskSessionRequestsRef.current.delete(requestId)
+            settle({ ok: false, error: "session_continuation_unavailable" })
+          }, TASK_SESSION_CLIENT_TIMEOUT_MS)
+        }
+        armTimeout()
         pendingTaskSessionRequestsRef.current.set(requestId, pendingRequest)
         const sendStart = (attachmentId: string | null) => {
           // Brief staging is asynchronous and may outlive the client timeout
@@ -4915,14 +4950,22 @@ export function useSfuChatRoom(
           if (
             pendingTaskSessionRequestsRef.current.get(requestId) !==
             pendingRequest
-          )
-            return
-          if (brief && !attachmentId) {
-            pendingTaskSessionRequestsRef.current.delete(requestId)
-            clearTimeout(timeout)
-            settle({ ok: false, error: "session_continuation_unavailable" })
+          ) {
+            if (attachmentId) void discardStagedBrief(attachmentId)
             return
           }
+          if (attachmentId) stagedAttachmentId = attachmentId
+          if (brief && !attachmentId) {
+            pendingTaskSessionRequestsRef.current.delete(requestId)
+            clearTimeout(pendingRequest.timeout)
+            settle({ ok: false, error: "session_continuation_unavailable" })
+            if (stagedAttachmentId) void discardStagedBrief(stagedAttachmentId)
+            return
+          }
+          // Brief staging has its own bounded client deadline. Runtime PREPARE
+          // starts only after this frame is sent, so staging time must not eat
+          // into the response window.
+          armTimeout()
           const sent = sendSocketMessage({
             type: "task-session-start",
             requestId,
@@ -4937,14 +4980,19 @@ export function useSfuChatRoom(
           })
           if (sent) return
           pendingTaskSessionRequestsRef.current.delete(requestId)
-          clearTimeout(timeout)
+          clearTimeout(pendingRequest.timeout)
           settle({ ok: false, error: "session_continuation_unavailable" })
+          if (stagedAttachmentId) void discardStagedBrief(stagedAttachmentId)
         }
         if (!brief) {
           sendStart(null)
           return
         }
         void stageBrief().then(sendStart)
+      }).then(async (result) => {
+        if (!result.ok && stagedAttachmentId)
+          await discardStagedBrief(stagedAttachmentId)
+        return result
       })
     },
     [roomName, sendSocketMessage]
