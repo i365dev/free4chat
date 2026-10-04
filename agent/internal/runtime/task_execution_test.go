@@ -387,18 +387,33 @@ func TestClosedHarnessFollowupProjectsBlockedInsteadOfQueued(t *testing.T) {
 
 	// A Harness turn failure after the initial Task has settled leaves this
 	// ordinary follow-up canonical and undelivered (there is no collab-request
-	// result to consume it). Once recovery closes, it must no longer look like
-	// executable lane-waiting work.
+	// result to consume it). Exhaust its bounded retry budget and ensure the
+	// retained work no longer looks like executable lane-waiting work.
 	rt.acceptEvent(scopedEvent(201, scope, "follow-up that fails in Harness"))
-	rt.failTurn(scope, 201, "harness", turnFailureOther, time.Now(), errors.New("Harness turn failed"), false)
+	rt.turnRetryDelay = func(int) time.Duration { return time.Hour }
+	for attempt := 0; attempt <= maxTurnRetryAttempts; attempt++ {
+		rt.failTurn(scope, 201, "harness", turnFailureOther, time.Now(), errors.New("Harness turn failed"), true)
+	}
+	if !rt.turnRecoveryClosed(scope, 201) || rt.turnRetryIndexFor(scope, 201) != maxTurnRetryAttempts+1 {
+		t.Fatal("the Task follow-up did not close after exhausting its bounded retries")
+	}
+	closedHead := waitForExecution(t, client, "req-T", "exhausted Harness follow-up projects blocked", func(p types.TaskExecutionProjection) bool {
+		return p.Availability == types.TaskExecutionAvailabilityRecoveryClosed && p.QueuedCount == 1
+	})
+	if closedHead.Phase == types.TaskExecutionPhaseQueued {
+		t.Fatalf("an exhausted Harness follow-up was presented as lane contention: %+v", closedHead)
+	}
 	rt.acceptEvent(scopedEvent(202, scope, "later ordinary follow-up"))
 	rt.drainTurns()
+	if pending := rt.pendingAddressedSnapshotFor(scope); !reflect.DeepEqual(pending, []int64{201, 202}) {
+		t.Fatalf("closed Task head or later ordinary instruction disappeared: %v", pending)
+	}
 
 	if got := adapter.runCount(scope); got != 1 {
 		t.Fatalf("ordinary follow-up retried or bypassed the closed head: run count=%d", got)
 	}
 	blocked := waitForExecution(t, client, "req-T", "closed Harness follow-up projects blocked", func(p types.TaskExecutionProjection) bool {
-		return p.Availability == types.TaskExecutionAvailabilityRecoveryClosed
+		return p.Availability == types.TaskExecutionAvailabilityRecoveryClosed && p.QueuedCount == 2
 	})
 	if blocked.Phase == types.TaskExecutionPhaseQueued || blocked.CurrentTurnSequence != 0 || blocked.QueuedCount != 2 {
 		t.Fatalf("a closed Harness follow-up was mislabeled as queued: %+v", blocked)
