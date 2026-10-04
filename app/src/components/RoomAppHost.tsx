@@ -508,6 +508,7 @@ export default function RoomAppHost({
   // valid or allowlisted replaces the iframe with the unavailable state, so
   // that transition must retire the bridge the iframe owned.
   const appUsable = validateRoomAppDefinition(app) && isRoomAppAllowlisted(app)
+  const downloadsAllowed = appUsable && app.source !== "generated"
   const clipboardWriteAllowed =
     appUsable && app.source !== "generated" && app.clipboardWrite === true
 
@@ -725,7 +726,9 @@ export default function RoomAppHost({
           title={app.label}
           src={app.srcDoc ? undefined : app.url}
           srcDoc={app.srcDoc}
-          sandbox="allow-scripts"
+          sandbox={
+            downloadsAllowed ? "allow-scripts allow-downloads" : "allow-scripts"
+          }
           referrerPolicy="no-referrer"
           allow={clipboardWriteAllowed ? "clipboard-write" : ""}
           onLoad={sendBootstrap}
