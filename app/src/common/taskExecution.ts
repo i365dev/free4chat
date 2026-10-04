@@ -117,6 +117,15 @@ export function taskExecutionLabel(projection: {
 }): { label: string; detail?: string } {
   const queuedDetail = (queued: number): string =>
     queued === 1 ? "1 queued" : `${queued} queued`
+  if (projection.currentTurnSequence !== undefined) {
+    const label =
+      projection.phase === "interrupting" ? "Interrupting" : "Running"
+    const queued = projection.queuedCount
+    return {
+      label,
+      ...(queued > 0 ? { detail: queuedDetail(queued) } : {}),
+    }
+  }
   if (projection.availability === "session_lost")
     return { label: "Session lost" }
   if (projection.availability === "control_unavailable")
@@ -129,15 +138,6 @@ export function taskExecutionLabel(projection: {
       label: "Task blocked",
       detail: "Automatic recovery stopped · instructions retained",
     }
-  if (projection.currentTurnSequence !== undefined) {
-    const label =
-      projection.phase === "interrupting" ? "Interrupting" : "Running"
-    const queued = projection.queuedCount
-    return {
-      label,
-      ...(queued > 0 ? { detail: queuedDetail(queued) } : {}),
-    }
-  }
   // #421: an explicit QUEUED phase means accepted work is waiting for an
   // execution lane (bounded cross-session concurrency, or a serial provider).
   // It is presented as waiting for capacity, never as a failed or silent Task.

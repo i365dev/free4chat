@@ -372,6 +372,39 @@ func TestExplicitTaskReplacementUnparksClosedHeadWithoutReplayingOldMessages(t *
 	}
 }
 
+func TestClosedHarnessFollowupProjectsBlockedInsteadOfQueued(t *testing.T) {
+	rt, adapter, client := newExecutionRuntime(t)
+	defer rt.Stop()
+
+	const scope = "task:req-T"
+	initial := startTurn(rt, scopedEvent(200, scope, "initial task"))
+	waitForActiveScope(t, rt, scope)
+	adapter.releaseTurn()
+	waitForDone(t, initial, "initial Task turn")
+	if got := adapter.runCount(scope); got != 1 {
+		t.Fatalf("initial Task did not complete before follow-up: run count=%d", got)
+	}
+
+	// A Harness turn failure after the initial Task has settled leaves this
+	// ordinary follow-up canonical and undelivered (there is no collab-request
+	// result to consume it). Once recovery closes, it must no longer look like
+	// executable lane-waiting work.
+	rt.acceptEvent(scopedEvent(201, scope, "follow-up that fails in Harness"))
+	rt.failTurn(scope, 201, "harness", turnFailureOther, time.Now(), errors.New("Harness turn failed"), false)
+	rt.acceptEvent(scopedEvent(202, scope, "later ordinary follow-up"))
+	rt.drainTurns()
+
+	if got := adapter.runCount(scope); got != 1 {
+		t.Fatalf("ordinary follow-up retried or bypassed the closed head: run count=%d", got)
+	}
+	blocked := waitForExecution(t, client, "req-T", "closed Harness follow-up projects blocked", func(p types.TaskExecutionProjection) bool {
+		return p.Availability == types.TaskExecutionAvailabilityRecoveryClosed
+	})
+	if blocked.Phase == types.TaskExecutionPhaseQueued || blocked.CurrentTurnSequence != 0 || blocked.QueuedCount != 2 {
+		t.Fatalf("a closed Harness follow-up was mislabeled as queued: %+v", blocked)
+	}
+}
+
 func TestExplicitTaskReplacementNeverInterruptsTheRunningTurn(t *testing.T) {
 	rt, adapter, _ := newExecutionRuntime(t)
 	defer rt.Stop()

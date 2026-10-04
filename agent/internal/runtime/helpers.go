@@ -1048,8 +1048,8 @@ func (r *ResidentRuntime) steerWouldBeNextLocked(scope string, ref *logicalSessi
 //	the running turn is never selected here (its scope is skipped by callers);
 //	a steer is delivered before ordinary not-yet-started follow-ups;
 //	among steers, canonical order wins;
-//	a closed canonical head parks this scope; newer ordinary messages cannot
-//	implicitly bypass work the Human has not explicitly replaced.
+//	a closed Task head requires an explicit Human replacement; ordinary Room
+//	conversation retains its existing closed-steer behavior.
 func (r *ResidentRuntime) nextPendingTargetLocked(scope string, ref *logicalSessionRef) (int64, bool) {
 	if ref == nil || ref.pendingAddressed == nil || len(*ref.pendingAddressed) == 0 {
 		return 0, false
@@ -1067,10 +1067,11 @@ func (r *ResidentRuntime) nextPendingTargetLocked(scope string, ref *logicalSess
 			continue
 		}
 		if r.turnRecoveryClosedLocked(scope, sequence) {
-			// Only a steered target may pass an earlier open instruction. A
-			// permanently closed canonical head is a Human decision point: a
-			// later ordinary message cannot silently bypass it.
-			if head == 0 {
+			// For a Task scope, a permanently closed canonical head is a Human
+			// decision point: a later ordinary message cannot silently bypass
+			// the undelivered Task instruction. Room conversation recovery keeps
+			// its existing behavior of advancing past a closed steer.
+			if head == 0 && taskExecutionScope(scope) {
 				return 0, false
 			}
 			continue

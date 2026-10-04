@@ -8306,17 +8306,26 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     if (currentTurnSequence !== undefined) {
       if (!isAgentActivityTurnSequence(currentTurnSequence)) return null
       // A RUNNING or INTERRUPTING phase must name the exact turn it describes,
-      // and "queued" can never accompany one: queued means no turn is
-      // executing.
+      // and "queued" or "retrying" can never accompany one: neither has a
+      // current Harness turn.
       if (!isTaskExecutionPhase(candidate.phase)) return null
-      if (candidate.phase === "queued") return null
-    } else {
-      // No current turn. #421 allows exactly one phase here: QUEUED, which
-      // requires real accepted work waiting, so a Runtime can never publish a
-      // "waiting" state for a Task that has nothing to run.
-      if (candidate.phase !== undefined && candidate.phase !== "queued")
+      if (candidate.phase === "queued" || candidate.phase === "retrying")
         return null
-      if (candidate.phase === "queued" && queuedCount === 0) return null
+    } else {
+      // Without a current turn, QUEUED means executable work waiting for a
+      // lane and RETRYING means the bounded retry backoff. Both require real
+      // accepted work, so neither can describe a Task with nothing to run.
+      if (
+        candidate.phase !== undefined &&
+        candidate.phase !== "queued" &&
+        candidate.phase !== "retrying"
+      )
+        return null
+      if (
+        (candidate.phase === "queued" || candidate.phase === "retrying") &&
+        queuedCount === 0
+      )
+        return null
     }
     if (
       candidate.lastOutcome !== undefined &&

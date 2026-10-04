@@ -165,11 +165,12 @@ func (r *ResidentRuntime) failTurn(
 	if retryable {
 		r.scheduleTurnRetry(scope, target, failureClass, elapsedMs)
 		if r.turnRecoveryClosed(scope, target) {
-			if taskExecutionScope(scope) && preHarnessTaskFailure(err) {
+			r.failPendingHumanTasks([]string{scope}, "Agent task failed before completion.")
+			if taskExecutionScope(scope) &&
+				(preHarnessTaskFailure(err) || r.pendingUndeliveredFor(scope, target)) {
 				r.markTaskBlockedForFailure(scope, failureClass,
 					errors.Is(err, errTaskHarnessControlApplyFailed) || errors.Is(err, errTaskHarnessControlUnavailable))
 			}
-			r.failPendingHumanTasks([]string{scope}, "Agent task failed before completion.")
 		} else if taskExecutionScope(scope) {
 			// A canonical instruction with an armed retry is not waiting for an
 			// execution lane. Publish the distinct retrying phase immediately so
@@ -185,11 +186,12 @@ func (r *ResidentRuntime) failTurn(
 	r.mu.Lock()
 	r.closeTurnRecoveryLocked(scope, target)
 	r.mu.Unlock()
-	if taskExecutionScope(scope) && preHarnessTaskFailure(err) {
+	r.failPendingHumanTasks([]string{scope}, "Agent task failed before completion.")
+	if taskExecutionScope(scope) &&
+		(preHarnessTaskFailure(err) || r.pendingUndeliveredFor(scope, target)) {
 		r.markTaskBlockedForFailure(scope, failureClass,
 			errors.Is(err, errTaskHarnessControlApplyFailed) || errors.Is(err, errTaskHarnessControlUnavailable))
 	}
-	r.failPendingHumanTasks([]string{scope}, "Agent task failed before completion.")
 }
 
 // recordDeliveredTurnFailure records a Room-side failure after the Harness has

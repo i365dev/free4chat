@@ -92,6 +92,16 @@ describe("Task execution labels (#421)", () => {
         queuedCount: 3,
       })
     ).toEqual({ label: "Interrupting", detail: "3 queued" })
+    // A later failed queued instruction cannot hide the exact turn already
+    // running; recovery availability describes what happens after it settles.
+    expect(
+      taskExecutionLabel({
+        currentTurnSequence: 9,
+        phase: "running",
+        queuedCount: 2,
+        availability: "recovery_closed",
+      })
+    ).toEqual({ label: "Running", detail: "2 queued" })
   })
 
   it("still prefers a lost session over every other presentation", () => {

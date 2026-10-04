@@ -388,8 +388,12 @@ func taskExecutionBlocked(r *ResidentRuntime, scope string) bool {
 	r.taskExecutionMu.Lock()
 	defer r.taskExecutionMu.Unlock()
 	availability := r.taskExecutionFacts[scope].availability
-	return availability == types.TaskExecutionAvailabilityControlUnavailable ||
-		availability == types.TaskExecutionAvailabilityRecoveryClosed
+	// Recovery-closed is per canonical instruction: an earlier queued
+	// instruction may still run before a later failed steer reaches the head.
+	// The drain enforces that boundary in nextPendingTargetLocked. Only a
+	// missing selected native control prevents every pending instruction from
+	// proceeding in this Task scope.
+	return availability == types.TaskExecutionAvailabilityControlUnavailable
 }
 
 func (r *ResidentRuntime) markTaskControlUnavailable(scope, failureClass string) {
