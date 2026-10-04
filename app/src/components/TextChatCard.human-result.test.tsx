@@ -9,6 +9,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 vi.mock("next/router", () => ({
   useRouter: () => ({ push: vi.fn() }),
 }))
+vi.mock("@common/utils", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@common/utils")>()
+  return { ...actual, trackAnalyticsEvent: vi.fn(), umamiEvent: vi.fn() }
+})
 
 const mockUseSfuChatRoom = vi.fn()
 vi.mock("../hooks/useSfuChatRoom", () => ({

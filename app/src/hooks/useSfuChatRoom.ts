@@ -4743,6 +4743,25 @@ export function useSfuChatRoom(
     [sendSocketMessage]
   )
 
+  const sendTaskReplacePendingAndSend = useCallback(
+    (taskRequestId: string, text: string): boolean => {
+      const instruction = text.trim()
+      if (
+        !taskRequestId ||
+        taskRequestId.length > MAX_TASK_INTERRUPT_REQUEST_ID_LENGTH ||
+        !instruction ||
+        websocketRef.current?.readyState !== WebSocket.OPEN
+      )
+        return false
+      return sendSocketMessage({
+        type: "task-replace-pending-and-send",
+        taskRequestId,
+        text: instruction.slice(0, MAX_TASK_TEXT_LENGTH),
+      })
+    },
+    [sendSocketMessage]
+  )
+
   // #409: transient Task-scoped interrupt. This is a control-plane seam only:
   // it sends no chat/action message, creates no Room history, and never
   // decides which Agent is targeted — the Room derives the Task owner and the
@@ -5381,6 +5400,7 @@ export function useSfuChatRoom(
     sendPermissionResponse,
     sendTaskInterrupt,
     sendTaskInterruptAndSend,
+    sendTaskReplacePendingAndSend,
     readRoomAttachment,
     localParticipantId: sessionRef.current?.participantId,
     localMicState,

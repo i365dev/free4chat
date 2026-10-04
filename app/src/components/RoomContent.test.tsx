@@ -101,6 +101,7 @@ const baseHookReturn = {
   participants: [] as unknown[],
   messages: [] as unknown[],
   sendTextMessage: vi.fn(),
+  sendTaskReplacePendingAndSend: vi.fn(() => true),
   sendFileMessage: vi.fn(),
   sendActionMessage: vi.fn(),
   getLocalRoomAuth: vi.fn(() => null),
@@ -1946,6 +1947,17 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     expect(screen.getByTestId("task-agent-activity")).toHaveTextContent(
       "Running · 2 queued"
     )
+    fireEvent.change(
+      screen.getByRole("textbox", {
+        name: "Message the room or @ an Agent",
+      }),
+      { target: { value: "replace only the waiting messages" } }
+    )
+    fireEvent.click(screen.getByTestId("task-replace-pending-and-send"))
+    expect(baseHookReturn.sendTaskReplacePendingAndSend).toHaveBeenCalledWith(
+      "task-exec",
+      "replace only the waiting messages"
+    )
     queuedBehind.unmount()
 
     // Queued but not current: no interrupt control is offered.
@@ -1968,6 +1980,17 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       "Queued · 1 queued"
     )
     expect(screen.queryByTestId("task-interrupt")).not.toBeInTheDocument()
+    fireEvent.change(
+      screen.getByRole("textbox", {
+        name: "Message the room or @ an Agent",
+      }),
+      { target: { value: "replace the waiting instructions" } }
+    )
+    fireEvent.click(screen.getByTestId("task-replace-pending-and-send"))
+    expect(baseHookReturn.sendTaskReplacePendingAndSend).toHaveBeenCalledWith(
+      "task-exec",
+      "replace the waiting instructions"
+    )
     queuedOnly.unmount()
 
     // Interrupting: the interrupt control is disabled.

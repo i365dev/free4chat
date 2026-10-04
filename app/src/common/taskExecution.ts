@@ -85,7 +85,7 @@ export function taskControlNoticeMessage(notice: TaskControlNotice): string {
 export function isTaskExecutionAvailability(
   value: unknown
 ): value is TaskExecutionAvailability {
-  return value === "session_lost"
+  return value === "session_lost" || value === "control_unavailable"
 }
 
 /**
@@ -105,6 +105,11 @@ export function taskExecutionLabel(projection: {
     queued === 1 ? "1 queued" : `${queued} queued`
   if (projection.availability === "session_lost")
     return { label: "Session lost" }
+  if (projection.availability === "control_unavailable")
+    return {
+      label: "Task blocked",
+      detail: "Harness control unavailable · instructions retained",
+    }
   if (projection.currentTurnSequence !== undefined) {
     const label =
       projection.phase === "interrupting" ? "Interrupting" : "Running"

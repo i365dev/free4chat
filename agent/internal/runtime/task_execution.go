@@ -17,7 +17,8 @@ import (
  *   phase        <- whether an authorized interrupt was dispatched for that
  *                   same exact turn
  *   lastOutcome  <- whether that exact turn settled after a Human interrupt
- *   availability <- whether the retained Harness session for the Task died
+ *   availability <- whether the retained Harness session died or a selected
+ *                    native control cannot currently be applied
  *
  * The retained Task lifecycle (Starting|Working|Completed|Failed) and the
  * coarse Harness activity (working|thinking|using_tools|responding) stay
@@ -38,6 +39,7 @@ import (
 type taskExecutionFacts struct {
 	lastOutcome  types.TaskExecutionOutcome
 	availability types.TaskExecutionAvailability
+	failureClass string
 }
 
 type taskExecutionPublication struct {
@@ -368,6 +370,33 @@ func (r *ResidentRuntime) markTaskSessionLost(scope string) {
 	}
 	r.taskExecutionMu.Unlock()
 	r.publishTaskExecution(scope)
+}
+
+func taskControlUnavailable(r *ResidentRuntime, scope string) bool {
+	r.taskExecutionMu.Lock()
+	defer r.taskExecutionMu.Unlock()
+	return r.taskExecutionFacts[scope].availability == types.TaskExecutionAvailabilityControlUnavailable
+}
+
+func (r *ResidentRuntime) markTaskControlUnavailable(scope, failureClass string) {
+	r.taskExecutionMu.Lock()
+	r.taskExecutionFacts[scope] = taskExecutionFacts{
+		availability: types.TaskExecutionAvailabilityControlUnavailable,
+		failureClass: failureClass,
+	}
+	r.taskExecutionMu.Unlock()
+	r.publishTaskExecution(scope)
+}
+
+func (r *ResidentRuntime) clearTaskControlUnavailable(scope string) {
+	r.taskExecutionMu.Lock()
+	facts := r.taskExecutionFacts[scope]
+	if facts.availability == types.TaskExecutionAvailabilityControlUnavailable {
+		facts.availability = ""
+		facts.failureClass = ""
+		r.taskExecutionFacts[scope] = facts
+	}
+	r.taskExecutionMu.Unlock()
 }
 
 // clearTaskExecutionLocal drops all transient execution facts. It is used on

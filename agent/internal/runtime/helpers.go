@@ -48,6 +48,10 @@ type pendingTurnContext struct {
 	// of dispatching a second yield request. First application always issues
 	// one best-effort yield, whether or not priority had to change.
 	steerRequested bool
+	// superseded marks an undelivered Human instruction that a later, explicit
+	// Human replacement command removed from execution. It remains in Room
+	// history, but can never be replayed to a Harness.
+	superseded bool
 	// delivered records that this exact instruction already reached the
 	// Harness. A steered instruction can be delivered OUT of canonical order,
 	// so this is what lets deliveredThrough stay a contiguous canonical
@@ -294,14 +298,39 @@ func (r *ResidentRuntime) ensureHarnessSession(scope string) error {
 		return ensureErr
 	}
 	if err := r.applyTaskSessionControls(scope); err != nil {
-		r.log("task_harness_control_unavailable", map[string]string{"scopeKind": "task"})
+		r.log("task_harness_control_unavailable", map[string]string{"scopeKind": "task", "reason": taskControlFailureReason(err)})
+		if taskControlApplyFailed(err) {
+			return errTaskHarnessControlApplyFailed
+		}
 		return errTaskHarnessControlUnavailable
 	}
 	if err := r.applySessionConfigFallbacks(scope); err != nil {
-		r.log("task_harness_control_unavailable", map[string]string{"scopeKind": "task"})
-		return errTaskHarnessControlUnavailable
+		r.log("task_harness_control_unavailable", map[string]string{"scopeKind": "task", "reason": "provider_fallback"})
+		return errTaskHarnessControlApplyFailed
 	}
 	return nil
+}
+
+type taskControlError struct {
+	reason string
+	cause  error
+}
+
+func (e *taskControlError) Error() string { return e.cause.Error() }
+func (e *taskControlError) Unwrap() error { return e.cause }
+
+func taskControlFailureReason(err error) string {
+	var controlErr *taskControlError
+	if errors.As(err, &controlErr) {
+		return controlErr.reason
+	}
+	return "unknown"
+}
+
+func taskControlApplyFailed(err error) bool {
+	var controlErr *taskControlError
+	return errors.As(err, &controlErr) &&
+		(controlErr.reason == "mode_set_failed" || controlErr.reason == "config_set_failed" || controlErr.reason == "controls_disappeared")
 }
 
 func (r *ResidentRuntime) applySessionConfigFallbacks(scope string) error {
@@ -328,9 +357,9 @@ func (r *ResidentRuntime) applyTaskSessionControls(scope string) error {
 	}
 	controls := adapter.SessionControlsFor(scope)
 	if controls == nil {
-		return errors.New("Harness session controls are unavailable")
+		return &taskControlError{"controls_missing", errors.New("Harness session controls are unavailable")}
 	}
-	if modeID != "" {
+	if modeID != "" && controls.CurrentModeID != modeID {
 		advertised := false
 		for _, mode := range controls.Modes {
 			if mode.ID == modeID {
@@ -339,23 +368,29 @@ func (r *ResidentRuntime) applyTaskSessionControls(scope string) error {
 			}
 		}
 		if !advertised {
-			return errors.New("selected Harness session mode is no longer advertised")
+			return &taskControlError{"mode_not_advertised", errors.New("selected Harness session mode is no longer advertised")}
 		}
 		if controls.CurrentModeID != modeID {
 			if err := adapter.SetModeFor(scope, modeID); err != nil {
-				return err
+				return &taskControlError{"mode_set_failed", err}
 			}
 			controls = adapter.SessionControlsFor(scope)
 			if controls == nil {
-				return errors.New("Harness session controls became unavailable")
+				return &taskControlError{"controls_disappeared", errors.New("Harness session controls became unavailable")}
 			}
 		}
 	}
 	for configID, value := range configOptions {
 		advertised := false
+		current := ""
 		for _, option := range controls.ConfigOptions {
 			if option.ID != configID || option.Type != "select" {
 				continue
+			}
+			current = option.CurrentValue
+			if current == value {
+				advertised = true
+				break
 			}
 			for _, candidate := range option.Options {
 				if candidate.Value == value {
@@ -368,22 +403,15 @@ func (r *ResidentRuntime) applyTaskSessionControls(scope string) error {
 			}
 		}
 		if !advertised {
-			return errors.New("selected Harness session config value is no longer advertised")
-		}
-		current := ""
-		for _, option := range controls.ConfigOptions {
-			if option.ID == configID && option.Type == "select" {
-				current = option.CurrentValue
-				break
-			}
+			return &taskControlError{"config_not_advertised", errors.New("selected Harness session config value is no longer advertised")}
 		}
 		if current != value {
 			if err := adapter.SetConfigOptionFor(scope, configID, value); err != nil {
-				return err
+				return &taskControlError{"config_set_failed", err}
 			}
 			controls = adapter.SessionControlsFor(scope)
 			if controls == nil {
-				return errors.New("Harness session controls became unavailable")
+				return &taskControlError{"controls_disappeared", errors.New("Harness session controls became unavailable")}
 			}
 		}
 	}
@@ -1005,7 +1033,7 @@ func (r *ResidentRuntime) steerWouldBeNextLocked(scope string, ref *logicalSessi
 			continue
 		}
 		context, ok := (*ref.pendingContexts)[candidate]
-		if ok && context.delivered {
+		if ok && (context.delivered || context.superseded) {
 			continue
 		}
 		return candidate == sequence
@@ -1020,22 +1048,31 @@ func (r *ResidentRuntime) steerWouldBeNextLocked(scope string, ref *logicalSessi
 //	the running turn is never selected here (its scope is skipped by callers);
 //	a steer is delivered before ordinary not-yet-started follow-ups;
 //	among steers, canonical order wins;
-//	a scope whose only runnable work is a closed-recovery head stays parked.
+//	a closed canonical head parks this scope; newer ordinary messages cannot
+//	implicitly bypass work the Human has not explicitly replaced.
 func (r *ResidentRuntime) nextPendingTargetLocked(scope string, ref *logicalSessionRef) (int64, bool) {
 	if ref == nil || ref.pendingAddressed == nil || len(*ref.pendingAddressed) == 0 {
 		return 0, false
 	}
+	if taskControlUnavailable(r, scope) {
+		return 0, false
+	}
 	head := int64(0)
 	headFound := false
+	closedHead := false
 	for _, sequence := range *ref.pendingAddressed {
 		context, ok := (*ref.pendingContexts)[sequence]
-		if ok && context.delivered {
+		if ok && (context.delivered || context.superseded) {
 			// Already consumed out of canonical order. It stays in the ledger
 			// only because earlier ordinary work is still undelivered, so it
 			// must never be selected again.
 			continue
 		}
 		if r.turnRecoveryClosedLocked(scope, sequence) {
+			if !headFound {
+				closedHead = true
+				continue
+			}
 			continue
 		}
 		if !headFound {
@@ -1044,6 +1081,9 @@ func (r *ResidentRuntime) nextPendingTargetLocked(scope string, ref *logicalSess
 		if ok && context.steer {
 			return sequence, true
 		}
+	}
+	if closedHead {
+		return 0, false
 	}
 	if !headFound {
 		return 0, false
@@ -1071,7 +1111,7 @@ func (r *ResidentRuntime) pendingUndeliveredLocked(scope string, target int64) b
 	if !ok {
 		return false
 	}
-	return !context.delivered
+	return !context.delivered && !context.superseded
 }
 
 func (r *ResidentRuntime) pendingUndeliveredFor(scope string, target int64) bool {
@@ -1104,7 +1144,7 @@ func (r *ResidentRuntime) undeliveredDeliveryCountLocked(scope string, ref *logi
 			continue
 		}
 		context, ok := (*ref.pendingContexts)[sequence]
-		if ok && context.delivered {
+		if ok && (context.delivered || context.superseded) {
 			continue
 		}
 		queued++
@@ -1122,7 +1162,7 @@ func (r *ResidentRuntime) collapseDeliveredPrefixLocked(scope string, ref *logic
 	for len(*ref.pendingAddressed) > 0 {
 		head := (*ref.pendingAddressed)[0]
 		context, ok := (*ref.pendingContexts)[head]
-		if ok && !context.delivered {
+		if ok && !context.delivered && !context.superseded {
 			break
 		}
 		// A missing entry was already consumed (a duplicate or an explicitly
@@ -1136,4 +1176,51 @@ func (r *ResidentRuntime) collapseDeliveredPrefixLocked(scope string, ref *logic
 		removed = true
 	}
 	return removed
+}
+
+// supersedePendingHumanTextLocked records an explicit Human decision to replace
+// earlier, not-yet-started Task text. The canonical Room messages remain in
+// history; superseded targets advance the existing delivery cursor and can
+// never be replayed. A lane that has already started is always preserved.
+// Callers hold r.mu and pass a Room-authenticated Human text event boundary.
+func (r *ResidentRuntime) supersedePendingHumanTextLocked(scope string, ref *logicalSessionRef, through int64) int {
+	if ref == nil || ref.pendingAddressed == nil || ref.pendingContexts == nil {
+		return 0
+	}
+	state := r.scopedSessions[scope]
+	firstTaskSequence := int64(0)
+	if state != nil {
+		firstTaskSequence = state.admittedSequence
+	}
+	active := int64(0)
+	if lane, ok := r.activeTurns[scope]; ok {
+		active = lane.target
+	}
+	count := 0
+	for _, sequence := range *ref.pendingAddressed {
+		if sequence <= firstTaskSequence || sequence > through || sequence == active {
+			continue
+		}
+		context, ok := (*ref.pendingContexts)[sequence]
+		if !ok || context.delivered || context.superseded || len(context.events) == 0 {
+			continue
+		}
+		trigger := context.events[len(context.events)-1]
+		if trigger.Sequence != sequence || trigger.Type != "text" || !trigger.Addressed || trigger.Participant.Kind != types.KindHuman {
+			continue
+		}
+		context.superseded = true
+		(*ref.pendingContexts)[sequence] = context
+		key := canonicalTurnKey{scope: normalizeScope(scope), target: sequence}
+		delete(r.turnRetries, key)
+		r.forgetTurnRecoveryLocked(scope, sequence)
+		count++
+	}
+	if count > 0 {
+		r.collapseDeliveredPrefixLocked(scope, ref)
+		r.clearTaskControlUnavailable(scope)
+		r.turnIdleCond.Broadcast()
+		r.wakeTurnRetryClock()
+	}
+	return count
 }

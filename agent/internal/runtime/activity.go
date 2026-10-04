@@ -288,8 +288,8 @@ func (r *ResidentRuntime) activeTurnOf(scope string) (int64, bool) {
 }
 
 // clearActivity is best-effort externally but authoritative locally. It is
-// used on stop, Harness failure, and resident transport loss. The server also
-// clears the same projection when the authenticated resident socket closes.
+// used when the Runtime stops or the whole Harness process dies. Ordinary
+// resident transport loss preserves a locally owned turn identity instead.
 func (r *ResidentRuntime) clearActivity() {
 	r.turnControlMu.Lock()
 	r.activityMu.Lock()
@@ -332,18 +332,13 @@ func (r *ResidentRuntime) clearActivityFor(failed map[string]struct{}) {
 	}
 }
 
-func (r *ResidentRuntime) resetActivityLocal() {
-	r.turnControlMu.Lock()
-	r.activityMu.Lock()
-	r.activities = make(map[string]activityTurnState)
-	r.interrupts = make(map[string]int64)
-	r.activityMu.Unlock()
-	r.turnControlMu.Unlock()
+func (r *ResidentRuntime) reconcileActivityTransport() {
 	r.activityPublishMu.Lock()
-	// A normal resident stream reconnect keeps the same participant handle.
-	// Preserve a queued clear behind any in-flight publication so the old
-	// state cannot be resurrected after the server has fail-closed it. Any
-	// queued non-empty state is stale at this boundary and must not be replayed.
+	// The Room clears socket-owned activity when the resident stream closes.
+	// Preserve Runtime-owned active-turn and interrupt identities so bounded
+	// execution reconciliation can publish the exact live turn after reconnect.
+	// Drop queued nonempty frames from the old transport; a queued clear stays
+	// behind any in-flight publication so it cannot resurrect stale state.
 	for scope, publication := range r.activityPublishQueue {
 		if publication.state != "" {
 			delete(r.activityPublishQueue, scope)

@@ -230,6 +230,85 @@ async function publishExecution(
 }
 
 describe("RoomSession transient Task execution (#409)", () => {
+  it("persists an explicit replacement boundary only for an idle queued Task", async () => {
+    const test = harness()
+    test.connectAgentSocket("agent-a")
+    const requestId = await createTask(test)
+    await test.sendHuman({
+      type: "chat",
+      text: "first waiting instruction",
+      targets: ["agent-a"],
+      taskRequestId: requestId,
+    })
+    await test.sendHuman({
+      type: "chat",
+      text: "second waiting instruction",
+      targets: ["agent-a"],
+      taskRequestId: requestId,
+    })
+    const boundary = test.stored().nextMessageSequence
+    await test.control({
+      action: "agent-task-execution",
+      participantId: "agent-a",
+      token: "agent-a-token",
+      projection: {
+        taskRequestId: requestId,
+        queuedCount: 2,
+      },
+    })
+    await test.sendHuman({
+      type: "task-replace-pending-and-send",
+      taskRequestId: requestId,
+      text: "latest instruction",
+    })
+
+    expect(test.errorFrames()).toEqual([])
+    expect(test.agentControls("agent-a")).toEqual([])
+    expect(test.stored().messages.at(-1)).toMatchObject({
+      type: "text",
+      text: "latest instruction",
+      taskRequestId: requestId,
+      targets: ["agent-a"],
+      supersedesThroughSequence: boundary,
+    })
+  })
+
+  it("replaces queued messages without steering an active Task turn", async () => {
+    const test = harness()
+    const requestId = await createTask(test)
+    await test.sendHuman({
+      type: "chat",
+      text: "waiting instruction",
+      targets: ["agent-a"],
+      taskRequestId: requestId,
+    })
+    await test.control({
+      action: "agent-task-execution",
+      participantId: "agent-a",
+      token: "agent-a-token",
+      projection: {
+        taskRequestId: requestId,
+        currentTurnSequence: 42,
+        phase: "running",
+        queuedCount: 1,
+      },
+    })
+    const boundary = test.stored().nextMessageSequence
+
+    await test.sendHuman({
+      type: "task-replace-pending-and-send",
+      taskRequestId: requestId,
+      text: "latest Human instruction",
+    })
+
+    expect(test.errorFrames()).toEqual([])
+    expect(test.agentControls("agent-a")).toEqual([])
+    expect(test.stored().messages.at(-1)).toMatchObject({
+      text: "latest Human instruction",
+      supersedesThroughSequence: boundary,
+    })
+  })
+
   it("accepts, broadcasts, and never persists a canonical Agent projection", async () => {
     const test = harness()
     test.connectAgentSocket("agent-a")

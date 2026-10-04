@@ -230,10 +230,10 @@ func TestResidentActivityReconnectRetainsQueuedClear(t *testing.T) {
 	}
 
 	// Stream loss fail-closes the public state while the old HTTP request is
-	// still in flight. A reconnect resets local state but must retain this
-	// queued clear because the participant handle remains valid.
+	// still in flight. Reconciliation drops stale queued state but retains this
+	// queued clear behind the in-flight publication.
 	runtime.clearActivity()
-	runtime.resetActivityLocal()
+	runtime.reconcileActivityTransport()
 	close(client.release)
 
 	waitFor(t, time.Second, func() bool {

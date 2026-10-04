@@ -651,10 +651,13 @@ const (
 	// TaskExecutionAvailabilitySessionLost means the retained Harness session
 	// for this Task died unexpectedly and no replacement turn has started yet.
 	TaskExecutionAvailabilitySessionLost TaskExecutionAvailability = "session_lost"
+	// TaskExecutionAvailabilityControlUnavailable means the selected native
+	// Harness control cannot currently be restored without changing its value.
+	TaskExecutionAvailabilityControlUnavailable TaskExecutionAvailability = "control_unavailable"
 )
 
 func (availability TaskExecutionAvailability) Valid() bool {
-	return availability == TaskExecutionAvailabilitySessionLost
+	return availability == TaskExecutionAvailabilitySessionLost || availability == TaskExecutionAvailabilityControlUnavailable
 }
 
 // TaskExecutionProjection is the Runtime-authoritative TRANSIENT execution
@@ -779,6 +782,9 @@ type RoomEvent struct {
 	// an addressed event to one logical Agent scope without changing Room
 	// transport ownership.
 	ScopeID       string                  `json:"scopeId,omitempty"`
+	// SupersedesThroughSequence is set only by an authenticated Room operation
+	// where a Human explicitly replaces not-yet-started Task instructions.
+	SupersedesThroughSequence int64 `json:"supersedesThroughSequence,omitempty"`
 	Text          string                  `json:"text,omitempty"`
 	ActionType    string                  `json:"actionType,omitempty"`
 	ActionPayload map[string]string       `json:"actionPayload,omitempty"`

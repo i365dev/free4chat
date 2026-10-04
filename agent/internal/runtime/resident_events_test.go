@@ -478,6 +478,46 @@ func TestResidentRuntimeReconnectPreservesParticipantAndCursor(t *testing.T) {
 	rt.Stop()
 }
 
+func TestResidentTransportReconnectKeepsExactActiveTaskTurn(t *testing.T) {
+	first := newResidentTestStream()
+	second := newResidentTestStream()
+	client := &residentTestClient{
+		fakeClient: &fakeClient{},
+		streams:    make(chan *residentTestStream, 2),
+	}
+	client.streams <- first
+	client.streams <- second
+	rt := NewResidentRuntime(Options{
+		InstanceID: "resident-active-reconnect",
+		RoomID:     "room",
+		Name:       "Agent",
+		Client:     client,
+		Adapter:    &fakeAdapter{name: "pi"},
+	})
+	if err := rt.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Stop()
+	waitFor(t, time.Second, func() bool {
+		open, _, _ := client.residentOpenSnapshot()
+		return open == 1
+	}, "first resident stream open")
+
+	// The current turn belongs to the local Harness process. A Room transport
+	// interruption may hide projections temporarily, but cannot erase identity.
+	rt.beginActivity("task:req-T", 77)
+	if err := first.Close(); err != nil {
+		t.Fatalf("close resident stream: %v", err)
+	}
+	waitFor(t, 3*time.Second, func() bool {
+		open, _, _ := client.residentOpenSnapshot()
+		return open >= 2
+	}, "resident stream reconnect")
+	if sequence, active := rt.activeTurnOf("task:req-T"); !active || sequence != 77 {
+		t.Fatalf("transport reconnect erased the exact active Task turn: sequence=%d active=%v", sequence, active)
+	}
+}
+
 func TestResidentRuntimeDoesNotReconnectAfterTerminalEventProtocolError(t *testing.T) {
 	stream := newResidentTestStream()
 	stream.receiveErr = &free4chat.Error{

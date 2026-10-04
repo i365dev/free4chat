@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strconv"
@@ -30,6 +32,14 @@ const (
 )
 
 const roomScope = "room"
+
+func diagnosticScopeKey(scope string) string {
+	if normalizeScope(scope) == roomScope {
+		return "room"
+	}
+	hash := sha256.Sum256([]byte(normalizeScope(scope)))
+	return "task-" + hex.EncodeToString(hash[:8])
+}
 
 const (
 	participantTransportRetryInitialDelay = 250 * time.Millisecond
@@ -98,20 +108,106 @@ type Status struct {
 // so normal status output does not grow process or lane internals.
 func (r *ResidentRuntime) DiagnosticsSnapshot() map[string]any {
 	status := r.Status()
+	type taskExecutionDiagnostic struct {
+		scope               string `json:"-"`
+		ScopeKey            string `json:"scopeKey"`
+		ScopeKind           string `json:"scopeKind"`
+		State               string `json:"state"`
+		CurrentTurnSequence int64  `json:"currentTurnSequence,omitempty"`
+		LaneSequence        int64  `json:"laneSequence,omitempty"`
+		QueuedCount         int    `json:"queuedCount"`
+		HeadSequence        int64  `json:"headSequence,omitempty"`
+		RetryAttempt        int    `json:"retryAttempt,omitempty"`
+		RetryFailureClass   string `json:"retryFailureClass,omitempty"`
+		RetryScheduled      bool   `json:"retryScheduled,omitempty"`
+		RecoveryClosed      bool   `json:"recoveryClosed,omitempty"`
+		Availability        string `json:"availability,omitempty"`
+		AvailabilityReason  string `json:"availabilityReason,omitempty"`
+	}
+	r.activityMu.Lock()
+	activeTaskTurns := make(map[string]int64, len(r.activities))
+	for scope, activity := range r.activities {
+		if activity.state != types.AgentActivityQueued {
+			activeTaskTurns[scope] = activity.sequence
+		}
+	}
+	r.activityMu.Unlock()
 	r.mu.Lock()
 	active := make([]string, 0, len(r.activeTurns))
 	for scope := range r.activeTurns {
-		active = append(active, scope)
+		active = append(active, diagnosticScopeKey(scope))
 	}
 	queued := make([]string, 0, len(r.scopeOrder))
 	for _, scope := range r.scopeOrder {
 		if ref := r.sessionRefLocked(scope); ref != nil && ref.pendingAddressed != nil && len(*ref.pendingAddressed) > 0 {
-			queued = append(queued, scope)
+			queued = append(queued, diagnosticScopeKey(scope))
 		}
 	}
 	turnLanes := r.turnLanes
 	policy := r.options.TaskExecution
+	taskExecutions := make([]taskExecutionDiagnostic, 0, len(r.scopeOrder))
+	for _, scope := range r.scopeOrder {
+		if taskRequestIDForScope(scope) == "" {
+			continue
+		}
+		ref := r.sessionRefLocked(scope)
+		lane := r.activeTurns[scope]
+		item := taskExecutionDiagnostic{
+			scope:               scope,
+			ScopeKey:            diagnosticScopeKey(scope),
+			ScopeKind:           "task",
+			CurrentTurnSequence: activeTaskTurns[scope],
+			LaneSequence:        lane.target,
+			State:               "idle",
+		}
+		if ref != nil {
+			item.QueuedCount = r.undeliveredDeliveryCountLocked(scope, ref, lane.target)
+			if ref.pendingAddressed != nil && ref.pendingContexts != nil {
+				for _, sequence := range *ref.pendingAddressed {
+					context, ok := (*ref.pendingContexts)[sequence]
+					if ok && (context.delivered || context.superseded) {
+						continue
+					}
+					item.HeadSequence = sequence
+					key := canonicalTurnKey{scope: normalizeScope(scope), target: sequence}
+					if r.turnRecoveryClosedLocked(scope, sequence) {
+						item.RecoveryClosed = true
+					}
+					if retry := r.turnRetries[key]; retry != nil {
+						item.RetryAttempt = retry.attempt
+						item.RetryFailureClass = retry.failureClass
+						item.RetryScheduled = retry.plan != nil
+					}
+					break
+				}
+			}
+		}
+		switch {
+		case item.CurrentTurnSequence > 0:
+			item.State = "running"
+		case item.LaneSequence > 0:
+			item.State = "preparing"
+		case item.RecoveryClosed:
+			item.State = "recovery_closed"
+		case item.RetryScheduled:
+			item.State = "retrying"
+		case item.QueuedCount > 0:
+			item.State = "queued"
+		}
+		taskExecutions = append(taskExecutions, item)
+	}
 	r.mu.Unlock()
+	r.taskExecutionMu.Lock()
+	for index := range taskExecutions {
+		facts := r.taskExecutionFacts[taskExecutions[index].scope]
+		taskExecutions[index].Availability = string(facts.availability)
+		taskExecutions[index].AvailabilityReason = facts.failureClass
+		if taskExecutions[index].CurrentTurnSequence == 0 && taskExecutions[index].Availability != "" {
+			taskExecutions[index].State = "blocked"
+		}
+		taskExecutions[index].scope = ""
+	}
+	r.taskExecutionMu.Unlock()
 
 	statusJSON, _ := json.Marshal(status)
 	view := map[string]any{}
@@ -126,6 +222,7 @@ func (r *ResidentRuntime) DiagnosticsSnapshot() map[string]any {
 		"runtimeCeiling": turnLanes,
 		"activeScopes":   active,
 		"queuedScopes":   queued,
+		"tasks":          taskExecutions,
 	}
 	if diagnostics, ok := r.options.Adapter.(types.HarnessDiagnostics); ok {
 		view["harness"] = diagnostics.DiagnosticsSnapshot()
@@ -813,9 +910,9 @@ func (r *ResidentRuntime) adoptJoin(joined types.JoinResult) {
 		r.participatingSince = time.Now().UnixMilli()
 	}
 	r.mu.Unlock()
-	// The Room clears transient activity when the resident event connection is
-	// replaced. A new join/rejoin therefore starts with a fresh local cache too.
-	r.resetActivityLocal()
+	// The Room clears socket-owned activity when the resident event connection
+	// is replaced. Retain Runtime-owned exact-turn identity for reconciliation.
+	r.reconcileActivityTransport()
 	// Media controller (re)build happens OUTSIDE the runtime lock: it may
 	// stop the previous bridge, create a transcriber, and perform a compatibility
 	// RoomInfo bootstrap — none of that may hold the runtime mutex.
@@ -946,7 +1043,9 @@ func (r *ResidentRuntime) residentWaitLoop(client types.ResidentEventClient) {
 		// local bridge can run again.
 		if !r.isStopped() {
 			r.failClosedResidentMediaState()
-			r.clearActivity()
+			// Resident transport loss revokes media and Room projections, but it
+			// does not cancel a locally owned Harness turn. Keep the exact turn
+			// identity so reconnect reconciliation preserves status and Steer.
 		}
 		if r.isStopped() {
 			return
@@ -1247,7 +1346,7 @@ func (r *ResidentRuntime) setResidentStream(
 	if participantTransport != nil {
 		participantTransport.Close()
 	}
-	r.resetActivityLocal()
+	r.reconcileActivityTransport()
 	return true
 }
 
@@ -1501,6 +1600,15 @@ func (r *ResidentRuntime) acceptEvent(event types.RoomEvent) {
 		r.log("logical_scope_rejected", map[string]string{"reason": "invalid"})
 		return
 	}
+	if event.SupersedesThroughSequence != 0 &&
+		(scope == roomScope || !event.Addressed || event.Type != "text" ||
+			event.Participant.Kind != types.KindHuman ||
+			event.SupersedesThroughSequence < 0 ||
+			event.SupersedesThroughSequence >= event.Sequence) {
+		r.mu.Unlock()
+		r.log("task_instruction_replace_rejected", map[string]string{"reason": "invalid_boundary"})
+		return
+	}
 	newScope := scope != roomScope && !r.scopeStateExistsLocked(scope)
 	queuedChanged := false
 	claimed := false
@@ -1532,6 +1640,11 @@ func (r *ResidentRuntime) acceptEvent(event types.RoomEvent) {
 		r.mu.Lock()
 	}
 	r.eventBuffer.Add(event)
+	if event.SupersedesThroughSequence > 0 {
+		if ref := r.sessionRefLocked(scope); ref != nil {
+			r.supersedePendingHumanTextLocked(scope, ref, event.SupersedesThroughSequence)
+		}
+	}
 	if newScope {
 		// The Task's first delivered trigger is its canonical collaboration
 		// request; that sequence is what bounds this Task's identity record.
@@ -1573,11 +1686,12 @@ func (r *ResidentRuntime) acceptEvent(event types.RoomEvent) {
 				target: event.Sequence,
 				events: r.eventsForScopeLocked(scope, after, event.Sequence),
 			}
-			// An accepted addressed trigger for this scope is the explicit
-			// recovery boundary: it re-arms a canonical turn of the same scope
-			// whose autonomous recovery was closed. Unaddressed Room traffic
-			// never reaches this point and can never re-arm anything.
-			r.reopenTurnRecoveryLocked(scope)
+			// A new ordinary message never re-arms or bypasses a failed canonical
+			// head. Bounded retries own transient recovery; an explicit Human
+			// replacement marks only earlier pending instructions as superseded.
+			if scope == roomScope {
+				r.reopenTurnRecoveryLocked(scope)
+			}
 			// #409: an EXACT prepared adoption is claimed only once its own
 			// canonical Human-owned Task has actually been accepted into this
 			// bounded queue. A preparation the queue refuses keeps its orphan

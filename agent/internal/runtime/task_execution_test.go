@@ -1,8 +1,10 @@
 package runtime
 
 import (
+	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -307,6 +309,119 @@ func TestTaskExecutionSessionLostOnlyForRealHarnessDeath(t *testing.T) {
 	}
 	adapter.releaseTurn()
 	waitForDone(t, again, "recovered turn to settle")
+}
+
+func TestExplicitTaskReplacementUnparksClosedHeadWithoutReplayingOldMessages(t *testing.T) {
+	rt, adapter, _ := newExecutionRuntime(t)
+	defer rt.Stop()
+
+	// The Task's original instruction has already reached the Harness. Later
+	// text remains pending after a deterministic preflight failure.
+	rt.acceptEvent(scopedEvent(100, "task:req-T", "initial task"))
+	adapter.releaseTurn()
+	rt.drainTurns()
+	rt.acceptEvent(scopedEvent(101, "task:req-T", "old queued instruction"))
+	rt.failTurn(
+		"task:req-T", 101, "harness", turnFailureOther, time.Now(),
+		errors.New("native control unavailable"), false,
+	)
+	rt.acceptEvent(scopedEvent(102, "task:req-T", "another queued instruction"))
+
+	if scope, target, ok := rt.nextRunnableTurn(); ok {
+		t.Fatalf("ordinary Task message bypassed a closed canonical head: scope=%s target=%d", scope, target)
+	}
+	if got := rt.pendingAddressedSnapshotFor("task:req-T"); !reflect.DeepEqual(got, []int64{101, 102}) {
+		t.Fatalf("queued instructions changed before Human replacement: %v", got)
+	}
+
+	// Only the explicit replace command marks earlier Human text as superseded.
+	latest := scopedEvent(103, "task:req-T", "latest Human instruction")
+	latest.SupersedesThroughSequence = 102
+	rt.acceptEvent(latest)
+	rt.drainTurns()
+
+	runs, details := adapter.scopedRunSnapshot()
+	if !reflect.DeepEqual(runs, []string{"task:req-T", "task:req-T"}) {
+		t.Fatalf("replacement did not run once after the initial Task turn: %v", runs)
+	}
+	if got := details["task:req-T"]; !reflect.DeepEqual(got, []string{"initial task", "latest Human instruction"}) {
+		t.Fatalf("superseded instructions reached the Harness: %v", got)
+	}
+	if got := rt.pendingAddressedSnapshotFor("task:req-T"); len(got) != 0 {
+		t.Fatalf("successfully replaced Task messages remained pending: %v", got)
+	}
+}
+
+func TestExplicitTaskReplacementNeverInterruptsTheRunningTurn(t *testing.T) {
+	rt, adapter, _ := newExecutionRuntime(t)
+	defer rt.Stop()
+	adapter.blockNextTurn()
+	drained := startTurn(rt, scopedEvent(110, "task:req-T", "long running instruction"))
+	waitForActiveScope(t, rt, "task:req-T")
+
+	rt.acceptEvent(scopedEvent(111, "task:req-T", "waiting instruction"))
+	latest := scopedEvent(112, "task:req-T", "latest Human instruction")
+	latest.SupersedesThroughSequence = 111
+	rt.acceptEvent(latest)
+	if adapter.cancelCount() != 0 {
+		t.Fatal("replacing a waiting instruction interrupted the running Harness turn")
+	}
+	adapter.releaseTurn()
+	waitFor(t, 2*time.Second, func() bool { return adapter.runCount("task:req-T") >= 2 }, "replacement turn to start")
+	adapter.releaseAllTurns()
+	waitForDone(t, drained, "running and replacement turns to settle")
+
+	runs, details := adapter.scopedRunSnapshot()
+	if !reflect.DeepEqual(runs, []string{"task:req-T", "task:req-T"}) {
+		t.Fatalf("the running turn and latest instruction did not each run once: %v", runs)
+	}
+	if got := details["task:req-T"]; !reflect.DeepEqual(got, []string{"long running instruction", "latest Human instruction"}) {
+		t.Fatalf("replacement interrupted or replayed the wrong instruction: %v", got)
+	}
+}
+
+func TestDiagnosticsSnapshotIdentifiesLiveTaskTurnWithoutTaskContent(t *testing.T) {
+	rt, adapter, _ := newExecutionRuntime(t)
+	defer rt.Stop()
+	adapter.blockNextTurn()
+	drained := startTurn(rt, scopedEvent(120, "task:req-private", "private prompt content"))
+	waitForActiveScope(t, rt, "task:req-private")
+
+	diagnostic := rt.DiagnosticsSnapshot()
+	_, ok := diagnostic["execution"].(map[string]any)
+	if !ok {
+		t.Fatalf("execution diagnostics are missing: %#v", diagnostic)
+	}
+	encoded, err := json.Marshal(diagnostic)
+	if err != nil {
+		t.Fatalf("encode diagnostics: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("decode diagnostics: %v", err)
+	}
+	rows, ok := decoded["execution"].(map[string]any)["tasks"].([]any)
+	if !ok || len(rows) != 1 {
+		t.Fatalf("task execution diagnostic shape = %#v", decoded["execution"])
+	}
+	row, ok := rows[0].(map[string]any)
+	if !ok || row["scopeKind"] != "task" || row["state"] != "running" || row["currentTurnSequence"] != float64(120) {
+		t.Fatalf("live Task turn was not diagnosed precisely: %#v", rows[0])
+	}
+	if strings.Contains(string(encoded), "req-private") || strings.Contains(string(encoded), "private prompt content") {
+		t.Fatalf("diagnostics exposed Task identity or prompt content: %s", encoded)
+	}
+	adapter.releaseTurn()
+	waitForDone(t, drained, "diagnostic Task turn to settle")
+	rt.markTaskControlUnavailable("task:req-private", "HARNESS_CONTROL_UNAVAILABLE")
+	blocked, err := json.Marshal(rt.DiagnosticsSnapshot())
+	if err != nil {
+		t.Fatalf("encode blocked diagnostics: %v", err)
+	}
+	if !strings.Contains(string(blocked), `"state":"blocked"`) ||
+		!strings.Contains(string(blocked), `"availabilityReason":"HARNESS_CONTROL_UNAVAILABLE"`) {
+		t.Fatalf("blocked Task diagnostics omit the failure class: %s", blocked)
+	}
 }
 
 func TestTaskExecutionPublicationIsBestEffort(t *testing.T) {

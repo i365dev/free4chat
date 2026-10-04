@@ -46,8 +46,9 @@ type turnRetryPlan struct {
 // turnRetryState is the bounded autonomous retry budget of ONE canonical
 // pending turn. Plan is nil while the retry is running or already dispatched.
 type turnRetryState struct {
-	attempt int
-	plan    *turnRetryPlan
+	attempt      int
+	failureClass string
+	plan         *turnRetryPlan
 }
 
 // canonicalTurnKey identifies one canonical pending turn: the logical scope
@@ -87,6 +88,9 @@ func turnFailureClassOf(err error) string {
 	}
 	if errors.Is(err, errTaskHarnessControlUnavailable) {
 		return "HARNESS_CONTROL_UNAVAILABLE"
+	}
+	if errors.Is(err, errTaskHarnessControlApplyFailed) {
+		return "HARNESS_CONTROL_APPLY_FAILED"
 	}
 	return turnFailureOther
 }
@@ -149,6 +153,9 @@ func (r *ResidentRuntime) failTurn(
 	if retryable {
 		r.scheduleTurnRetry(scope, target, failureClass, elapsedMs)
 		if r.turnRecoveryClosed(scope, target) {
+			if errors.Is(err, errTaskHarnessControlApplyFailed) || errors.Is(err, errTaskHarnessControlUnavailable) {
+				r.markTaskControlUnavailable(scope, failureClass)
+			}
 			r.failPendingHumanTasks([]string{scope}, "Agent task failed before completion.")
 		}
 		return
@@ -160,6 +167,9 @@ func (r *ResidentRuntime) failTurn(
 	r.mu.Lock()
 	r.closeTurnRecoveryLocked(scope, target)
 	r.mu.Unlock()
+	if errors.Is(err, errTaskHarnessControlUnavailable) {
+		r.markTaskControlUnavailable(scope, failureClass)
+	}
 	r.failPendingHumanTasks([]string{scope}, "Agent task failed before completion.")
 }
 
@@ -206,6 +216,7 @@ func (r *ResidentRuntime) scheduleTurnRetry(scope string, target int64, failureC
 		state = &turnRetryState{}
 		r.turnRetries[key] = state
 	}
+	state.failureClass = failureClass
 	state.attempt++
 	attempt := state.attempt
 	if attempt > maxTurnRetryAttempts {
