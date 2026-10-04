@@ -1569,6 +1569,82 @@ describe("useSfuChatRoom Live Transcript RoomState wiring (#177 PR3)", () => {
     unmount()
   })
 
+  it("stages a long brief against the exact Task id before selected-project preparation", async () => {
+    const fetchMock = global.fetch as unknown as ReturnType<typeof vi.fn>
+    const originalFetch = fetchMock.getMockImplementation() as
+      | ((input: RequestInfo | URL, init?: RequestInit) => Promise<Response>)
+      | undefined
+    fetchMock.mockImplementation((input, init) => {
+      const url = typeof input === "string" ? input : input.toString()
+      if (url.endsWith("/api/room/attachments"))
+        return jsonResponse({ attachment: { id: "brief-attachment-1" } })
+      return originalFetch!(input, init)
+    })
+    const { result, unmount } = renderHook(() =>
+      useSfuChatRoom("project-brief-room", "Guest", "audio")
+    )
+    await waitFor(() => expect(RecordingWebSocket.instances).toHaveLength(1))
+    await waitFor(() =>
+      expect(result.current.getLocalRoomAuth()).toMatchObject({
+        participantId: "human-a",
+      })
+    )
+    const socket = RecordingWebSocket.instances[0]
+    act(() => socket.onopen?.())
+
+    const brief = new File(["full task-owned brief"], "task-brief.md", {
+      type: "text/markdown",
+    })
+    const pending = result.current.startTaskWithSession(
+      "agent-pi",
+      null,
+      "Implement this handoff",
+      "project-token-1",
+      undefined,
+      {},
+      brief
+    )
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([input]) =>
+          String(input).endsWith("/api/room/attachments")
+        )
+      ).toBe(true)
+    )
+    await waitFor(() =>
+      expect(
+        socket.sent.some(
+          (payload) => JSON.parse(payload).type === "task-session-start"
+        )
+      ).toBe(true)
+    )
+    const upload = fetchMock.mock.calls.find(([input]) =>
+      String(input).endsWith("/api/room/attachments")
+    )
+    expect(upload?.[1]?.body).toBe(brief)
+    const headers = new Headers(upload?.[1]?.headers)
+    const frame = JSON.parse(socket.sent.at(-1) ?? "{}")
+    expect(frame).toMatchObject({
+      type: "task-session-start",
+      projectToken: "project-token-1",
+      taskRequestId: headers.get("X-Task-Request-Id"),
+      attachmentIds: ["brief-attachment-1"],
+    })
+    expect(headers.get("X-Task-Attachment-Pending")).toBe("1")
+
+    act(() =>
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "task-session-start-result",
+          requestId: frame.requestId,
+          ok: true,
+        }),
+      })
+    )
+    await expect(pending).resolves.toEqual({ ok: true })
+    unmount()
+  })
+
   it("refuses a private session request without writing to a closed socket", async () => {
     const { result, unmount } = renderHook(() =>
       useSfuChatRoom("closed-room", "Guest", "audio")

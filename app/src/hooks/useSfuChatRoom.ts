@@ -4841,7 +4841,8 @@ export function useSfuChatRoom(
       summary: string,
       projectToken?: string,
       modeId?: string,
-      configOptions?: Record<string, string>
+      configOptions?: Record<string, string>,
+      brief?: File
     ): Promise<TaskSessionStartResult> => {
       const target = targetParticipantId.trim()
       const instruction = summary.trim()
@@ -4860,6 +4861,39 @@ export function useSfuChatRoom(
           ok: false,
           error: "session_continuation_unavailable",
         })
+      if (brief && !isAgentTextFile(brief))
+        return Promise.resolve({ ok: false, error: "invalid_session_control" })
+      const taskRequestId = brief ? crypto.randomUUID() : undefined
+      const stageBrief = async (): Promise<string | null> => {
+        if (!brief || !taskRequestId) return null
+        const session = sessionRef.current
+        if (!session) return ""
+        try {
+          const response = await fetch("/api/room/attachments", {
+            method: "POST",
+            headers: {
+              "Content-Type": agentTextMime(brief) ?? "text/markdown",
+              "X-Room-Id": roomName,
+              "X-Room-Participant-Id": session.participantId,
+              "X-Room-Participant-Token": session.participantToken,
+              "X-File-Name": encodeURIComponent(brief.name.slice(0, 256)),
+              "X-Task-Request-Id": taskRequestId,
+              [TASK_ATTACHMENT_PENDING_HEADER]: "1",
+            },
+            body: brief,
+          })
+          if (!response.ok) return ""
+          const payload = (await response.json().catch(() => null)) as {
+            attachment?: { id?: unknown }
+          } | null
+          return typeof payload?.attachment?.id === "string" &&
+            payload.attachment.id
+            ? payload.attachment.id
+            : ""
+        } catch {
+          return ""
+        }
+      }
       const requestId = crypto.randomUUID()
       return new Promise<TaskSessionStartResult>((settle) => {
         const timeout = setTimeout(() => {
@@ -4873,23 +4907,38 @@ export function useSfuChatRoom(
           ) => void,
           timeout,
         })
-        const sent = sendSocketMessage({
-          type: "task-session-start",
-          requestId,
-          targetParticipantId: target,
-          ...(sessionToken ? { sessionToken } : {}),
-          ...(projectToken ? { projectToken } : {}),
-          ...(modeId ? { modeId } : {}),
-          ...(configOptions ? { configOptions } : {}),
-          summary: instruction.slice(0, MAX_COLLAB_SUMMARY_LENGTH),
-        })
-        if (sent) return
-        pendingTaskSessionRequestsRef.current.delete(requestId)
-        clearTimeout(timeout)
-        settle({ ok: false, error: "session_continuation_unavailable" })
+        const sendStart = (attachmentId: string | null) => {
+          if (brief && !attachmentId) {
+            pendingTaskSessionRequestsRef.current.delete(requestId)
+            clearTimeout(timeout)
+            settle({ ok: false, error: "session_continuation_unavailable" })
+            return
+          }
+          const sent = sendSocketMessage({
+            type: "task-session-start",
+            requestId,
+            targetParticipantId: target,
+            ...(taskRequestId ? { taskRequestId } : {}),
+            ...(attachmentId ? { attachmentIds: [attachmentId] } : {}),
+            ...(sessionToken ? { sessionToken } : {}),
+            ...(projectToken ? { projectToken } : {}),
+            ...(modeId ? { modeId } : {}),
+            ...(configOptions ? { configOptions } : {}),
+            summary: instruction.slice(0, MAX_COLLAB_SUMMARY_LENGTH),
+          })
+          if (sent) return
+          pendingTaskSessionRequestsRef.current.delete(requestId)
+          clearTimeout(timeout)
+          settle({ ok: false, error: "session_continuation_unavailable" })
+        }
+        if (!brief) {
+          sendStart(null)
+          return
+        }
+        void stageBrief().then(sendStart)
       })
     },
-    [sendSocketMessage]
+    [roomName, sendSocketMessage]
   )
 
   const readRoomAttachment = useCallback(

@@ -434,6 +434,73 @@ describe("RoomSession Task Session Continuation (#409)", () => {
     ])
   })
 
+  it.each([
+    ["New Session in a selected project", { projectToken: "project-token-1" }],
+    ["Continue Session", { sessionToken: "session-token-1" }],
+  ])(
+    "carries a staged long brief through %s without project file semantics",
+    async (_name, selection) => {
+      const test = harness()
+      const humanSocket = test.connectHuman("human-1")
+      const agentSocket = recordDelivery(test, "agent-a")
+      const taskRequestId = crypto.randomUUID()
+      const attachmentId = crypto.randomUUID()
+      test.store.set("room", {
+        ...test.stored(),
+        attachments: [
+          {
+            id: attachmentId,
+            senderId: "human-1",
+            senderName: "human-1",
+            senderKind: "human",
+            mimeType: "text/markdown",
+            fileName: "task-brief.md",
+            size: 3439,
+            chunkCount: 1,
+            createdAt: Date.now(),
+            sequence: 1,
+            taskRequestId,
+            taskWake: false,
+          },
+        ],
+      })
+
+      await test.sendHuman(humanSocket, {
+        type: "task-session-start",
+        requestId: `browser-${_name}`,
+        targetParticipantId: "agent-a",
+        taskRequestId,
+        attachmentIds: [attachmentId],
+        summary: "Detailed project handoff",
+        ...selection,
+      })
+
+      const prepare = test.sessionControls("agent-a")[0]
+      expect(prepare).toMatchObject({
+        type: "task-session-control",
+        operation: "prepare",
+        taskRequestId,
+        ...selection,
+      })
+      await test.sendAgent(agentSocket, {
+        type: "task-session-result",
+        operation: "prepare",
+        requestId: pendingControlRequestId(agentSocket),
+        ok: true,
+      })
+
+      expect(test.stored().messages[0].collab).toMatchObject({
+        requestId: taskRequestId,
+        summary: "Detailed project handoff",
+        attachmentIds: [attachmentId],
+      })
+      expect(test.stored().attachments[0].taskRequestId).toBe(taskRequestId)
+      expect(test.stored().messages[0].collab?.attachmentIds).toEqual([
+        attachmentId,
+      ])
+    }
+  )
+
   it("creates no canonical Task and no Harness turn when the preparation fails", async () => {
     const test = harness()
     const humanSocket = test.connectHuman("human-1")

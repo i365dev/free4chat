@@ -401,10 +401,11 @@ interface PendingTaskSessionDiscovery {
 
 interface PendingTaskSessionStart {
   requestId: string
-  /** Canonical collaboration requestId, generated before PREPARE was sent. */
+  /** Canonical collaboration requestId, fixed before PREPARE was sent. */
   taskRequestId: string
   targetAgentId: string
   summary: string
+  attachmentIds?: string[]
   expiresAt: number
 }
 
@@ -1005,6 +1006,8 @@ type ClientMessage =
       type: "task-session-start"
       requestId: string
       targetParticipantId: string
+      taskRequestId?: string
+      attachmentIds?: string[]
       sessionToken?: string
       projectToken?: string
       modeId?: string
@@ -3498,6 +3501,34 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       reject("invalid_session_control")
       return
     }
+    const taskRequestId = message.taskRequestId ?? crypto.randomUUID()
+    if (!isCanonicalCollabRequestId(taskRequestId)) {
+      reject("invalid_session_control")
+      return
+    }
+    const references = this.humanTaskContextReferenceIds(
+      room,
+      participant,
+      message.attachmentIds
+    )
+    if (references.ok === false) {
+      reject("invalid_session_control")
+      return
+    }
+    if (
+      (references.ids && message.taskRequestId === undefined) ||
+      (references.ids &&
+        references.ids.some(
+          (id) =>
+            room.attachments.find((attachment) => attachment.id === id)
+              ?.taskRequestId !== taskRequestId
+        ))
+    ) {
+      // The attachment is Task-owned context. It must already be staged by
+      // this Human against the exact canonical Task id before PREPARE begins.
+      reject("invalid_session_control")
+      return
+    }
     const modeId = message.modeId
     if (modeId !== undefined && !isValidHarnessControlText(modeId)) {
       reject("invalid_session_control")
@@ -3534,15 +3565,15 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       reject("task_session_busy")
       return
     }
-    // The canonical Task identity is generated BEFORE the preparation, so the
-    // Runtime can pin the adoption to exactly this id. It is indistinguishable
-    // from any other Human-created Task from here on.
-    const taskRequestId = crypto.randomUUID()
+    // The canonical Task identity is fixed BEFORE preparation, either by the
+    // browser when it has staged Task-owned brief context or here otherwise.
+    // It is indistinguishable from any other Human-created Task from here on.
     attachment.pendingTaskSessionStart = {
       requestId,
       taskRequestId,
       targetAgentId: target.id,
       summary,
+      ...(references.ids ? { attachmentIds: references.ids } : {}),
       expiresAt: now + TASK_SESSION_PENDING_TTL_MS,
     }
     try {
@@ -3772,6 +3803,9 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         requestId: record.taskRequestId,
         targetParticipantId: record.targetAgentId,
         summary: record.summary,
+        ...(record.attachmentIds
+          ? { attachmentIds: record.attachmentIds }
+          : {}),
       })
       appended = ingest.status !== "rejected"
       continuationCreatedTask = ingest.status === "recorded"

@@ -83,6 +83,23 @@ import { useSfuChatRoom, type RoomMicState } from "../hooks/useSfuChatRoom"
 import { useTurnstile } from "../hooks/useTurnstile"
 import type { TaskExecutionProjection } from "../room/types"
 
+function taskSessionConfigLabel(
+  option: RelayHarnessSessionControls["configOptions"][number],
+  controls: RelayHarnessSessionControls
+): string {
+  const label = option.name || option.id
+  const collisionCount =
+    Number(
+      controls.modes.length > 0 && label.trim().toLocaleLowerCase() === "mode"
+    ) +
+    controls.configOptions.filter(
+      (candidate) =>
+        (candidate.name || candidate.id).trim().toLocaleLowerCase() ===
+        label.trim().toLocaleLowerCase()
+    ).length
+  return collisionCount > 1 ? `${label} (${option.id})` : label
+}
+
 const MAX_FILE_SIZE = 20 * 1024 * 1024
 
 type TaskAgent = { peerId: string; name: string }
@@ -1772,13 +1789,7 @@ export default function RoomContent({
           TASK_BRIEF_DEFAULT_LABEL
         : ""
       if (taskSessionMode === "new" || !taskAgentContinuation) {
-        if (taskBrief) {
-          if (taskSessionProjectToken) {
-            setTaskError(
-              "Remove the task brief before starting in a selected project."
-            )
-            return
-          }
+        if (taskBrief && !taskSessionProjectToken) {
           setTaskError("")
           setTaskStarting(true)
           const started = await startTaskWithBrief(
@@ -1805,10 +1816,11 @@ export default function RoomContent({
           const result = await startTaskWithSession(
             taskAgent.peerId,
             null,
-            taskInstruction,
+            taskBrief ? briefSummary : taskInstruction,
             taskSessionProjectToken,
             taskSessionModeId || undefined,
-            taskSessionConfigOptions
+            taskSessionConfigOptions,
+            taskBrief ?? undefined
           )
           setTaskStarting(false)
           if (result.ok === false) {
@@ -1842,7 +1854,8 @@ export default function RoomContent({
         taskBrief ? briefSummary : taskInstruction,
         undefined,
         taskSessionModeId || undefined,
-        taskSessionConfigOptions
+        taskSessionConfigOptions,
+        taskBrief ?? undefined
       )
       setTaskStarting(false)
       if (result.ok === false) {
@@ -3722,11 +3735,12 @@ export default function RoomContent({
                         key={option.id}
                         className="mb-2 block text-xs text-gray-300"
                       >
-                        {option.name || option.id}
+                        {taskSessionConfigLabel(option, taskSessionControls)}
                         <select
-                          aria-label={`Harness-native ${
-                            option.name || option.id
-                          }`}
+                          aria-label={`Harness-native ${taskSessionConfigLabel(
+                            option,
+                            taskSessionControls
+                          )}`}
                           value={taskSessionConfigOptions[option.id] ?? ""}
                           disabled={taskStarting}
                           onChange={(event) =>
