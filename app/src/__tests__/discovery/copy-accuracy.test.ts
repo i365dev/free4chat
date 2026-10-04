@@ -94,7 +94,7 @@ describe("Runtime host and Human supervision platform copy", () => {
 
   it("keeps Agent-enabled Room App claims limited to selected Apps and Whiteboard", () => {
     const useCases = read("src/pages/use-cases.tsx").replace(/\s+/g, " ")
-    expect(useCases).toMatch(/Selected Room Apps/)
+    expect(useCases).toMatch(/Selected curated Room Apps/)
     expect(useCases).toMatch(/production Whiteboard/)
     expect(useCases).toMatch(/not a promise about every Room App/)
     expect(useCases).not.toMatch(

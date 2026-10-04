@@ -64,6 +64,33 @@ second copy of the whole App. Semantic state comes first. A screenshot,
 computer-use, or pixel-based path is justified only if a real App proves its
 semantic state is insufficient.
 
+## Shared artifact collaboration
+
+In this pattern, a Human works through the App's normal interface while an
+independently running Agent uses the generic `room_app_request` boundary to
+discover and call the App's own semantic contract:
+
+```text
+Human → direct UI and gestures ───────────┐
+                                          ├→ same App-native artifact/state
+Agent → room_app_request → describe/observe/action ┘
+                                          ↓
+                              ordinary App convergence
+```
+
+The App owns the meaning of its actions and the synchronization of its shared
+state. For example, Whiteboard Humans draw or move elements directly while a
+participating Agent observes bounded scene semantics and asks the App to add a
+sticky note, connect supported nodes, or arrange diagram elements. Both
+continue working on the same native, Human-editable artifact.
+
+Semantic operations express higher-level intent, are bounded and validated by
+the App, and leave a native artifact Humans can continue editing. They avoid
+making the Agent imitate mouse gestures for work the App can express directly.
+The semantic interface does not imply screenshot access, pixel-level feedback,
+or arbitrary control of the App. A Human explicitly initiates the authorized
+request path; App changes do not wake or background-notify an Agent.
+
 ## Discovery and bounded requests
 
 The resident Runtime discovers current callable curated Apps from the Room's

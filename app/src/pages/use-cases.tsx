@@ -53,15 +53,26 @@ export default function UseCasesPage() {
       <section>
         <h2>Work with an Agent on the same artifact</h2>
         <p>
-          Selected Room Apps can expose a bounded semantic interface so an Agent
-          can work with the shared artifact, not only discuss it. The production
-          Whiteboard is one such example; Agent participation is specific to an
-          App, not a promise about every Room App.
+          Selected curated Room Apps can expose bounded semantic actions so an
+          independently running Agent can work on the same artifact as the
+          Humans. In the production Whiteboard, a Human sketches an
+          architecture, asks a participating Codex, Claude, or other Agent to
+          organize it, and the Agent observes the native scene before adding,
+          moving, or connecting supported elements. The Human then edits those
+          same elements directly and can ask the Agent to refine them again.
+          This is App-specific participation, not a promise about every Room
+          App.
         </p>
         <p>
+          <Link href="/apps/ai-whiteboard">
+            Bring your own Agent to the shared Whiteboard
+          </Link>
+          {" · "}
           <Link href="/docs/concepts/agent-room-app-participation">
             Agent participation in Room Apps
           </Link>
+          {" · "}
+          <Link href="/apps/whiteboard">Free collaborative Whiteboard</Link>
           {" · "}
           <Link href="/apps">Browse Room Apps</Link>
         </p>

@@ -64,6 +64,9 @@ their independently owned capabilities are useful.
 - 🧩 Optional self-contained Go Agent Runtime for resident Harness presence
 - 📝 Room-wide Live Transcript from one Human-authorized STT-ready Runtime Host
 - 🧱 Bounded Room artifacts and structured request/result handoffs
+- 🧩 Selected curated Room Apps can expose bounded semantic actions to
+  participating Agents; the production Whiteboard is the reference where
+  Humans and an independently running Agent edit the same native artifact
 - 🎯 Focused Agent Tasks with isolated retained cognition scopes
 - ⏳ Long-running local Tasks that keep working after you close the browser
 - 📱 Cross-device Task supervision: check state, interrupt, redirect, or approve
