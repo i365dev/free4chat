@@ -243,7 +243,8 @@ describe("RoomAppHost", () => {
       />
     )
     const iframe = screen.getByTestId("room-app-iframe") as HTMLIFrameElement
-    expect(iframe.getAttribute("sandbox")).toBe("allow-scripts")
+    expect(iframe.getAttribute("sandbox")).toBe("allow-scripts allow-downloads")
+    expect(iframe.getAttribute("sandbox")).not.toContain("allow-same-origin")
     expect(iframe.getAttribute("allow")).toBe("")
     expect(iframe.getAttribute("referrerpolicy")).toBe("no-referrer")
     expect(iframe.src).toContain(app.url)
@@ -317,7 +318,7 @@ describe("RoomAppHost", () => {
     )
 
     const iframe = screen.getByTestId("room-app-iframe")
-    expect(iframe).toHaveAttribute("sandbox", "allow-scripts")
+    expect(iframe).toHaveAttribute("sandbox", "allow-scripts allow-downloads")
     expect(iframe).toHaveAttribute("allow", "clipboard-write")
     expect(iframe.getAttribute("allow")).not.toContain("clipboard-read")
     expect(iframe.getAttribute("sandbox")).not.toContain("allow-same-origin")
@@ -345,7 +346,15 @@ describe("RoomAppHost", () => {
       onClose: () => undefined,
     }
     const rendered = render(<RoomAppHost {...props} />)
-    expect(screen.getByTestId("room-app-iframe")).toHaveAttribute("allow", "")
+    const generatedIframe = screen.getByTestId("room-app-iframe")
+    expect(generatedIframe).toHaveAttribute("sandbox", "allow-scripts")
+    expect(generatedIframe.getAttribute("sandbox")).not.toContain(
+      "allow-downloads"
+    )
+    expect(generatedIframe.getAttribute("sandbox")).not.toContain(
+      "allow-same-origin"
+    )
+    expect(generatedIframe).toHaveAttribute("allow", "")
     rendered.unmount()
 
     const malformed = {
