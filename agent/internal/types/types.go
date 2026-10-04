@@ -781,18 +781,18 @@ type RoomEvent struct {
 	// ordinary Room conversation; task/request producers may set it to route
 	// an addressed event to one logical Agent scope without changing Room
 	// transport ownership.
-	ScopeID       string                  `json:"scopeId,omitempty"`
+	ScopeID string `json:"scopeId,omitempty"`
 	// SupersedesThroughSequence is set only by an authenticated Room operation
 	// where a Human explicitly replaces not-yet-started Task instructions.
-	SupersedesThroughSequence int64 `json:"supersedesThroughSequence,omitempty"`
-	Text          string                  `json:"text,omitempty"`
-	ActionType    string                  `json:"actionType,omitempty"`
-	ActionPayload map[string]string       `json:"actionPayload,omitempty"`
-	Collab        *WireCollabEvent        `json:"collab,omitempty"`
-	Permission    *RoomPermissionEvent    `json:"permission,omitempty"`
-	Attachment    *RoomAttachmentMetadata `json:"attachment,omitempty"`
-	Addressed     bool                    `json:"addressed"`
-	CreatedAt     int64                   `json:"createdAt"`
+	SupersedesThroughSequence int64                   `json:"supersedesThroughSequence,omitempty"`
+	Text                      string                  `json:"text,omitempty"`
+	ActionType                string                  `json:"actionType,omitempty"`
+	ActionPayload             map[string]string       `json:"actionPayload,omitempty"`
+	Collab                    *WireCollabEvent        `json:"collab,omitempty"`
+	Permission                *RoomPermissionEvent    `json:"permission,omitempty"`
+	Attachment                *RoomAttachmentMetadata `json:"attachment,omitempty"`
+	Addressed                 bool                    `json:"addressed"`
+	CreatedAt                 int64                   `json:"createdAt"`
 
 	// Runtime-enriched fields set by attachment enrichment before the event
 	// reaches the Harness (never present in raw server payloads).
