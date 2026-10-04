@@ -49,6 +49,7 @@ export const TASK_SESSION_ERRORS = [
   "task_session_busy",
   "task_agent_not_reachable",
   "task_session_not_pending",
+  "task_request_id_in_use",
 ] as const
 
 export type TaskSessionError = (typeof TASK_SESSION_ERRORS)[number]
@@ -79,6 +80,8 @@ export function taskSessionErrorMessage(error: TaskSessionError): string {
       return "That Agent is not reachable right now."
     case "task_session_not_pending":
       return "The session request expired. Refresh sessions and try again."
+    case "task_request_id_in_use":
+      return "That Task request is already in use. Start a new request."
     case "task_project_unavailable":
       return "That local project is no longer available. Refresh projects and try again."
     case "task_harness_control_unavailable":

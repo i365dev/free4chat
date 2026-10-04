@@ -3506,6 +3506,14 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       reject("invalid_session_control")
       return
     }
+    // Match the ordinary collab-request uniqueness check before asking the
+    // Runtime to prepare. A reused canonical Task id cannot arm an orphaned
+    // adoption or turn duplicate ingestion into a successful start.
+    this.warmCollabRegistry(room)
+    if (this.collabRegistry.find(taskRequestId)) {
+      reject("task_request_id_in_use")
+      return
+    }
     const references = this.humanTaskContextReferenceIds(
       room,
       participant,
@@ -3807,7 +3815,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           ? { attachmentIds: record.attachmentIds }
           : {}),
       })
-      appended = ingest.status !== "rejected"
+      appended = ingest.status === "recorded"
       continuationCreatedTask = ingest.status === "recorded"
     } catch {
       // A controlled append refusal (for example the primary Room record

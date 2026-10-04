@@ -4900,14 +4900,23 @@ export function useSfuChatRoom(
           pendingTaskSessionRequestsRef.current.delete(requestId)
           settle({ ok: false, error: "session_continuation_unavailable" })
         }, TASK_SESSION_CLIENT_TIMEOUT_MS)
-        pendingTaskSessionRequestsRef.current.set(requestId, {
+        const pendingRequest = {
           kind: "start",
           settle: settle as (
             result: TaskSessionListResult | TaskSessionStartResult
           ) => void,
           timeout,
-        })
+        } as const
+        pendingTaskSessionRequestsRef.current.set(requestId, pendingRequest)
         const sendStart = (attachmentId: string | null) => {
+          // Brief staging is asynchronous and may outlive the client timeout
+          // or a socket close. Only the exact still-pending request may cross
+          // the wire; a late upload must never create work after failure.
+          if (
+            pendingTaskSessionRequestsRef.current.get(requestId) !==
+            pendingRequest
+          )
+            return
           if (brief && !attachmentId) {
             pendingTaskSessionRequestsRef.current.delete(requestId)
             clearTimeout(timeout)

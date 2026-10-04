@@ -1788,6 +1788,7 @@ export default function RoomContent({
           taskBriefLabel(taskBriefText.current) ||
           TASK_BRIEF_DEFAULT_LABEL
         : ""
+      const taskSummary = taskBrief ? briefSummary : taskInstruction.trim()
       if (taskSessionMode === "new" || !taskAgentContinuation) {
         if (taskBrief && !taskSessionProjectToken) {
           setTaskError("")
@@ -1816,7 +1817,7 @@ export default function RoomContent({
           const result = await startTaskWithSession(
             taskAgent.peerId,
             null,
-            taskBrief ? briefSummary : taskInstruction,
+            taskSummary,
             taskSessionProjectToken,
             taskSessionModeId || undefined,
             taskSessionConfigOptions,
@@ -1827,7 +1828,7 @@ export default function RoomContent({
             setTaskError(taskSessionErrorMessage(result.error))
             return
           }
-          pendingLocalTaskSummaries.current.push(taskInstruction.trim())
+          pendingLocalTaskSummaries.current.push(taskSummary)
           closeTaskComposer()
           return
         }
@@ -1851,7 +1852,7 @@ export default function RoomContent({
       const result = await startTaskWithSession(
         taskAgent.peerId,
         selection.token,
-        taskBrief ? briefSummary : taskInstruction,
+        taskSummary,
         undefined,
         taskSessionModeId || undefined,
         taskSessionConfigOptions,
@@ -1865,9 +1866,7 @@ export default function RoomContent({
         setTaskError(taskSessionErrorMessage(result.error))
         return
       }
-      pendingLocalTaskSummaries.current.push(
-        taskBrief ? briefSummary : taskInstruction.trim()
-      )
+      pendingLocalTaskSummaries.current.push(taskSummary)
       setTaskAgent(null)
       setTaskInstruction("")
       setTaskError("")

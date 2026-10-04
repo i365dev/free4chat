@@ -1645,6 +1645,171 @@ describe("useSfuChatRoom Live Transcript RoomState wiring (#177 PR3)", () => {
     unmount()
   })
 
+  it("does not send a timed-out staged brief when a retry starts", async () => {
+    const fetchMock = global.fetch as unknown as ReturnType<typeof vi.fn>
+    const originalFetch = fetchMock.getMockImplementation() as
+      | ((input: RequestInfo | URL, init?: RequestInit) => Promise<Response>)
+      | undefined
+    const uploads: Array<(response: Response) => void> = []
+    fetchMock.mockImplementation((input, init) => {
+      const url = typeof input === "string" ? input : input.toString()
+      if (url.endsWith("/api/room/attachments"))
+        return new Promise<Response>((resolve) => uploads.push(resolve))
+      return originalFetch!(input, init)
+    })
+    const { result, unmount } = renderHook(() =>
+      useSfuChatRoom("project-brief-timeout-room", "Guest", "audio")
+    )
+    await waitFor(() => expect(RecordingWebSocket.instances).toHaveLength(1))
+    const socket = RecordingWebSocket.instances[0]
+    act(() => socket.onopen?.())
+    const brief = new File(["retry-safe brief"], "task-brief.md", {
+      type: "text/markdown",
+    })
+
+    vi.useFakeTimers()
+    try {
+      const timedOut = result.current.startTaskWithSession(
+        "agent-pi",
+        null,
+        "Retry-safe brief",
+        "project-token-1",
+        undefined,
+        {},
+        brief
+      )
+      expect(uploads).toHaveLength(1)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(25_001)
+      })
+      await expect(timedOut).resolves.toEqual({
+        ok: false,
+        error: "session_continuation_unavailable",
+      })
+
+      const retry = result.current.startTaskWithSession(
+        "agent-pi",
+        null,
+        "Retry-safe brief",
+        "project-token-1",
+        undefined,
+        {},
+        brief
+      )
+      expect(uploads).toHaveLength(2)
+      await act(async () => {
+        uploads[1]!(
+          (await jsonResponse({
+            attachment: { id: "retry-attachment" },
+          })) as Response
+        )
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      const starts = () =>
+        socket.sent
+          .map((payload) => JSON.parse(payload))
+          .filter((frame) => frame.type === "task-session-start")
+      expect(starts()).toHaveLength(1)
+      expect(starts()[0].attachmentIds).toEqual(["retry-attachment"])
+
+      await act(async () => {
+        uploads[0]!(
+          (await jsonResponse({
+            attachment: { id: "late-first-attachment" },
+          })) as Response
+        )
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      expect(starts()).toHaveLength(1)
+      expect(starts()[0].attachmentIds).toEqual(["retry-attachment"])
+
+      act(() =>
+        socket.onmessage?.({
+          data: JSON.stringify({
+            type: "task-session-start-result",
+            requestId: starts()[0].requestId,
+            ok: true,
+          }),
+        })
+      )
+      await expect(retry).resolves.toEqual({ ok: true })
+    } finally {
+      vi.useRealTimers()
+      unmount()
+    }
+  })
+
+  it("does not send a brief when its socket closes during staging", async () => {
+    const fetchMock = global.fetch as unknown as ReturnType<typeof vi.fn>
+    const originalFetch = fetchMock.getMockImplementation() as
+      | ((input: RequestInfo | URL, init?: RequestInit) => Promise<Response>)
+      | undefined
+    let finishUpload: ((response: Response) => void) | undefined
+    fetchMock.mockImplementation((input, init) => {
+      const url = typeof input === "string" ? input : input.toString()
+      if (url.endsWith("/api/room/attachments"))
+        return new Promise<Response>((resolve) => {
+          finishUpload = resolve
+        })
+      return originalFetch!(input, init)
+    })
+    const { result, unmount } = renderHook(() =>
+      useSfuChatRoom("project-brief-cancel-room", "Guest", "audio")
+    )
+    await waitFor(() => expect(RecordingWebSocket.instances).toHaveLength(1))
+    const firstSocket = RecordingWebSocket.instances[0]
+    act(() => firstSocket.onopen?.())
+    const brief = new File(["cancel-safe brief"], "task-brief.md", {
+      type: "text/markdown",
+    })
+
+    vi.useFakeTimers()
+    try {
+      const pending = result.current.startTaskWithSession(
+        "agent-pi",
+        null,
+        "Cancel-safe brief",
+        "project-token-1",
+        undefined,
+        {},
+        brief
+      )
+      expect(finishUpload).toBeTypeOf("function")
+      act(() => firstSocket.onclose?.())
+      await expect(pending).resolves.toEqual({
+        ok: false,
+        error: "session_continuation_unavailable",
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000)
+      })
+      expect(RecordingWebSocket.instances).toHaveLength(2)
+      const reconnectedSocket = RecordingWebSocket.instances[1]
+      act(() => reconnectedSocket.onopen?.())
+
+      await act(async () => {
+        finishUpload!(
+          (await jsonResponse({
+            attachment: { id: "cancelled-attachment" },
+          })) as Response
+        )
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      const starts = RecordingWebSocket.instances.flatMap((socket) =>
+        socket.sent
+          .map((payload) => JSON.parse(payload))
+          .filter((frame) => frame.type === "task-session-start")
+      )
+      expect(starts).toHaveLength(0)
+    } finally {
+      vi.useRealTimers()
+      unmount()
+    }
+  })
+
   it("refuses a private session request without writing to a closed socket", async () => {
     const { result, unmount } = renderHook(() =>
       useSfuChatRoom("closed-room", "Guest", "audio")

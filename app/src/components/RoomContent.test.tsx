@@ -493,7 +493,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
 
   it("starts a selected-project New Session with the full long brief as Task context", async () => {
     const startTaskWithSession = vi.fn(async () => ({ ok: true as const }))
-    mockUseSfuChatRoom.mockReturnValue({
+    const roomHook = {
       ...baseHookReturn,
       connectionStatus: "connected",
       startTaskWithSession,
@@ -523,9 +523,10 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
           controls: { modes: [], configOptions: [] },
         },
       })),
-    })
+    }
+    mockUseSfuChatRoom.mockReturnValue(roomHook)
 
-    render(
+    const { rerender } = render(
       <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
     )
     fireEvent.click(screen.getAllByLabelText("Start task with Codex")[0])
@@ -567,6 +568,32 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     })
     expect(briefContent).toBe(brief)
     expect(screen.queryByText(/remove the task brief/i)).not.toBeInTheDocument()
+
+    roomHook.messages = [
+      {
+        peerId: "human-local",
+        name: "tester",
+        kind: "human",
+        type: "action",
+        actionType: "collab",
+        sequence: 1,
+        collab: {
+          requestId: "project-brief-task",
+          kind: "request",
+          fromParticipantId: "human-local",
+          targetParticipantId: "agent-codex",
+          summary: "Selected project handoff",
+        },
+      },
+    ]
+    rerender(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("interaction-tab-task-project-brief-task")
+      ).toHaveAttribute("aria-selected", "true")
+    )
   })
 
   it("keeps an ordinary short instruction on the selected-project start path", async () => {

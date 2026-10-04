@@ -409,7 +409,8 @@ describe("Start Task with an existing local session (#409)", () => {
       "Continue this work",
       undefined,
       undefined,
-      {}
+      {},
+      undefined
     )
     resolveStart({ ok: true })
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
