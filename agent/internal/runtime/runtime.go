@@ -1653,7 +1653,7 @@ func (r *ResidentRuntime) acceptEvent(event types.RoomEvent) {
 	r.eventBuffer.Add(event)
 	if event.SupersedesThroughSequence > 0 {
 		if ref := r.sessionRefLocked(scope); ref != nil {
-			r.supersedePendingHumanTextLocked(scope, ref, event.SupersedesThroughSequence)
+			r.supersedePendingHumanInstructionsLocked(scope, ref, event.SupersedesThroughSequence)
 		}
 	}
 	if newScope {

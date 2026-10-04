@@ -1176,12 +1176,13 @@ func (r *ResidentRuntime) collapseDeliveredPrefixLocked(scope string, ref *logic
 	return removed
 }
 
-// supersedePendingHumanTextLocked records an explicit Human decision to replace
-// earlier, not-yet-started Task text. The canonical Room messages remain in
+// supersedePendingHumanInstructionsLocked records an explicit Human decision
+// to replace earlier, not-yet-started addressed Task text or attachment
+// instructions. The canonical Room messages remain in
 // history; superseded targets advance the existing delivery cursor and can
 // never be replayed. A lane that has already started is always preserved.
 // Callers hold r.mu and pass a Room-authenticated Human text event boundary.
-func (r *ResidentRuntime) supersedePendingHumanTextLocked(scope string, ref *logicalSessionRef, through int64) int {
+func (r *ResidentRuntime) supersedePendingHumanInstructionsLocked(scope string, ref *logicalSessionRef, through int64) int {
 	if ref == nil || ref.pendingAddressed == nil || ref.pendingContexts == nil {
 		return 0
 	}
@@ -1204,7 +1205,9 @@ func (r *ResidentRuntime) supersedePendingHumanTextLocked(scope string, ref *log
 			continue
 		}
 		trigger := context.events[len(context.events)-1]
-		if trigger.Sequence != sequence || trigger.Type != "text" || !trigger.Addressed || trigger.Participant.Kind != types.KindHuman {
+		if trigger.Sequence != sequence ||
+			(trigger.Type != "text" && trigger.Type != "image") ||
+			!trigger.Addressed || trigger.Participant.Kind != types.KindHuman {
 			continue
 		}
 		context.superseded = true

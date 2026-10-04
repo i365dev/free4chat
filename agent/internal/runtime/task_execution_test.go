@@ -372,6 +372,47 @@ func TestExplicitTaskReplacementUnparksClosedHeadWithoutReplayingOldMessages(t *
 	}
 }
 
+func TestExplicitTaskReplacementSupersedesPendingHumanAttachmentInstruction(t *testing.T) {
+	rt, adapter, _ := newExecutionRuntime(t)
+	defer rt.Stop()
+
+	initial := startTurn(rt, scopedEvent(150, "task:req-T", "initial task"))
+	adapter.releaseTurn()
+	waitForDone(t, initial, "initial Task turn to settle")
+
+	attachment := types.RoomEvent{
+		Sequence: 151,
+		Type:     "image",
+		Participant: types.ParticipantIdentity{
+			ID: "human", Name: "Human", Kind: types.KindHuman,
+		},
+		Attachment: &types.RoomAttachmentMetadata{ID: "attachment-1", FileName: "input.png", MimeType: "image/png"},
+		ScopeID:    "task:req-T",
+		Addressed:  true,
+	}
+	rt.acceptEvent(attachment)
+	rt.failTurn("task:req-T", 151, "harness", turnFailureSession, time.Now(), errAdoptedSessionUnavailable, false)
+	if got := rt.pendingAddressedSnapshotFor("task:req-T"); !reflect.DeepEqual(got, []int64{151}) {
+		t.Fatalf("failed attachment instruction was not retained as the canonical head: %v", got)
+	}
+
+	replacement := scopedEvent(152, "task:req-T", "replace the waiting attachment instruction")
+	replacement.SupersedesThroughSequence = 151
+	rt.acceptEvent(replacement)
+	rt.drainTurns()
+
+	runs, details := adapter.scopedRunSnapshot()
+	if !reflect.DeepEqual(runs, []string{"task:req-T", "task:req-T"}) {
+		t.Fatalf("explicit replacement did not progress past the attachment head exactly once: runs=%v", runs)
+	}
+	if got := details["task:req-T"]; !reflect.DeepEqual(got, []string{"initial task", "replace the waiting attachment instruction"}) {
+		t.Fatalf("superseded attachment instruction reached the Harness: %v", got)
+	}
+	if got := rt.pendingAddressedSnapshotFor("task:req-T"); len(got) != 0 {
+		t.Fatalf("attachment replacement left superseded work pending: %v", got)
+	}
+}
+
 func TestClosedHarnessFollowupProjectsBlockedInsteadOfQueued(t *testing.T) {
 	rt, adapter, client := newExecutionRuntime(t)
 	defer rt.Stop()

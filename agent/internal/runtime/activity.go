@@ -333,10 +333,12 @@ func (r *ResidentRuntime) clearActivityFor(failed map[string]struct{}) {
 }
 
 func (r *ResidentRuntime) reconcileActivityTransport() {
+	handle := r.currentHandle()
 	r.activityPublishMu.Lock()
 	// The Room clears socket-owned activity when the resident stream closes.
-	// Preserve Runtime-owned active-turn and interrupt identities so bounded
-	// execution reconciliation can publish the exact live turn after reconnect.
+	// Preserve Runtime-owned active-turn and interrupt identities and enqueue
+	// their current activity again so the Room regains the same live projection
+	// after reconnect (including Room-scope turns, which have no Task fallback).
 	// Drop queued nonempty frames from the old transport; a queued clear stays
 	// behind any in-flight publication so it cannot resurrect stale state.
 	for scope, publication := range r.activityPublishQueue {
@@ -344,5 +346,29 @@ func (r *ResidentRuntime) reconcileActivityTransport() {
 			delete(r.activityPublishQueue, scope)
 		}
 	}
+	if handle != "" {
+		if r.activityPublishQueue == nil {
+			r.activityPublishQueue = make(map[string]activityPublication)
+		}
+		// Keep both locks through enqueue. A concurrent finish either happens
+		// before this snapshot (so nothing stale is copied) or publishes its
+		// clear after us (so newest-state coalescing wins).
+		r.activityMu.Lock()
+		for scope, activity := range r.activities {
+			r.activityPublishQueue[scope] = activityPublication{
+				handle:       handle,
+				state:        activity.state,
+				turnSequence: activity.sequence,
+			}
+		}
+		r.activityMu.Unlock()
+	}
+	startPublisher := len(r.activityPublishQueue) > 0 && !r.activityPublisherActive
+	if startPublisher {
+		r.activityPublisherActive = true
+	}
 	r.activityPublishMu.Unlock()
+	if startPublisher {
+		go r.drainActivityPublications()
+	}
 }
