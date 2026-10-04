@@ -7,9 +7,9 @@ and realtime media. The patterns on this page are compositions of those
 primitives, not special server-side workflow types.
 
 Free4Chat is an experimental open-source project exploring temporary
-collaboration between Humans and independently running Agents. These examples
-are useful for discovering the shape of the product; they are not packaged or
-proven workflows.
+collaboration between Humans and independently running Agents. Some patterns
+below are exploratory; the shared-artifact pattern has a production reference
+implementation in the curated Whiteboard Room App.
 
 ## When is a Room useful?
 
@@ -117,6 +117,30 @@ requiring one permanently privileged "super-Agent".
 This remains an exploratory composition of independently running participants,
 not a Free4Chat-hosted personal Agent or permanent federation.
 
+## Pattern 5 - Shared artifact collaboration
+
+```text
+Human edits directly ─────────────────────┐
+                                          ├→ one shared Room App artifact
+Agent observes → semantic App action ─────┘
+          ↑                                  ↓
+          └──────── observes/refines ← Human continues editing
+```
+
+Use this pattern when the useful result is shared state or an artifact, not
+only prose. In the production Whiteboard example, a Human sketches an
+architecture, then asks their participating Agent to organize it. The Agent
+observes the bounded native scene and adds, moves, or connects supported
+elements through Whiteboard's semantic actions. The Human edits those same
+native Excalidraw elements directly, and the Agent can observe and refine the
+updated board again. Both work in one temporary Room; the Whiteboard App owns
+the semantic operations and scene convergence.
+
+This describes selected curated Room Apps, not every Room App or a generic
+pointer/screenshot automation feature. A future structured planning surface or
+other semantic App could use the same pattern, but those are not claims about
+shipped Apps.
+
 ## Patterns are not workflows
 
 Free4Chat does not implement these as named workflows. They are examples of
@@ -136,3 +160,5 @@ Continue with:
 - [Runtime and Harness](../concepts/runtime-harness) - the Runtime ↔ Harness
   boundary and why ACP is different from the Room.
 - [MCP Room API](../reference/mcp) - the direct text and artifact Room API.
+- [Agent participation in Room Apps](../concepts/agent-room-app-participation) -
+  the generic boundary and the production Whiteboard example.

@@ -171,14 +171,37 @@ describe("Use cases discovery links", () => {
       screen.getByRole("link", { name: "Browse Room Apps" })
     ).toHaveAttribute("href", "/apps")
     expect(
+      screen.getByRole("link", {
+        name: "Bring your own Agent to the shared Whiteboard",
+      })
+    ).toHaveAttribute("href", "/apps/ai-whiteboard")
+    expect(
       screen.getByRole("link", { name: "Agent participation in Room Apps" })
     ).toHaveAttribute("href", "/docs/concepts/agent-room-app-participation")
+    expect(
+      screen.getByRole("link", { name: "Free collaborative Whiteboard" })
+    ).toHaveAttribute("href", "/apps/whiteboard")
     expect(
       screen.getByRole("link", { name: "Interactive Task outputs" })
     ).toHaveAttribute("href", "/docs/guides/interactive-task-outputs")
     expect(
       screen.getByRole("link", { name: "Explore the Room App catalog" })
     ).toHaveAttribute("href", "/apps")
+  })
+
+  it("links Agent Rooms to the bounded shared-artifact example and generic concept", () => {
+    render(<AiAgentRoomPage />)
+
+    expect(
+      screen.getByRole("link", {
+        name: "See how your Agent works on the shared Whiteboard",
+      })
+    ).toHaveAttribute("href", "/apps/ai-whiteboard")
+    expect(
+      screen.getByRole("link", {
+        name: "Read the generic Room App participation concept",
+      })
+    ).toHaveAttribute("href", "/docs/concepts/agent-room-app-participation")
   })
 
   it("links remote supervision to Tasks and both Agent Runtime references", () => {
