@@ -2687,7 +2687,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         "src",
         "https://room-apps.free4.chat/test-app-2"
       )
-      expect(iframe).toHaveAttribute("sandbox", "allow-scripts")
+      expect(iframe).toHaveAttribute("sandbox", "allow-scripts allow-downloads")
       const frameWindow = loadAppIframe(iframe)
       const port = channels[0].port1
       completeHandshake(frameWindow, "test-app-2", port)
@@ -2756,7 +2756,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         "src",
         "https://room-apps.free4.chat/test-app-3"
       )
-      expect(iframe).toHaveAttribute("sandbox", "allow-scripts")
+      expect(iframe).toHaveAttribute("sandbox", "allow-scripts allow-downloads")
       const frameWindow = loadAppIframe(iframe)
       const port = channels[0].port1
       completeHandshake(frameWindow, "test-app-3", port)
@@ -2817,7 +2817,10 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         const host = slotHost(id)
         const iframe = slotIframe(id)
         expect(iframe).toHaveAttribute("src", url)
-        expect(iframe).toHaveAttribute("sandbox", "allow-scripts")
+        expect(iframe).toHaveAttribute(
+          "sandbox",
+          "allow-scripts allow-downloads"
+        )
         const frameWindow = loadAppIframe(iframe)
         const port = channels[0].port1
         completeHandshake(frameWindow, id, port)
@@ -3418,7 +3421,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         "src",
         expect.stringContaining("/test-app-1")
       )
-      expect(iframe).toHaveAttribute("sandbox", "allow-scripts")
+      expect(iframe).toHaveAttribute("sandbox", "allow-scripts allow-downloads")
       loadAppIframe(iframe)
       expect(channels).toHaveLength(1)
     })
