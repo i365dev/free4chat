@@ -324,6 +324,7 @@ describe("validateTaskSessionListResult (#409)", () => {
     ).toEqual({ ok: false, error: "session_continuation_unavailable" })
     expect(isTaskSessionError("/private/tmp")).toBe(false)
     expect(isTaskSessionError("task_session_busy")).toBe(true)
+    expect(isTaskSessionError("task_request_id_in_use")).toBe(true)
   })
 })
 
@@ -338,6 +339,7 @@ describe("taskSessionErrorMessage (#409)", () => {
       "task_session_busy",
       "task_agent_not_reachable",
       "task_session_not_pending",
+      "task_request_id_in_use",
     ] as const) {
       const message = taskSessionErrorMessage(code)
       expect(message.length).toBeGreaterThan(0)

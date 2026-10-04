@@ -36,6 +36,7 @@ const ROOM_REQUEST_PATHS = new Set([
   "/api/room/permissions/request",
   "/api/room/surfaces/read",
   "/api/room/attachments/read",
+  "/api/room/attachments/discard",
 ])
 const SUPPORTED_IMAGE_TYPES = new Set([
   "image/jpeg",
@@ -428,6 +429,45 @@ export async function handleRoomRequest(
         participantId,
         token,
         attachmentId: body.attachmentId,
+      }),
+    })
+  }
+
+  // A failed Start Task can leave a pre-Task brief staged before the Task
+  // exists. Its owner may discard only that exact Task-owned context.
+  if (pathname === "/api/room/attachments/discard") {
+    if (request.method !== "POST")
+      return json({ error: "method_not_allowed" }, 405)
+    const room = request.headers.get("X-Room-Id")?.trim() ?? ""
+    const participantId = request.headers.get("X-Room-Participant-Id") ?? ""
+    const token = request.headers.get("X-Room-Participant-Token") ?? ""
+    if (!room || room.length > MAX_ROOM_LENGTH || !participantId || !token)
+      return json({ error: "missing_room_capability" }, 400)
+    let body: { attachmentId?: unknown; taskRequestId?: unknown }
+    try {
+      body = (await request.json()) as typeof body
+    } catch {
+      return json({ error: "invalid_request" }, 400)
+    }
+    if (
+      typeof body.attachmentId !== "string" ||
+      body.attachmentId.length === 0 ||
+      body.attachmentId.length > MAX_ROOM_LENGTH ||
+      typeof body.taskRequestId !== "string" ||
+      body.taskRequestId.length === 0 ||
+      body.taskRequestId.length > MAX_ROOM_LENGTH
+    )
+      return json({ error: "invalid_request" }, 400)
+    const stub = env.SFU_ROOM.get(env.SFU_ROOM.idFromName(room))
+    return stub.fetch("https://room/control", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "human-discard-task-attachment",
+        participantId,
+        token,
+        attachmentId: body.attachmentId,
+        taskRequestId: body.taskRequestId,
       }),
     })
   }

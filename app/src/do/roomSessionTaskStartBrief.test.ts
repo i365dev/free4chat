@@ -82,7 +82,29 @@ function room(): RoomRecord {
 
 function harness() {
   const store = new Map<string, unknown>([["room", room()]])
-  const humanSocket = { send: vi.fn(), close: vi.fn() } as unknown as WebSocket
+  let humanSocketAttachment: Record<string, unknown> = {
+    participantId: "human-1",
+    token: "human-1-token",
+    connectionNonce: "human-1-connection",
+  }
+  const humanSocket = {
+    send: vi.fn(),
+    close: vi.fn(),
+    deserializeAttachment: () => humanSocketAttachment,
+    serializeAttachment: (attachment: Record<string, unknown>) => {
+      humanSocketAttachment = attachment
+    },
+  } as unknown as WebSocket
+  const sockets: WebSocket[] = [humanSocket]
+  let agentSocketAttachment: Record<string, unknown> | null = null
+  const agentSocketFrames = vi.fn()
+  const agentSocket = {
+    send: agentSocketFrames,
+    deserializeAttachment: () => agentSocketAttachment,
+    serializeAttachment: (attachment: Record<string, unknown>) => {
+      agentSocketAttachment = attachment
+    },
+  } as unknown as WebSocket
 
   const ctx = {
     storage: {
@@ -90,12 +112,15 @@ function harness() {
       put: async (key: string, value: unknown) => {
         store.set(key, value)
       },
-      delete: async () => undefined,
+      delete: async (key: string | string[]) => {
+        for (const entry of Array.isArray(key) ? key : [key])
+          store.delete(entry)
+      },
       setAlarm: async () => undefined,
       deleteAlarm: async () => undefined,
       getAlarm: async () => undefined,
     },
-    getWebSockets: () => [humanSocket] as unknown as WebSocket[],
+    getWebSockets: () => sockets,
   }
 
   const session = new RoomSession(ctx as never, { SFU_ROOM: {} } as never)
@@ -153,6 +178,64 @@ function harness() {
           body,
         })
       ),
+    discard: (attachmentId: string, taskRequestId: string) =>
+      session.fetch(
+        new Request("https://room/control", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "human-discard-task-attachment",
+            participantId: "human-1",
+            token: "human-1-token",
+            attachmentId,
+            taskRequestId,
+          }),
+        })
+      ),
+    storage: store,
+    setHumanPendingStart: (taskRequestId: string, attachmentId: string) => {
+      humanSocketAttachment = {
+        ...humanSocketAttachment,
+        pendingTaskSessionStart: {
+          requestId: "browser-start-1",
+          taskRequestId,
+          targetAgentId: "agent-a",
+          summary: "brief task",
+          attachmentIds: [attachmentId],
+          expiresAt: Date.now() + 20_000,
+        },
+      }
+    },
+    setAgentPendingControl: (
+      taskRequestId: string,
+      humanParticipantId = "human-1"
+    ) => {
+      agentSocketAttachment = {
+        kind: "agent-event",
+        participantId: "agent-a",
+        connectionNonce: "agent-a-nonce",
+        cursor: 0,
+        pendingSessionControl: {
+          requestId: "runtime-prepare-1",
+          operation: "prepare",
+          browserRequestId: "browser-start-1",
+          humanParticipantId,
+          humanConnectionNonce: "human-1-connection",
+          taskRequestId,
+          expiresAt: Date.now() + 20_000,
+        },
+      }
+      sockets.push(agentSocket)
+    },
+    disconnectHumanSocket: () => {
+      const index = sockets.indexOf(humanSocket)
+      if (index >= 0) sockets.splice(index, 1)
+    },
+    agentControl: () =>
+      (agentSocketAttachment?.pendingSessionControl as
+        | Record<string, unknown>
+        | undefined) ?? null,
+    agentSocketFrames,
   }
 }
 
@@ -178,6 +261,61 @@ async function stageBrief(
 }
 
 describe("Start Task large brief (#421)", () => {
+  it("discards only the exact failed pre-Task brief and its chunks", async () => {
+    const test = harness()
+    const requestId = crypto.randomUUID()
+    const attachmentId = await stageBrief(test, requestId)
+    expect(test.storage.has(`attachment:${attachmentId}:0`)).toBe(true)
+
+    const response = await test.discard(attachmentId, requestId)
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({ ok: true, removed: true })
+    expect(test.stored().attachments).toEqual([])
+    expect(test.storage.has(`attachment:${attachmentId}:0`)).toBe(false)
+  })
+
+  it("releases the matching Runtime slot when the Human socket is gone", async () => {
+    const test = harness()
+    const requestId = crypto.randomUUID()
+    const attachmentId = await stageBrief(test, requestId)
+    test.setHumanPendingStart(requestId, attachmentId)
+    test.setAgentPendingControl(requestId)
+    test.disconnectHumanSocket()
+
+    const response = await test.discard(attachmentId, requestId)
+    expect(response.status).toBe(200)
+    expect(test.agentControl()).toBeNull()
+    expect(test.agentSocketFrames).toHaveBeenCalledWith(
+      expect.stringContaining('"operation":"cancel"')
+    )
+  })
+
+  it("does not let a provisional brief evict existing Room attachments", async () => {
+    const test = harness()
+    const existing = Array.from({ length: 8 }, (_, index) => ({
+      id: `existing-${index}`,
+      senderId: "human-1",
+      senderName: "human-1",
+      senderKind: "human" as const,
+      mimeType: "text/markdown" as const,
+      fileName: `existing-${index}.md`,
+      size: 1,
+      chunkCount: 1,
+      createdAt: index,
+      sequence: index + 1,
+    }))
+    const stored = test.stored()
+    stored.attachments = existing
+    test.storage.set("room", stored)
+
+    const response = await test.upload("human-1", "brief", {
+      "X-Task-Request-Id": crypto.randomUUID(),
+      [TASK_ATTACHMENT_PENDING_HEADER]: "1",
+    })
+    expect(response.status).toBe(409)
+    expect(test.stored().attachments).toEqual(existing)
+  })
+
   it("stages a pre-Task brief against the pinned canonical Task id", async () => {
     const test = harness()
     const requestId = crypto.randomUUID()

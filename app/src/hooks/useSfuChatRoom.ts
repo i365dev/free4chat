@@ -4841,7 +4841,8 @@ export function useSfuChatRoom(
       summary: string,
       projectToken?: string,
       modeId?: string,
-      configOptions?: Record<string, string>
+      configOptions?: Record<string, string>,
+      brief?: File
     ): Promise<TaskSessionStartResult> => {
       const target = targetParticipantId.trim()
       const instruction = summary.trim()
@@ -4860,36 +4861,139 @@ export function useSfuChatRoom(
           ok: false,
           error: "session_continuation_unavailable",
         })
+      if (brief && !isAgentTextFile(brief))
+        return Promise.resolve({ ok: false, error: "invalid_session_control" })
+      const taskRequestId = brief ? crypto.randomUUID() : undefined
+      const stageBrief = async (): Promise<string | null> => {
+        if (!brief || !taskRequestId) return null
+        const session = sessionRef.current
+        if (!session) return ""
+        try {
+          const response = await fetch("/api/room/attachments", {
+            method: "POST",
+            headers: {
+              "Content-Type": agentTextMime(brief) ?? "text/markdown",
+              "X-Room-Id": roomName,
+              "X-Room-Participant-Id": session.participantId,
+              "X-Room-Participant-Token": session.participantToken,
+              "X-File-Name": encodeURIComponent(brief.name.slice(0, 256)),
+              "X-Task-Request-Id": taskRequestId,
+              [TASK_ATTACHMENT_PENDING_HEADER]: "1",
+            },
+            body: brief,
+          })
+          if (!response.ok) return ""
+          const payload = (await response.json().catch(() => null)) as {
+            attachment?: { id?: unknown }
+          } | null
+          return typeof payload?.attachment?.id === "string" &&
+            payload.attachment.id
+            ? payload.attachment.id
+            : ""
+        } catch {
+          return ""
+        }
+      }
       const requestId = crypto.randomUUID()
+      const discardStagedBrief = async (attachmentId: string) => {
+        const session = sessionRef.current
+        if (!session || !taskRequestId) return
+        try {
+          await fetch("/api/room/attachments/discard", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Room-Id": roomName,
+              "X-Room-Participant-Id": session.participantId,
+              "X-Room-Participant-Token": session.participantToken,
+            },
+            body: JSON.stringify({ attachmentId, taskRequestId }),
+          })
+        } catch {
+          // A failed cleanup is bounded by normal attachment retention/expiry.
+        }
+      }
+      let stagedAttachmentId: string | null = null
       return new Promise<TaskSessionStartResult>((settle) => {
-        const timeout = setTimeout(() => {
-          pendingTaskSessionRequestsRef.current.delete(requestId)
-          settle({ ok: false, error: "session_continuation_unavailable" })
-        }, TASK_SESSION_CLIENT_TIMEOUT_MS)
-        pendingTaskSessionRequestsRef.current.set(requestId, {
+        const pendingRequest: {
+          kind: "start"
+          settle: (
+            result: TaskSessionListResult | TaskSessionStartResult
+          ) => void
+          timeout: ReturnType<typeof setTimeout>
+        } = {
           kind: "start",
           settle: settle as (
             result: TaskSessionListResult | TaskSessionStartResult
           ) => void,
-          timeout,
-        })
-        const sent = sendSocketMessage({
-          type: "task-session-start",
-          requestId,
-          targetParticipantId: target,
-          ...(sessionToken ? { sessionToken } : {}),
-          ...(projectToken ? { projectToken } : {}),
-          ...(modeId ? { modeId } : {}),
-          ...(configOptions ? { configOptions } : {}),
-          summary: instruction.slice(0, MAX_COLLAB_SUMMARY_LENGTH),
-        })
-        if (sent) return
-        pendingTaskSessionRequestsRef.current.delete(requestId)
-        clearTimeout(timeout)
-        settle({ ok: false, error: "session_continuation_unavailable" })
+          timeout: setTimeout(() => undefined, 0),
+        }
+        clearTimeout(pendingRequest.timeout)
+        const armTimeout = () => {
+          clearTimeout(pendingRequest.timeout)
+          pendingRequest.timeout = setTimeout(() => {
+            if (
+              pendingTaskSessionRequestsRef.current.get(requestId) !==
+              pendingRequest
+            )
+              return
+            pendingTaskSessionRequestsRef.current.delete(requestId)
+            settle({ ok: false, error: "session_continuation_unavailable" })
+          }, TASK_SESSION_CLIENT_TIMEOUT_MS)
+        }
+        armTimeout()
+        pendingTaskSessionRequestsRef.current.set(requestId, pendingRequest)
+        const sendStart = (attachmentId: string | null) => {
+          // Brief staging is asynchronous and may outlive the client timeout
+          // or a socket close. Only the exact still-pending request may cross
+          // the wire; a late upload must never create work after failure.
+          if (
+            pendingTaskSessionRequestsRef.current.get(requestId) !==
+            pendingRequest
+          ) {
+            if (attachmentId) void discardStagedBrief(attachmentId)
+            return
+          }
+          if (attachmentId) stagedAttachmentId = attachmentId
+          if (brief && !attachmentId) {
+            pendingTaskSessionRequestsRef.current.delete(requestId)
+            clearTimeout(pendingRequest.timeout)
+            settle({ ok: false, error: "session_continuation_unavailable" })
+            return
+          }
+          // Brief staging has its own bounded client deadline. Runtime PREPARE
+          // starts only after this frame is sent, so staging time must not eat
+          // into the response window.
+          armTimeout()
+          const sent = sendSocketMessage({
+            type: "task-session-start",
+            requestId,
+            targetParticipantId: target,
+            ...(taskRequestId ? { taskRequestId } : {}),
+            ...(attachmentId ? { attachmentIds: [attachmentId] } : {}),
+            ...(sessionToken ? { sessionToken } : {}),
+            ...(projectToken ? { projectToken } : {}),
+            ...(modeId ? { modeId } : {}),
+            ...(configOptions ? { configOptions } : {}),
+            summary: instruction.slice(0, MAX_COLLAB_SUMMARY_LENGTH),
+          })
+          if (sent) return
+          pendingTaskSessionRequestsRef.current.delete(requestId)
+          clearTimeout(pendingRequest.timeout)
+          settle({ ok: false, error: "session_continuation_unavailable" })
+        }
+        if (!brief) {
+          sendStart(null)
+          return
+        }
+        void stageBrief().then(sendStart)
+      }).then((result) => {
+        if (!result.ok && stagedAttachmentId)
+          void discardStagedBrief(stagedAttachmentId)
+        return result
       })
     },
-    [sendSocketMessage]
+    [roomName, sendSocketMessage]
   )
 
   const readRoomAttachment = useCallback(

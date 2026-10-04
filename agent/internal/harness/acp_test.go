@@ -580,6 +580,47 @@ func sessionControlsForTest(t *testing.T, controls *types.HarnessSessionControls
 	return converted
 }
 
+func TestACPProjectsAnAliasedNativeModeOnlyOnce(t *testing.T) {
+	controls := parseSessionControls(mustJSON(map[string]any{
+		"modes": map[string]any{
+			"currentModeId": "agent",
+			"availableModes": []any{
+				map[string]any{"id": "read-only", "name": "Ask for approval"},
+				map[string]any{"id": "agent", "name": "Approve for me"},
+				map[string]any{"id": "agent-full-access", "name": "Full access"},
+			},
+		},
+		"configOptions": []any{
+			map[string]any{
+				"id": "mode", "name": "Mode", "category": "mode", "type": "select",
+				"currentValue": "agent",
+				"options": []any{
+					map[string]any{"value": "read-only", "name": "Ask for approval"},
+					map[string]any{"value": "agent", "name": "Approve for me"},
+					map[string]any{"value": "agent-full-access", "name": "Full access"},
+				},
+			},
+			// A similar label alone does not prove semantic identity. Keep a
+			// genuinely separate provider config control for the UI to label.
+			map[string]any{
+				"id": "mode_detail", "name": "Mode", "category": "custom", "type": "select",
+				"currentValue": "safe",
+				"options":      []any{map[string]any{"value": "safe"}, map[string]any{"value": "fast"}},
+			},
+		},
+	}))
+	projected := projectHarnessSessionControls(controls)
+	if projected == nil || len(projected.Modes) != 3 {
+		t.Fatalf("native session modes must remain available: %+v", projected)
+	}
+	if projected.CurrentModeID != "agent" {
+		t.Fatalf("current native mode changed: %q", projected.CurrentModeID)
+	}
+	if len(projected.ConfigOptions) != 1 || projected.ConfigOptions[0].ID != "mode_detail" {
+		t.Fatalf("only the exact mode alias should be removed: %+v", projected.ConfigOptions)
+	}
+}
+
 func findCurrentConfigValue(t *testing.T, controls *ACPSessionControls, configID string) string {
 	t.Helper()
 	option, ok := findConfigOption(controls.ConfigOptions, configID)

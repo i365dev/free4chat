@@ -401,10 +401,11 @@ interface PendingTaskSessionDiscovery {
 
 interface PendingTaskSessionStart {
   requestId: string
-  /** Canonical collaboration requestId, generated before PREPARE was sent. */
+  /** Canonical collaboration requestId, fixed before PREPARE was sent. */
   taskRequestId: string
   targetAgentId: string
   summary: string
+  attachmentIds?: string[]
   expiresAt: number
 }
 
@@ -789,6 +790,13 @@ type ControlRequest =
       attachmentId: string
     }
   | {
+      action: "human-discard-task-attachment"
+      participantId: string
+      token: string
+      attachmentId: string
+      taskRequestId: string
+    }
+  | {
       action: "agent-leave"
       participantId: string
       token: string
@@ -1005,6 +1013,8 @@ type ClientMessage =
       type: "task-session-start"
       requestId: string
       targetParticipantId: string
+      taskRequestId?: string
+      attachmentIds?: string[]
       sessionToken?: string
       projectToken?: string
       modeId?: string
@@ -3498,6 +3508,42 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       reject("invalid_session_control")
       return
     }
+    const taskRequestId = message.taskRequestId ?? crypto.randomUUID()
+    if (!isCanonicalCollabRequestId(taskRequestId)) {
+      reject("invalid_session_control")
+      return
+    }
+    // Match the ordinary collab-request uniqueness check before asking the
+    // Runtime to prepare. A reused canonical Task id cannot arm an orphaned
+    // adoption or turn duplicate ingestion into a successful start.
+    this.warmCollabRegistry(room)
+    if (this.collabRegistry.find(taskRequestId)) {
+      reject("task_request_id_in_use")
+      return
+    }
+    const references = this.humanTaskContextReferenceIds(
+      room,
+      participant,
+      message.attachmentIds
+    )
+    if (references.ok === false) {
+      reject("invalid_session_control")
+      return
+    }
+    if (
+      (references.ids && message.taskRequestId === undefined) ||
+      (references.ids &&
+        references.ids.some(
+          (id) =>
+            room.attachments.find((attachment) => attachment.id === id)
+              ?.taskRequestId !== taskRequestId
+        ))
+    ) {
+      // The attachment is Task-owned context. It must already be staged by
+      // this Human against the exact canonical Task id before PREPARE begins.
+      reject("invalid_session_control")
+      return
+    }
     const modeId = message.modeId
     if (modeId !== undefined && !isValidHarnessControlText(modeId)) {
       reject("invalid_session_control")
@@ -3534,15 +3580,15 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       reject("task_session_busy")
       return
     }
-    // The canonical Task identity is generated BEFORE the preparation, so the
-    // Runtime can pin the adoption to exactly this id. It is indistinguishable
-    // from any other Human-created Task from here on.
-    const taskRequestId = crypto.randomUUID()
+    // The canonical Task identity is fixed BEFORE preparation, either by the
+    // browser when it has staged Task-owned brief context or here otherwise.
+    // It is indistinguishable from any other Human-created Task from here on.
     attachment.pendingTaskSessionStart = {
       requestId,
       taskRequestId,
       targetAgentId: target.id,
       summary,
+      ...(references.ids ? { attachmentIds: references.ids } : {}),
       expiresAt: now + TASK_SESSION_PENDING_TTL_MS,
     }
     try {
@@ -3772,8 +3818,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         requestId: record.taskRequestId,
         targetParticipantId: record.targetAgentId,
         summary: record.summary,
+        ...(record.attachmentIds
+          ? { attachmentIds: record.attachmentIds }
+          : {}),
       })
-      appended = ingest.status !== "rejected"
+      appended = ingest.status === "recorded"
       continuationCreatedTask = ingest.status === "recorded"
     } catch {
       // A controlled append refusal (for example the primary Room record
@@ -6196,6 +6245,115 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           },
         }
       )
+    }
+
+    if (request.action === "human-discard-task-attachment") {
+      const room = await this.activeRoom()
+      if (!room) return this.json({ error: "room_expired" }, 410)
+      const participant = this.findParticipant(
+        room,
+        request.participantId,
+        request.token
+      )
+      if (!participant) return this.json({ error: "unauthorized" }, 401)
+      if (participant.kind !== "human")
+        return this.json({ error: "human_only" }, 403)
+      const attachment = room.attachments.find(
+        (entry) => entry.id === request.attachmentId
+      )
+      if (!attachment) return this.json({ ok: true, removed: false })
+      if (
+        attachment.senderId !== participant.id ||
+        attachment.taskRequestId !== request.taskRequestId ||
+        attachment.taskWake !== false
+      )
+        return this.json({ error: "attachment_unavailable" }, 404)
+
+      // The Runtime may have committed the Task even if its reply was lost.
+      // Never discard context that now belongs to a canonical Task.
+      this.warmCollabRegistry(room)
+      if (this.collabRegistry.find(request.taskRequestId))
+        return this.json({ ok: true, removed: false, reason: "task_exists" })
+
+      // If PREPARE is still armed, release it before removing its exact brief.
+      // A late PREPARED result then sees no owning pending record and follows
+      // the existing cancel path.
+      const targetAgentIds = new Set<string>()
+      for (const candidate of this.ctx.getWebSockets()) {
+        let socketAttachment: ConnectionAttachment | null = null
+        try {
+          socketAttachment =
+            candidate.deserializeAttachment() as ConnectionAttachment | null
+        } catch {
+          socketAttachment = null
+        }
+        const pending = socketAttachment?.pendingTaskSessionStart
+        if (
+          !socketAttachment ||
+          socketAttachment.participantId !== participant.id ||
+          pending?.taskRequestId !== request.taskRequestId ||
+          !pending.attachmentIds?.includes(request.attachmentId)
+        )
+          continue
+        delete socketAttachment.pendingTaskSessionStart
+        try {
+          candidate.serializeAttachment(socketAttachment)
+        } catch {
+          // The exact Runtime preparation is still cancelled below.
+        }
+        targetAgentIds.add(pending.targetAgentId)
+        this.sendHumanTaskSessionStartResult(
+          candidate,
+          pending.requestId,
+          false,
+          "session_continuation_unavailable"
+        )
+      }
+      // The Human socket can already have disappeared when this cleanup
+      // arrives. Find the matching Runtime correlation by its exact Human and
+      // Task identity, release only that slot, and send one cancel per Agent.
+      for (const target of Object.values(room.participants)) {
+        if (target.kind !== "agent") continue
+        for (const agentSocket of this.ctx.getWebSockets(
+          this.agentEventSocketTag(target.id)
+        )) {
+          const agentAttachment =
+            this.deserializeAgentEventAttachment(agentSocket)
+          const control = agentAttachment?.pendingSessionControl
+          if (
+            !agentAttachment ||
+            agentAttachment.participantId !== target.id ||
+            control?.operation !== "prepare" ||
+            control.humanParticipantId !== participant.id ||
+            control.taskRequestId !== request.taskRequestId
+          )
+            continue
+          targetAgentIds.add(target.id)
+          delete agentAttachment.pendingSessionControl
+          try {
+            agentSocket.serializeAttachment(agentAttachment)
+          } catch {
+            // A late Runtime result remains fenced by its missing correlation.
+          }
+        }
+      }
+      for (const targetAgentId of targetAgentIds)
+        this.sendAgentSessionCancel(
+          room,
+          targetAgentId,
+          participant.id,
+          request.taskRequestId
+        )
+
+      room.attachments = room.attachments.filter(
+        (entry) => entry.id !== request.attachmentId
+      )
+      participant.lastSeenAt = Date.now()
+      await this.saveRoom(room)
+      await this.deleteAttachmentChunks(attachment)
+      await this.broadcastState(room)
+      await this.scheduleNextAlarm(room)
+      return this.json({ ok: true, removed: true })
     }
 
     if (request.action === "agent-leave") {
@@ -9526,6 +9684,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       parseTaskAttachmentWake(
         request.headers.get(TASK_ATTACHMENT_WAKE_HEADER)
       ) === true
+    // A staged brief is provisional until canonical Task creation succeeds.
+    // Never let it evict older user artifacts; if the bounded store is full,
+    // fail staging before writing any bytes.
+    if (pendingTaskContext && room.attachments.length >= MAX_AGENT_ATTACHMENTS)
+      return this.json({ error: "attachment_store_full" }, 409)
     // #106: agents as well as humans may contribute to the room's bounded
     // ephemeral attachment set — a collaborating agent's screenshot/log/JSON
     // artifact rides the exact same store, limits, and eviction rules as
@@ -9586,6 +9749,15 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           this.attachmentChunkKey(id, index),
           bytes.slice(start, start + ATTACHMENT_CHUNK_SIZE)
         )
+      }
+      // Recheck after chunk writes because another upload may have filled the
+      // bounded store while storage awaits yielded the Durable Object turn.
+      if (
+        pendingTaskContext &&
+        room.attachments.length >= MAX_AGENT_ATTACHMENTS
+      ) {
+        await this.deleteAttachmentChunks(attachment)
+        return this.json({ error: "attachment_store_full" }, 409)
       }
       room.nextMessageSequence = attachment.sequence
       room.attachments = [...room.attachments, attachment]

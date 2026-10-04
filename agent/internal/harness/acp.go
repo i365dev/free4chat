@@ -583,6 +583,15 @@ func projectHarnessSessionControls(source *ACPSessionControls) *types.HarnessSes
 	}
 	projected.ConfigOptions = make([]types.HarnessSessionConfigOption, 0, len(source.ConfigOptions))
 	for _, option := range source.ConfigOptions {
+		// Some ACP providers expose the session mode through both `modes` /
+		// `session/set_mode` and a compatibility config option. Treat it as
+		// one control only when the option explicitly identifies itself as the
+		// mode selector and its current/available values exactly match the
+		// native modes. A merely similar label is not enough to collapse two
+		// provider controls.
+		if source.Modes != nil && isModeConfigOptionAlias(source.Modes, option) {
+			continue
+		}
 		projectedOption := types.HarnessSessionConfigOption{
 			ID: option.ID, Name: option.Name, Description: option.Description,
 			Category: option.Category, Type: option.Type, CurrentValue: option.CurrentValue,
@@ -596,6 +605,26 @@ func projectHarnessSessionControls(source *ACPSessionControls) *types.HarnessSes
 		projected.ConfigOptions = append(projected.ConfigOptions, projectedOption)
 	}
 	return projected
+}
+
+func isModeConfigOptionAlias(modes *ACPModeState, option ACPConfigOption) bool {
+	if modes == nil || option.ID != "mode" || !strings.EqualFold(option.Category, "mode") ||
+		option.CurrentValue != modes.CurrentModeID || len(option.Options) != len(modes.AvailableModes) {
+		return false
+	}
+	modeIDs := make(map[string]struct{}, len(modes.AvailableModes))
+	for _, mode := range modes.AvailableModes {
+		if _, duplicate := modeIDs[mode.ID]; duplicate {
+			return false
+		}
+		modeIDs[mode.ID] = struct{}{}
+	}
+	for _, value := range option.Options {
+		if _, ok := modeIDs[value.Value]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // PendingPermissionCount reports the number of permission requests currently

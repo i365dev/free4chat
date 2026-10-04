@@ -44,6 +44,7 @@ import {
   ROOM_APP_INLINE_SHORTCUTS_DESKTOP,
   ROOM_APP_INLINE_SHORTCUTS_MOBILE,
 } from "../common/roomAppRecents"
+import { TASK_PASTE_ATTACHMENT_THRESHOLD } from "../common/taskPaste"
 import { RoomSession } from "../do/RoomSession"
 import type { RoomRecord, RoomState } from "../room/types"
 
@@ -434,6 +435,17 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
                   { value: "gpt-5.6-sol", name: "5.6 Sol" },
                 ],
               },
+              {
+                id: "review_mode",
+                name: "Mode",
+                category: "review",
+                type: "select",
+                currentValue: "safe",
+                options: [
+                  { value: "safe", name: "Safe review" },
+                  { value: "strict", name: "Strict review" },
+                ],
+              },
             ],
           },
         },
@@ -471,6 +483,224 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         name: "Full access",
       })
     ).toHaveValue("agent-full-access")
+    const reviewMode = screen.getByLabelText(
+      "Harness-native Mode (review_mode)"
+    )
+    expect(
+      within(reviewMode).getByRole("option", { name: "Safe review" })
+    ).toHaveValue("safe")
+  })
+
+  it("starts a selected-project New Session with the full long brief as Task context", async () => {
+    const startTaskWithSession = vi.fn(async () => ({ ok: true as const }))
+    const roomHook = {
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      startTaskWithSession,
+      participants: [
+        {
+          peerId: "human-local",
+          name: "tester",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+        },
+        {
+          peerId: "agent-codex",
+          name: "Codex",
+          kind: "agent",
+          room: "test-room",
+          muteState: false,
+          taskSessionContinuation: true,
+        },
+      ],
+      requestTaskSessions: vi.fn(async () => ({
+        ok: true as const,
+        page: {
+          sessions: [],
+          projects: [{ token: "project-token-1", label: "free4chat" }],
+          hasMore: false,
+          controls: { modes: [], configOptions: [] },
+        },
+      })),
+    }
+    mockUseSfuChatRoom.mockReturnValue(roomHook)
+
+    const { rerender } = render(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+    fireEvent.click(screen.getAllByLabelText("Start task with Codex")[0])
+    fireEvent.click(screen.getByTestId("task-project-discover"))
+    await screen.findByTestId("task-session-project-toggle")
+    fireEvent.click(screen.getByTestId("task-session-project-toggle"))
+    fireEvent.click(screen.getByTestId("task-session-project-option"))
+
+    const brief = `# Selected project handoff\n\n${"detailed requirement ".repeat(
+      TASK_PASTE_ATTACHMENT_THRESHOLD
+    )}`
+    fireEvent.paste(screen.getByLabelText("What should this Agent do?"), {
+      clipboardData: { getData: () => brief },
+    })
+    expect(screen.getByTestId("task-brief-chip")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Start task" }))
+
+    await waitFor(() => expect(startTaskWithSession).toHaveBeenCalledTimes(1))
+    const [target, sessionToken, summary, projectToken, , , stagedBrief] =
+      startTaskWithSession.mock.calls[0] as unknown as [
+        string,
+        string | null,
+        string,
+        string,
+        unknown,
+        unknown,
+        File
+      ]
+    expect(target).toBe("agent-codex")
+    expect(sessionToken).toBeNull()
+    expect(summary).toBe("Selected project handoff")
+    expect(projectToken).toBe("project-token-1")
+    expect(stagedBrief.name).toBe("task-brief.md")
+    const briefContent = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(String(reader.result))
+      reader.onerror = () => reject(reader.error)
+      reader.readAsText(stagedBrief)
+    })
+    expect(briefContent).toBe(brief)
+    expect(screen.queryByText(/remove the task brief/i)).not.toBeInTheDocument()
+
+    roomHook.messages = [
+      {
+        peerId: "human-local",
+        name: "tester",
+        kind: "human",
+        type: "action",
+        actionType: "collab",
+        sequence: 1,
+        collab: {
+          requestId: "project-brief-task",
+          kind: "request",
+          fromParticipantId: "human-local",
+          targetParticipantId: "agent-codex",
+          summary: "Selected project handoff",
+        },
+      },
+    ]
+    rerender(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("interaction-tab-task-project-brief-task")
+      ).toHaveAttribute("aria-selected", "true")
+    )
+  })
+
+  it("keeps an ordinary short instruction on the selected-project start path", async () => {
+    const startTaskWithSession = vi.fn(async () => ({ ok: true as const }))
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      startTaskWithSession,
+      participants: [
+        {
+          peerId: "human-local",
+          name: "tester",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+        },
+        {
+          peerId: "agent-codex",
+          name: "Codex",
+          kind: "agent",
+          room: "test-room",
+          muteState: false,
+          taskSessionContinuation: true,
+        },
+      ],
+      requestTaskSessions: vi.fn(async () => ({
+        ok: true as const,
+        page: {
+          sessions: [],
+          projects: [{ token: "project-token-1", label: "free4chat" }],
+          hasMore: false,
+          controls: { modes: [], configOptions: [] },
+        },
+      })),
+    })
+    render(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+    fireEvent.click(screen.getAllByLabelText("Start task with Codex")[0])
+    fireEvent.click(screen.getByTestId("task-project-discover"))
+    await screen.findByTestId("task-session-project-toggle")
+    fireEvent.click(screen.getByTestId("task-session-project-toggle"))
+    fireEvent.click(screen.getByTestId("task-session-project-option"))
+    fireEvent.change(screen.getByLabelText("What should this Agent do?"), {
+      target: { value: "Fix the session picker" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Start task" }))
+
+    await waitFor(() => expect(startTaskWithSession).toHaveBeenCalledTimes(1))
+    expect(startTaskWithSession).toHaveBeenCalledWith(
+      "agent-codex",
+      null,
+      "Fix the session picker",
+      "project-token-1",
+      undefined,
+      {},
+      undefined
+    )
+    expect(screen.queryByTestId("task-brief-chip")).not.toBeInTheDocument()
+  })
+
+  it("keeps the existing long-brief attachment path when no project is selected", async () => {
+    const startTaskWithBrief = vi.fn(async () => true)
+    const startTaskWithSession = vi.fn(async () => ({ ok: true as const }))
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      startTaskWithBrief,
+      startTaskWithSession,
+      participants: [
+        {
+          peerId: "human-local",
+          name: "tester",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+        },
+        {
+          peerId: "agent-codex",
+          name: "Codex",
+          kind: "agent",
+          room: "test-room",
+          muteState: false,
+          taskSessionContinuation: true,
+        },
+      ],
+    })
+    render(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+    fireEvent.click(screen.getAllByLabelText("Start task with Codex")[0])
+
+    const brief = `# Existing brief path\n\n${"long context ".repeat(
+      TASK_PASTE_ATTACHMENT_THRESHOLD
+    )}`
+    fireEvent.paste(screen.getByLabelText("What should this Agent do?"), {
+      clipboardData: { getData: () => brief },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Start task" }))
+
+    await waitFor(() => expect(startTaskWithBrief).toHaveBeenCalledTimes(1))
+    const [target, summary, stagedBrief] = startTaskWithBrief.mock
+      .calls[0] as unknown as [string, string, File]
+    expect(target).toBe("agent-codex")
+    expect(summary).toBe("Existing brief path")
+    expect(stagedBrief.name).toBe("task-brief.md")
+    expect(startTaskWithSession).not.toHaveBeenCalled()
   })
 
   it("lets a project first discovered on page two be selected for a new Task", async () => {

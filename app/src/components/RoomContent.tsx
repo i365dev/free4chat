@@ -83,6 +83,23 @@ import { useSfuChatRoom, type RoomMicState } from "../hooks/useSfuChatRoom"
 import { useTurnstile } from "../hooks/useTurnstile"
 import type { TaskExecutionProjection } from "../room/types"
 
+function taskSessionConfigLabel(
+  option: RelayHarnessSessionControls["configOptions"][number],
+  controls: RelayHarnessSessionControls
+): string {
+  const label = option.name || option.id
+  const collisionCount =
+    Number(
+      controls.modes.length > 0 && label.trim().toLocaleLowerCase() === "mode"
+    ) +
+    controls.configOptions.filter(
+      (candidate) =>
+        (candidate.name || candidate.id).trim().toLocaleLowerCase() ===
+        label.trim().toLocaleLowerCase()
+    ).length
+  return collisionCount > 1 ? `${label} (${option.id})` : label
+}
+
 const MAX_FILE_SIZE = 20 * 1024 * 1024
 
 type TaskAgent = { peerId: string; name: string }
@@ -1771,14 +1788,9 @@ export default function RoomContent({
           taskBriefLabel(taskBriefText.current) ||
           TASK_BRIEF_DEFAULT_LABEL
         : ""
+      const taskSummary = taskBrief ? briefSummary : taskInstruction.trim()
       if (taskSessionMode === "new" || !taskAgentContinuation) {
-        if (taskBrief) {
-          if (taskSessionProjectToken) {
-            setTaskError(
-              "Remove the task brief before starting in a selected project."
-            )
-            return
-          }
+        if (taskBrief && !taskSessionProjectToken) {
           setTaskError("")
           setTaskStarting(true)
           const started = await startTaskWithBrief(
@@ -1805,17 +1817,18 @@ export default function RoomContent({
           const result = await startTaskWithSession(
             taskAgent.peerId,
             null,
-            taskInstruction,
+            taskSummary,
             taskSessionProjectToken,
             taskSessionModeId || undefined,
-            taskSessionConfigOptions
+            taskSessionConfigOptions,
+            taskBrief ?? undefined
           )
           setTaskStarting(false)
           if (result.ok === false) {
             setTaskError(taskSessionErrorMessage(result.error))
             return
           }
-          pendingLocalTaskSummaries.current.push(taskInstruction.trim())
+          pendingLocalTaskSummaries.current.push(taskSummary)
           closeTaskComposer()
           return
         }
@@ -1839,10 +1852,11 @@ export default function RoomContent({
       const result = await startTaskWithSession(
         taskAgent.peerId,
         selection.token,
-        taskBrief ? briefSummary : taskInstruction,
+        taskSummary,
         undefined,
         taskSessionModeId || undefined,
-        taskSessionConfigOptions
+        taskSessionConfigOptions,
+        taskBrief ?? undefined
       )
       setTaskStarting(false)
       if (result.ok === false) {
@@ -1852,9 +1866,7 @@ export default function RoomContent({
         setTaskError(taskSessionErrorMessage(result.error))
         return
       }
-      pendingLocalTaskSummaries.current.push(
-        taskBrief ? briefSummary : taskInstruction.trim()
-      )
+      pendingLocalTaskSummaries.current.push(taskSummary)
       setTaskAgent(null)
       setTaskInstruction("")
       setTaskError("")
@@ -3722,11 +3734,12 @@ export default function RoomContent({
                         key={option.id}
                         className="mb-2 block text-xs text-gray-300"
                       >
-                        {option.name || option.id}
+                        {taskSessionConfigLabel(option, taskSessionControls)}
                         <select
-                          aria-label={`Harness-native ${
-                            option.name || option.id
-                          }`}
+                          aria-label={`Harness-native ${taskSessionConfigLabel(
+                            option,
+                            taskSessionControls
+                          )}`}
                           value={taskSessionConfigOptions[option.id] ?? ""}
                           disabled={taskStarting}
                           onChange={(event) =>

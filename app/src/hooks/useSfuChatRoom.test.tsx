@@ -1569,6 +1569,390 @@ describe("useSfuChatRoom Live Transcript RoomState wiring (#177 PR3)", () => {
     unmount()
   })
 
+  it("stages a long brief against the exact Task id before selected-project preparation", async () => {
+    const fetchMock = global.fetch as unknown as ReturnType<typeof vi.fn>
+    const originalFetch = fetchMock.getMockImplementation() as
+      | ((input: RequestInfo | URL, init?: RequestInit) => Promise<Response>)
+      | undefined
+    fetchMock.mockImplementation((input, init) => {
+      const url = typeof input === "string" ? input : input.toString()
+      if (url.endsWith("/api/room/attachments"))
+        return jsonResponse({ attachment: { id: "brief-attachment-1" } })
+      return originalFetch!(input, init)
+    })
+    const { result, unmount } = renderHook(() =>
+      useSfuChatRoom("project-brief-room", "Guest", "audio")
+    )
+    await waitFor(() => expect(RecordingWebSocket.instances).toHaveLength(1))
+    await waitFor(() =>
+      expect(result.current.getLocalRoomAuth()).toMatchObject({
+        participantId: "human-a",
+      })
+    )
+    const socket = RecordingWebSocket.instances[0]
+    act(() => socket.onopen?.())
+
+    const brief = new File(["full task-owned brief"], "task-brief.md", {
+      type: "text/markdown",
+    })
+    const pending = result.current.startTaskWithSession(
+      "agent-pi",
+      null,
+      "Implement this handoff",
+      "project-token-1",
+      undefined,
+      {},
+      brief
+    )
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([input]) =>
+          String(input).endsWith("/api/room/attachments")
+        )
+      ).toBe(true)
+    )
+    await waitFor(() =>
+      expect(
+        socket.sent.some(
+          (payload) => JSON.parse(payload).type === "task-session-start"
+        )
+      ).toBe(true)
+    )
+    const upload = fetchMock.mock.calls.find(([input]) =>
+      String(input).endsWith("/api/room/attachments")
+    )
+    expect(upload?.[1]?.body).toBe(brief)
+    const headers = new Headers(upload?.[1]?.headers)
+    const frame = JSON.parse(socket.sent.at(-1) ?? "{}")
+    expect(frame).toMatchObject({
+      type: "task-session-start",
+      projectToken: "project-token-1",
+      taskRequestId: headers.get("X-Task-Request-Id"),
+      attachmentIds: ["brief-attachment-1"],
+    })
+    expect(headers.get("X-Task-Attachment-Pending")).toBe("1")
+
+    act(() =>
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "task-session-start-result",
+          requestId: frame.requestId,
+          ok: true,
+        }),
+      })
+    )
+    await expect(pending).resolves.toEqual({ ok: true })
+    unmount()
+  })
+
+  it("does not send a timed-out staged brief when a retry starts", async () => {
+    const fetchMock = global.fetch as unknown as ReturnType<typeof vi.fn>
+    const originalFetch = fetchMock.getMockImplementation() as
+      | ((input: RequestInfo | URL, init?: RequestInit) => Promise<Response>)
+      | undefined
+    const uploads: Array<(response: Response) => void> = []
+    fetchMock.mockImplementation((input, init) => {
+      const url = typeof input === "string" ? input : input.toString()
+      if (url.endsWith("/api/room/attachments"))
+        return new Promise<Response>((resolve) => uploads.push(resolve))
+      return originalFetch!(input, init)
+    })
+    const { result, unmount } = renderHook(() =>
+      useSfuChatRoom("project-brief-timeout-room", "Guest", "audio")
+    )
+    await waitFor(() => expect(RecordingWebSocket.instances).toHaveLength(1))
+    const socket = RecordingWebSocket.instances[0]
+    act(() => socket.onopen?.())
+    const brief = new File(["retry-safe brief"], "task-brief.md", {
+      type: "text/markdown",
+    })
+
+    vi.useFakeTimers()
+    try {
+      const timedOut = result.current.startTaskWithSession(
+        "agent-pi",
+        null,
+        "Retry-safe brief",
+        "project-token-1",
+        undefined,
+        {},
+        brief
+      )
+      expect(uploads).toHaveLength(1)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(25_001)
+      })
+      await expect(timedOut).resolves.toEqual({
+        ok: false,
+        error: "session_continuation_unavailable",
+      })
+
+      const retry = result.current.startTaskWithSession(
+        "agent-pi",
+        null,
+        "Retry-safe brief",
+        "project-token-1",
+        undefined,
+        {},
+        brief
+      )
+      expect(uploads).toHaveLength(2)
+      await act(async () => {
+        uploads[1]!(
+          (await jsonResponse({
+            attachment: { id: "retry-attachment" },
+          })) as Response
+        )
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      const starts = () =>
+        socket.sent
+          .map((payload) => JSON.parse(payload))
+          .filter((frame) => frame.type === "task-session-start")
+      expect(starts()).toHaveLength(1)
+      expect(starts()[0].attachmentIds).toEqual(["retry-attachment"])
+
+      await act(async () => {
+        uploads[0]!(
+          (await jsonResponse({
+            attachment: { id: "late-first-attachment" },
+          })) as Response
+        )
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      expect(starts()).toHaveLength(1)
+      expect(starts()[0].attachmentIds).toEqual(["retry-attachment"])
+      expect(
+        fetchMock.mock.calls.some(([input]) =>
+          String(input).endsWith("/api/room/attachments/discard")
+        )
+      ).toBe(true)
+
+      act(() =>
+        socket.onmessage?.({
+          data: JSON.stringify({
+            type: "task-session-start-result",
+            requestId: starts()[0].requestId,
+            ok: true,
+          }),
+        })
+      )
+      await expect(retry).resolves.toEqual({ ok: true })
+    } finally {
+      vi.useRealTimers()
+      unmount()
+    }
+  })
+
+  it("starts the Runtime reply timeout only after brief staging completes", async () => {
+    const fetchMock = global.fetch as unknown as ReturnType<typeof vi.fn>
+    const originalFetch = fetchMock.getMockImplementation() as
+      | ((input: RequestInfo | URL, init?: RequestInit) => Promise<Response>)
+      | undefined
+    let finishUpload: ((response: Response) => void) | undefined
+    fetchMock.mockImplementation((input) => {
+      if (String(input).endsWith("/api/room/attachments"))
+        return new Promise<Response>((resolve) => {
+          finishUpload = resolve
+        })
+      return originalFetch!(input)
+    })
+    const { result, unmount } = renderHook(() =>
+      useSfuChatRoom("project-brief-response-timeout-room", "Guest", "audio")
+    )
+    await waitFor(() => expect(RecordingWebSocket.instances).toHaveLength(1))
+    await waitFor(() =>
+      expect(result.current.getLocalRoomAuth()).toMatchObject({
+        participantId: "human-a",
+      })
+    )
+    const socket = RecordingWebSocket.instances[0]
+    act(() => socket.onopen?.())
+    const brief = new File(["staged later"], "task-brief.md", {
+      type: "text/markdown",
+    })
+    vi.useFakeTimers()
+    try {
+      let completed = false
+      const pending = result.current.startTaskWithSession(
+        "agent-pi",
+        null,
+        "Start with the brief",
+        "project-token-1",
+        undefined,
+        {},
+        brief
+      )
+      void pending.then(() => {
+        completed = true
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20_000)
+      })
+      await act(async () => {
+        finishUpload?.(
+          (await jsonResponse({
+            attachment: { id: "staged-before-prepare" },
+          })) as Response
+        )
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      const frame = JSON.parse(socket.sent.at(-1) ?? "{}")
+      expect(frame.type).toBe("task-session-start")
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(24_000)
+      })
+      expect(completed).toBe(false)
+      act(() =>
+        socket.onmessage?.({
+          data: JSON.stringify({
+            type: "task-session-start-result",
+            requestId: frame.requestId,
+            ok: true,
+          }),
+        })
+      )
+      await expect(pending).resolves.toEqual({ ok: true })
+    } finally {
+      vi.useRealTimers()
+      unmount()
+    }
+  })
+
+  it("returns a failed start without waiting for best-effort brief cleanup", async () => {
+    const fetchMock = global.fetch as unknown as ReturnType<typeof vi.fn>
+    const originalFetch = fetchMock.getMockImplementation() as
+      | ((input: RequestInfo | URL, init?: RequestInit) => Promise<Response>)
+      | undefined
+    fetchMock.mockImplementation((input, init) => {
+      if (String(input).endsWith("/api/room/attachments"))
+        return jsonResponse({ attachment: { id: "failed-start-brief" } })
+      if (String(input).endsWith("/api/room/attachments/discard"))
+        return new Promise<Response>(() => undefined)
+      return originalFetch!(input, init)
+    })
+    const { result, unmount } = renderHook(() =>
+      useSfuChatRoom("project-brief-cleanup-room", "Guest", "audio")
+    )
+    await waitFor(() => expect(RecordingWebSocket.instances).toHaveLength(1))
+    await waitFor(() =>
+      expect(result.current.getLocalRoomAuth()).toMatchObject({
+        participantId: "human-a",
+      })
+    )
+    const socket = RecordingWebSocket.instances[0]
+    act(() => socket.onopen?.())
+    const pending = result.current.startTaskWithSession(
+      "agent-pi",
+      null,
+      "Start the brief",
+      "project-token-1",
+      undefined,
+      {},
+      new File(["brief"], "task-brief.md", { type: "text/markdown" })
+    )
+    await waitFor(() =>
+      expect(
+        socket.sent.some(
+          (payload) => JSON.parse(payload).type === "task-session-start"
+        )
+      ).toBe(true)
+    )
+    const frame = JSON.parse(socket.sent.at(-1) ?? "{}")
+    act(() =>
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "task-session-start-result",
+          requestId: frame.requestId,
+          ok: false,
+          error: "session_selection_expired",
+        }),
+      })
+    )
+    await expect(pending).resolves.toEqual({
+      ok: false,
+      error: "session_selection_expired",
+    })
+    expect(
+      fetchMock.mock.calls.some(([input]) =>
+        String(input).endsWith("/api/room/attachments/discard")
+      )
+    ).toBe(true)
+    unmount()
+  })
+
+  it("does not send a brief when its socket closes during staging", async () => {
+    const fetchMock = global.fetch as unknown as ReturnType<typeof vi.fn>
+    const originalFetch = fetchMock.getMockImplementation() as
+      | ((input: RequestInfo | URL, init?: RequestInit) => Promise<Response>)
+      | undefined
+    let finishUpload: ((response: Response) => void) | undefined
+    fetchMock.mockImplementation((input, init) => {
+      const url = typeof input === "string" ? input : input.toString()
+      if (url.endsWith("/api/room/attachments"))
+        return new Promise<Response>((resolve) => {
+          finishUpload = resolve
+        })
+      return originalFetch!(input, init)
+    })
+    const { result, unmount } = renderHook(() =>
+      useSfuChatRoom("project-brief-cancel-room", "Guest", "audio")
+    )
+    await waitFor(() => expect(RecordingWebSocket.instances).toHaveLength(1))
+    const firstSocket = RecordingWebSocket.instances[0]
+    act(() => firstSocket.onopen?.())
+    const brief = new File(["cancel-safe brief"], "task-brief.md", {
+      type: "text/markdown",
+    })
+
+    vi.useFakeTimers()
+    try {
+      const pending = result.current.startTaskWithSession(
+        "agent-pi",
+        null,
+        "Cancel-safe brief",
+        "project-token-1",
+        undefined,
+        {},
+        brief
+      )
+      expect(finishUpload).toBeTypeOf("function")
+      act(() => firstSocket.onclose?.())
+      await expect(pending).resolves.toEqual({
+        ok: false,
+        error: "session_continuation_unavailable",
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000)
+      })
+      expect(RecordingWebSocket.instances).toHaveLength(2)
+      const reconnectedSocket = RecordingWebSocket.instances[1]
+      act(() => reconnectedSocket.onopen?.())
+
+      await act(async () => {
+        finishUpload!(
+          (await jsonResponse({
+            attachment: { id: "cancelled-attachment" },
+          })) as Response
+        )
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      const starts = RecordingWebSocket.instances.flatMap((socket) =>
+        socket.sent
+          .map((payload) => JSON.parse(payload))
+          .filter((frame) => frame.type === "task-session-start")
+      )
+      expect(starts).toHaveLength(0)
+    } finally {
+      vi.useRealTimers()
+      unmount()
+    }
+  })
+
   it("refuses a private session request without writing to a closed socket", async () => {
     const { result, unmount } = renderHook(() =>
       useSfuChatRoom("closed-room", "Guest", "audio")
