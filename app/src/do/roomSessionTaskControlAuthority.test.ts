@@ -323,6 +323,29 @@ function harness() {
       internal.transientTaskExecutions.clear()
       internal.transientAgentActivities.clear()
     },
+    /** Recreates the DO instance and delivers its state frame to the same Human socket. */
+    stateAfterHibernation: () => {
+      const freshSession = new RoomSession(
+        ctx as never,
+        { SFU_ROOM: {} } as never
+      )
+      const freshInternal = freshSession as unknown as {
+        stateFor: (room: RoomRecord) => RoomRecord & {
+          taskExecutions: Array<Record<string, unknown>>
+        }
+      }
+      const state = freshInternal.stateFor(store.get("room") as RoomRecord)
+      humanSocket.send(JSON.stringify({ type: "state", state }))
+      return state
+    },
+    stateNow: () =>
+      (
+        session as unknown as {
+          stateFor: (room: RoomRecord) => {
+            taskExecutions: Array<Record<string, unknown>>
+          }
+        }
+      ).stateFor(store.get("room") as RoomRecord),
     executions: () => [...internal.transientTaskExecutions.values()],
     activities: () => [...internal.transientAgentActivities.values()],
   }
@@ -1259,6 +1282,180 @@ describe("#480 hibernation-durable Task control authority", () => {
     expect(test.activeTaskTurns("agent-a")).toHaveLength(
       MAX_ATTACHMENT_ACTIVE_TASK_TURNS - 1
     )
+  })
+
+  it("9: a connected Human keeps Running after DO hibernation without reconnect or resync", async () => {
+    const test = harness()
+    test.connectAgentSocket("agent-a")
+    const requestId = await createTask(test)
+    await test.publishExecution("agent-a", requestId, {
+      currentTurnSequence: 42,
+      phase: "running",
+    })
+
+    expect(test.stateNow().taskExecutions).toEqual([
+      {
+        agentParticipantId: "agent-a",
+        taskRequestId: requestId,
+        currentTurnSequence: 42,
+        phase: "running",
+        queuedCount: 0,
+      },
+    ])
+
+    test.simulateHibernation()
+    const recoveredState = test.stateAfterHibernation()
+    expect(recoveredState.taskExecutions).toEqual([
+      {
+        agentParticipantId: "agent-a",
+        taskRequestId: requestId,
+        currentTurnSequence: 42,
+        phase: "running",
+        queuedCount: 0,
+      },
+    ])
+    expect(test.frames().at(-1)).toEqual({
+      type: "state",
+      state: recoveredState,
+    })
+
+    // The recovered exact turn remains the existing Interrupt authority.
+    test.clearAgentFrames("agent-a")
+    await test.sendHuman({
+      type: "task-interrupt",
+      taskRequestId: requestId,
+      turnSequence: 42,
+    })
+    expect(test.errors()).toEqual([])
+    expect(test.agentControls("agent-a")).toEqual([
+      {
+        type: "task-control",
+        control: "interrupt",
+        taskRequestId: requestId,
+        turnSequence: 42,
+      },
+    ])
+  })
+
+  it("10: one attachment entry produces one fallback, preserving task and Agent scopes", async () => {
+    const test = harness()
+    test.connectAgentSocket("agent-a")
+    test.connectAgentSocket("agent-b")
+    const taskA = await createTask(test, "agent-a")
+    const taskA2 = await createTask(test, "agent-a")
+    const taskB = await createTask(test, "agent-b")
+    await test.publishExecution("agent-a", taskA, {
+      currentTurnSequence: 42,
+      phase: "running",
+    })
+    await test.publishExecution("agent-a", taskA2, {
+      currentTurnSequence: 43,
+      phase: "running",
+    })
+    await test.publishExecution("agent-b", taskB, {
+      currentTurnSequence: 91,
+      phase: "running",
+    })
+    test.setActiveTaskTurns("agent-a", [
+      { taskRequestId: taskA, turnSequence: 42 },
+      { taskRequestId: taskA, turnSequence: 42 },
+      { taskRequestId: taskA2, turnSequence: 43 },
+    ])
+    test.simulateHibernation()
+
+    expect(test.stateAfterHibernation().taskExecutions).toEqual(
+      expect.arrayContaining([
+        {
+          agentParticipantId: "agent-a",
+          taskRequestId: taskA,
+          currentTurnSequence: 42,
+          phase: "running",
+          queuedCount: 0,
+        },
+        {
+          agentParticipantId: "agent-a",
+          taskRequestId: taskA2,
+          currentTurnSequence: 43,
+          phase: "running",
+          queuedCount: 0,
+        },
+        {
+          agentParticipantId: "agent-b",
+          taskRequestId: taskB,
+          currentTurnSequence: 91,
+          phase: "running",
+          queuedCount: 0,
+        },
+      ])
+    )
+    expect(test.frames().at(-1).state.taskExecutions).toHaveLength(3)
+  })
+
+  it("11: a newer in-memory non-running projection wins over a stale attachment", async () => {
+    const test = harness()
+    test.connectAgentSocket("agent-a")
+    const requestId = await createTask(test)
+    await test.publishExecution("agent-a", requestId, {
+      currentTurnSequence: 42,
+      phase: "running",
+    })
+    await test.publishExecution("agent-a", requestId, {
+      phase: "queued",
+      queuedCount: 1,
+    })
+    // Simulate a failed attachment clear. The newer in-memory state remains
+    // authoritative and must not be replaced with the stale Running turn.
+    test.setActiveTaskTurns("agent-a", [
+      { taskRequestId: requestId, turnSequence: 42 },
+    ])
+
+    expect(test.stateNow().taskExecutions).toEqual([
+      {
+        agentParticipantId: "agent-a",
+        taskRequestId: requestId,
+        phase: "queued",
+        queuedCount: 1,
+      },
+    ])
+  })
+
+  it("12: a cleared settled turn is not resurrected after hibernation", async () => {
+    const test = harness()
+    test.connectAgentSocket("agent-a")
+    const requestId = await createTask(test)
+    await test.publishExecution("agent-a", requestId, {
+      currentTurnSequence: 42,
+      phase: "running",
+    })
+    await test.publishExecution("agent-a", requestId, { queuedCount: 0 })
+    expect(test.activeTaskTurns("agent-a")).toEqual([])
+
+    test.simulateHibernation()
+    expect(test.stateAfterHibernation().taskExecutions).toEqual([])
+  })
+
+  it("13: stale replaced sockets and disconnected Agents cannot project fallback state", async () => {
+    const staleSocketCase = harness()
+    staleSocketCase.connectAgentSocket("agent-a")
+    const requestId = await createTask(staleSocketCase)
+    await staleSocketCase.publishExecution("agent-a", requestId, {
+      currentTurnSequence: 42,
+      phase: "running",
+    })
+    staleSocketCase.simulateHibernation()
+    staleSocketCase.connectAgentSocket("agent-a", "agent-a-nonce-2")
+    expect(staleSocketCase.stateAfterHibernation().taskExecutions).toEqual([])
+
+    const disconnectedCase = harness()
+    disconnectedCase.connectAgentSocket("agent-a")
+    const disconnectedTask = await createTask(disconnectedCase)
+    await disconnectedCase.publishExecution("agent-a", disconnectedTask, {
+      currentTurnSequence: 42,
+      phase: "running",
+    })
+    disconnectedCase.simulateHibernation()
+    disconnectedCase.stored().participants["agent-a"].connected = false
+    expect(disconnectedCase.stateAfterHibernation().taskExecutions).toEqual([])
   })
 })
 

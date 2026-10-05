@@ -199,6 +199,7 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
   afterEach(() => {
     lastFakeWebSocket = null
     setProductionRoomAppCatalog(EMPTY_ROOM_APP_CATALOG)
+    vi.useRealTimers()
     vi.restoreAllMocks()
   })
 
@@ -637,6 +638,8 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
   it("subscribes the private Agent-Human reliable lane and carries capability requests and results there", async () => {
     const appInstanceId = "generated:123e4567-e89b-12d3-a456-426614174000"
     const dataChannelCalls: Array<Record<string, unknown>> = []
+    let failDirectSubscriptions = false
+    let subscriberSessionNumber = 0
     fetchMock.mockImplementation(
       (input: RequestInfo | URL, init?: RequestInit) => {
         const url = typeof input === "string" ? input : input.toString()
@@ -644,7 +647,7 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
           return jsonResponse({
             participantId: "participant-1",
             participantToken: "participant-token",
-            sessionId: "session-1",
+            sessionId: `session-${++subscriberSessionNumber}`,
             expiresAt: Date.now() + 60 * 60 * 1000,
             roomAppsEnabled: true,
           })
@@ -656,6 +659,11 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
             unknown
           >
           dataChannelCalls.push(body)
+          if (
+            failDirectSubscriptions &&
+            body.transport === "participant-direct-reliable"
+          )
+            return jsonResponse({ dataChannels: [] })
           const channels = Array.isArray(body.dataChannels)
             ? body.dataChannels
             : []
@@ -674,7 +682,11 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
     )
     await waitFor(() => expect(lastFakeWebSocket).not.toBeNull())
     act(() => lastFakeWebSocket?.onopen?.())
-    const sendAgentState = (ready: boolean) =>
+    const sendAgentState = (
+      ready: boolean,
+      publisherSessionId = "agent-data-session",
+      includeAgent = true
+    ) =>
       act(() =>
         lastFakeWebSocket?.onmessage?.({
           data: JSON.stringify({
@@ -698,18 +710,22 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
                     tracks: [],
                   },
                 },
-                {
-                  id: "agent-a",
-                  name: "Agent",
-                  kind: "agent",
-                  connected: true,
-                  joinedAt: 1,
-                  lastSeenAt: 1,
-                  participantDataTransport: {
-                    sessionId: "agent-data-session",
-                    ready,
-                  },
-                },
+                ...(includeAgent
+                  ? [
+                      {
+                        id: "agent-a",
+                        name: "Agent",
+                        kind: "agent",
+                        connected: true,
+                        joinedAt: 1,
+                        lastSeenAt: 1,
+                        participantDataTransport: {
+                          sessionId: publisherSessionId,
+                          ready,
+                        },
+                      },
+                    ]
+                  : []),
               ],
               messages: [],
               attachments: [],
@@ -840,7 +856,192 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
       ok: true,
       result: { state: "ready", acceptingJobs: true },
     })
+
+    // An isolated close/error on the ready direct channel must recover without
+    // any Room WebSocket state refresh or PeerConnection replacement.
+    vi.useFakeTimers()
+    const initialDirectCalls = dataChannelCalls.filter(
+      (call) => call.transport === "participant-direct-reliable"
+    ).length
+    const roomSocketSendCountBeforeRecovery =
+      lastFakeWebSocket?.send.mock.calls.length ?? 0
+    act(() => {
+      agentSubscriber?.emit("close", {})
+      agentSubscriber?.emit("error", {})
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+    for (let index = 0; index < 20; index += 1) await Promise.resolve()
+    const directCallsAfterRecovery = dataChannelCalls.filter(
+      (call) => call.transport === "participant-direct-reliable"
+    ).length
+    expect(directCallsAfterRecovery).toBe(initialDirectCalls + 1)
+    const replacementDirectChannel = FakePeerConnection.dataChannels.find(
+      (channel) =>
+        channel.label === `${directChannelName}-subscriber` &&
+        channel !== agentSubscriber
+    )
+    expect(replacementDirectChannel).toBeDefined()
+    expect(FakePeerConnection.instances).toHaveLength(1)
+    expect(lastFakeWebSocket?.send.mock.calls).toHaveLength(
+      roomSocketSendCountBeforeRecovery
+    )
+
+    let recoveredCapabilityResult!: ReturnType<
+      typeof result.current.requestGeneratedAppCapability
+    >
+    act(() => {
+      recoveredCapabilityResult = result.current.requestGeneratedAppCapability({
+        appInstanceId,
+        bundleRevision: 3,
+        taskRequestId: "task-a",
+        agentParticipantId: "agent-a",
+        requestId: "request-2",
+        capabilityId: "printer_status",
+        operation: "observe",
+      })
+    })
+    expect(replacementDirectChannel?.send).toHaveBeenCalled()
+    act(() =>
+      replacementDirectChannel?.emit("message", {
+        data: JSON.stringify({
+          protocolVersion: 1,
+          appInstanceId,
+          lane: "reliable",
+          payload: {
+            type: "runtime-capability-result",
+            requestId: "request-2",
+            appInstanceId,
+            bundleRevision: 3,
+            taskRequestId: "task-a",
+            agentParticipantId: "agent-a",
+            capabilityId: "printer_status",
+            operation: "observe",
+            ok: true,
+            result: { state: "ready", acceptingJobs: true },
+          },
+        }),
+      })
+    )
+    await expect(recoveredCapabilityResult!).resolves.toMatchObject({
+      ok: true,
+      result: { state: "ready", acceptingJobs: true },
+    })
+    // Late duplicate events from the removed channel cannot start another
+    // chain, and a healthy replacement performs no periodic resubscription.
+    act(() => {
+      agentSubscriber?.emit("close", {})
+      agentSubscriber?.emit("error", {})
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000)
+    })
+    expect(
+      dataChannelCalls.filter(
+        (call) => call.transport === "participant-direct-reliable"
+      )
+    ).toHaveLength(initialDirectCalls + 1)
+
+    // Establishment failures after a close use the same bounded schedule and
+    // stop after the configured three retry attempts.
+    failDirectSubscriptions = true
+    act(() => replacementDirectChannel?.emit("close", {}))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_600)
+    })
+    const directCallsAfterExhaustion = dataChannelCalls.filter(
+      (call) => call.transport === "participant-direct-reliable"
+    ).length
+    expect(directCallsAfterExhaustion).toBe(initialDirectCalls + 4)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000)
+    })
+    expect(
+      dataChannelCalls.filter(
+        (call) => call.transport === "participant-direct-reliable"
+      )
+    ).toHaveLength(directCallsAfterExhaustion)
+    failDirectSubscriptions = false
+
+    // A publisher session rotation owns its own subscription and cancels the
+    // delayed retry captured from the old Agent transport generation.
+    act(() => replacementDirectChannel?.emit("close", {}))
+    sendAgentState(true, "agent-data-session-rotated")
+    for (let index = 0; index < 20; index += 1) await Promise.resolve()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+    const directCallsAfterRotation = dataChannelCalls.filter(
+      (call) => call.transport === "participant-direct-reliable"
+    ).length
+    expect(directCallsAfterRotation).toBe(directCallsAfterExhaustion + 1)
+
+    // Leaving removes the participant and invalidates a scheduled recovery.
+    const rotatedChannel = FakePeerConnection.dataChannels
+      .filter((channel) => channel.label === `${directChannelName}-subscriber`)
+      .at(-1)
+    act(() => rotatedChannel?.emit("close", {}))
+    sendAgentState(false, "agent-data-session-rotated", false)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+    expect(
+      dataChannelCalls.filter(
+        (call) => call.transport === "participant-direct-reliable"
+      )
+    ).toHaveLength(directCallsAfterRotation)
+
+    // A PeerConnection and Human subscriber session replacement takes
+    // ownership of recovery and invalidates the old channel retry.
+    sendAgentState(true, "agent-data-session-rotated")
+    for (let index = 0; index < 20; index += 1) await Promise.resolve()
+    const rejoinedChannel = FakePeerConnection.dataChannels
+      .filter((channel) => channel.label === `${directChannelName}-subscriber`)
+      .at(-1)
+    act(() => rejoinedChannel?.emit("close", {}))
+    const oldPeerConnection = FakePeerConnection.instances[0]
+    const oldRoomSocket = lastFakeWebSocket
+    act(() => {
+      oldPeerConnection.connectionState = "failed"
+      oldPeerConnection.onconnectionstatechange?.()
+    })
+    for (let index = 0; index < 40; index += 1) await Promise.resolve()
+    expect(FakePeerConnection.instances).toHaveLength(2)
+    expect(subscriberSessionNumber).toBe(2)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+    const callsAfterPeerReplacement = dataChannelCalls.filter(
+      (call) => call.transport === "participant-direct-reliable"
+    ).length
+    expect(callsAfterPeerReplacement).toBe(directCallsAfterRotation + 1)
+
+    // A pending timer is also disposed by unmount.
+    for (
+      let index = 0;
+      index < 40 && lastFakeWebSocket === oldRoomSocket;
+      index += 1
+    )
+      await Promise.resolve()
+    expect(lastFakeWebSocket).not.toBe(oldRoomSocket)
+    act(() => lastFakeWebSocket?.onopen?.())
+    sendAgentState(true, "agent-data-session-rotated")
+    for (let index = 0; index < 40; index += 1) await Promise.resolve()
+    const newSessionChannel = FakePeerConnection.dataChannels
+      .filter((channel) => channel.label === `${directChannelName}-subscriber`)
+      .at(-1)
+    expect(newSessionChannel).toBeDefined()
+    act(() => newSessionChannel?.emit("close", {}))
     unmount()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000)
+    })
+    expect(
+      dataChannelCalls.filter(
+        (call) => call.transport === "participant-direct-reliable"
+      )
+    ).toHaveLength(callsAfterPeerReplacement + 1)
   })
 
   it("subscribes to remote Room App lanes, tags the bound sender, retries, and cleans up", async () => {
@@ -1074,6 +1275,29 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
     const currentRemoteChannels = FakePeerConnection.dataChannels.filter(
       (channel) => channel.label.endsWith("-subscriber")
     )
+    const currentReliable = currentRemoteChannels
+      .filter((channel) => channel.label.includes("reliable"))
+      .at(-1)!
+    const requestsBeforeRecovery = dataChannelNewCalls
+    vi.useFakeTimers()
+    act(() => {
+      currentReliable.emit("close", {})
+      currentReliable.emit("error", {})
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100)
+    })
+    expect(dataChannelNewCalls).toBe(requestsBeforeRecovery + 1)
+    expect(
+      FakePeerConnection.dataChannels.filter((channel) =>
+        channel.label.endsWith("-subscriber")
+      )
+    ).toHaveLength(5)
+    act(() => currentReliable.emit("close", {}))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000)
+    })
+    expect(dataChannelNewCalls).toBe(requestsBeforeRecovery + 1)
     unmount()
     expect(
       currentRemoteChannels.every((channel) => channel.close.mock.calls.length)
