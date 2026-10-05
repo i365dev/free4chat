@@ -24,8 +24,9 @@ experiment procedures.
   Cloudflare Secrets Store bindings. The Agent may inspect store IDs/names,
   secret names, and binding names, but must never retrieve or receive secret
   values. Do not read `.dev.vars` for deployed dogfood.
-- Treat the SFU App ID and App Secret as separate inputs. `SFU_APP_ID` is a
-  be a secret. Store both values as pre-provisioned Cloudflare Secrets Store
+- Treat the SFU App ID and App Secret as separate inputs. Use `SFU_APP_ID`
+  through its pre-provisioned Cloudflare Secrets Store entry without reading
+  or printing its value. Store both inputs as pre-provisioned Cloudflare Secrets Store
   entries, and bind them as `SFU_APP_ID_STORE` and `SFU_APP_SECRET_STORE`.
   They must belong to the same Cloudflare Calls/SFU app. For this repository's
   dogfood setup, verify the metadata names `free4chat-dogfood-sfu-appid` and
