@@ -634,6 +634,55 @@ describe("RoomAppHost", () => {
     })
   })
 
+  it("forwards a generated App shared-state write with its current canonical revision", () => {
+    vi.stubGlobal("MessageChannel", TestMessageChannel)
+    const sendGeneratedState = vi.fn(() => true)
+    render(
+      <RoomAppHost
+        app={{
+          ...app,
+          source: "generated",
+          srcDoc: "<main>generated app</main>",
+        }}
+        appInstanceId="generated:123e4567-e89b-12d3-a456-426614174000"
+        self={self}
+        participants={participants}
+        subscribe={() => () => undefined}
+        send={() => true}
+        subscribeUnicast={() => () => undefined}
+        subscribeUnicastResults={() => () => undefined}
+        sendUnicast={() => "sent"}
+        sharedState={{ revision: 3, state: { status: "old" } }}
+        sendGeneratedState={sendGeneratedState}
+        onClose={() => undefined}
+      />
+    )
+    const iframe = screen.getByTestId("room-app-iframe") as HTMLIFrameElement
+    const frameWindow = { postMessage: vi.fn() }
+    Object.defineProperty(iframe, "contentWindow", { value: frameWindow })
+    fireEvent.load(iframe)
+    const bootstrap = frameWindow.postMessage.mock.calls[0][0]
+    const port = lastChannel!.port1
+    act(() => {
+      port.emit({
+        type: "ready",
+        appInstanceId: "generated:123e4567-e89b-12d3-a456-426614174000",
+        handshakeToken: bootstrap.handshakeToken,
+      })
+      port.emit({
+        type: "sendGeneratedState",
+        appInstanceId: "generated:123e4567-e89b-12d3-a456-426614174000",
+        expectedRevision: 3,
+        state: { status: "Human A changed it" },
+      })
+    })
+    expect(sendGeneratedState).toHaveBeenCalledWith(
+      "generated:123e4567-e89b-12d3-a456-426614174000",
+      3,
+      { status: "Human A changed it" }
+    )
+  })
+
   it("rejects malformed or wrong-instance messages and forwards bounded lanes", () => {
     vi.stubGlobal("MessageChannel", TestMessageChannel)
     const send = vi.fn(() => true)

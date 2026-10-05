@@ -20,12 +20,14 @@ type scriptedParticipantTransport struct {
 	result  participantTransportStartResult
 	started chan participantTransportStartResult
 	once    sync.Once
+	updates chan types.RuntimeParticipantTransportProjection
 }
 
 func newScriptedParticipantTransport(err error) *scriptedParticipantTransport {
 	return &scriptedParticipantTransport{
 		result:  participantTransportStartResult{err: err},
 		started: make(chan participantTransportStartResult, 1),
+		updates: make(chan types.RuntimeParticipantTransportProjection, 4),
 	}
 }
 
@@ -37,6 +39,11 @@ func (t *scriptedParticipantTransport) Start(_ context.Context, projection types
 }
 
 func (*scriptedParticipantTransport) Close() {}
+
+func (t *scriptedParticipantTransport) Update(_ context.Context, projection types.RuntimeParticipantTransportProjection) error {
+	t.updates <- projection
+	return nil
+}
 
 func participantTransportTestProjection(humanID, sessionID string) types.RuntimeParticipantTransportProjection {
 	return types.RuntimeParticipantTransportProjection{
@@ -117,6 +124,68 @@ func TestParticipantTransportRetriesSameProjectionWithoutRoomEnvelope(t *testing
 	defer mu.Unlock()
 	if factoryCalls != 2 {
 		t.Fatalf("transport factory calls = %d, want exactly 2", factoryCalls)
+	}
+}
+
+func TestParticipantTransportProjectionUpdatesExistingTransportInPlace(t *testing.T) {
+	rt, _ := newResidentFenceRuntime(t)
+	configureParticipantTransportRuntime(t, rt, 10*time.Millisecond)
+	defer rt.Stop()
+	transport := newScriptedParticipantTransport(nil)
+	factoryCalls := 0
+	rt.participantTransportFactory = func(media.DecodedHandle) participantDataTransport {
+		factoryCalls++
+		return transport
+	}
+	rt.observeRuntimeParticipantTransport(participantTransportTestProjection("human-a", "session-a"))
+	if got := awaitParticipantTransportStart(t, transport); got.err != nil {
+		t.Fatalf("initial transport Start failed: %v", got.err)
+	}
+	next := participantTransportTestProjection("human-a", "session-a")
+	next.Routes[0].BundleRevision = 2
+	next.Routes = append(next.Routes, types.RuntimeParticipantTransportRoute{
+		AppInstanceID: next.Routes[0].AppInstanceID, BundleRevision: 2,
+		TaskRequestID: next.Routes[0].TaskRequestID, AgentParticipantID: "agent-a",
+		HumanParticipantID: "human-b", RuntimeHostID: next.Routes[0].RuntimeHostID,
+		CapabilityIDs: []string{"printer_status"},
+	})
+	next.Sources = append(next.Sources, types.RuntimeParticipantTransportSource{ParticipantID: "human-b", SessionID: "session-b"})
+	rt.observeRuntimeParticipantTransport(next)
+	select {
+	case updated := <-transport.updates:
+		if len(updated.Routes) != 2 || len(updated.Sources) != 2 || updated.Routes[1].HumanParticipantID != "human-b" {
+			t.Fatalf("existing transport received incomplete projection: %+v", updated)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("late Human projection did not update the current transport")
+	}
+	rt.mu.Lock()
+	current := rt.participantTransport
+	rt.mu.Unlock()
+	if current != transport || factoryCalls != 1 {
+		t.Fatalf("projection update restarted transport: current=%T factoryCalls=%d", current, factoryCalls)
+	}
+
+	// A Human reconnect receives a fresh Room-projected SFU session while the
+	// originating Runtime transport remains active. The new source must reach
+	// the current transport so it can negotiate a replacement private pair.
+	reconnected := next
+	reconnected.Sources = append([]types.RuntimeParticipantTransportSource(nil), next.Sources...)
+	reconnected.Sources[1].SessionID = "session-b-reconnected"
+	rt.observeRuntimeParticipantTransport(reconnected)
+	select {
+	case updated := <-transport.updates:
+		if len(updated.Sources) != 2 || updated.Sources[1].SessionID != "session-b-reconnected" {
+			t.Fatalf("reconnected Human session did not update the current transport: %+v", updated.Sources)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("reconnected Human projection did not update the current transport")
+	}
+	rt.mu.Lock()
+	current = rt.participantTransport
+	rt.mu.Unlock()
+	if current != transport || factoryCalls != 1 {
+		t.Fatalf("reconnect restarted the participant transport: current=%T factoryCalls=%d", current, factoryCalls)
 	}
 }
 

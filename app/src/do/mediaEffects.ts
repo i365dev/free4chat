@@ -1,4 +1,5 @@
 import { realtimeBaseUrl } from "../common/realtimeUrl"
+import { resolveSfuAppId, type SfuAppIdStore } from "../common/sfuAppId"
 import {
   resolveSfuAppSecret,
   type SfuAppSecretStore,
@@ -13,6 +14,7 @@ import type { PendingMediaCleanup } from "../room/types"
 
 export interface RealtimeEnv {
   SFU_APP_ID?: string
+  SFU_APP_ID_STORE?: SfuAppIdStore
   SFU_APP_SECRET?: string
   SFU_APP_SECRET_STORE?: SfuAppSecretStore
   /** #275: test-only override of the Cloudflare Realtime base URL; absent in
@@ -33,8 +35,10 @@ export interface MediaCloseResult {
 async function getRealtimeCredentials(
   env: RealtimeEnv
 ): Promise<{ appId: string; appSecret: string } | null> {
-  const appId = env.SFU_APP_ID
-  const appSecret = await resolveSfuAppSecret(env)
+  const [appId, appSecret] = await Promise.all([
+    resolveSfuAppId(env),
+    resolveSfuAppSecret(env),
+  ])
   return appId && appSecret ? { appId, appSecret } : null
 }
 
@@ -74,7 +78,10 @@ export async function executeMediaCloseEffect(
   const credentials = await getRealtimeCredentials(env)
   if (!credentials) return { effect: exact, confirmedMids: [] }
   try {
-    const base = realtimeBaseUrl(env)
+    const base = realtimeBaseUrl({
+      SFU_APP_ID: credentials.appId,
+      SFU_RTC_BASE_URL: env.SFU_RTC_BASE_URL,
+    })
     if (!base) return { effect: exact, confirmedMids: [] }
     const response = await fetch(
       `${base}/sessions/${encodeURIComponent(exact.sessionId)}/tracks/close`,

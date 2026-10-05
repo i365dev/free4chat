@@ -9,6 +9,7 @@ import {
   participantDirectReliableChannelName,
 } from "../common/participantDataChannel"
 import { realtimeBaseUrl } from "../common/realtimeUrl"
+import { resolveSfuAppId, type SfuAppIdStore } from "../common/sfuAppId"
 import {
   resolveSfuAppSecret,
   type SfuAppSecretStore,
@@ -37,6 +38,7 @@ export interface SfuEnv {
    * Durable Object before credentials can be checked (/api/sfu/ws). */
   ROOM_PROBE_RATE_LIMITER?: AdmissionRateLimiter
   SFU_APP_ID?: string
+  SFU_APP_ID_STORE?: SfuAppIdStore
   SFU_APP_SECRET?: string
   SFU_APP_SECRET_STORE?: SfuAppSecretStore
   /** #275: test-only override of the Cloudflare Realtime base URL. Absent
@@ -133,8 +135,10 @@ function originAllowed(request: Request, route: string): boolean {
 async function getAppCredentials(
   env: SfuEnv
 ): Promise<{ appId: string; appSecret: string } | null> {
-  const appId = env.SFU_APP_ID
-  const appSecret = await resolveSfuAppSecret(env)
+  const [appId, appSecret] = await Promise.all([
+    resolveSfuAppId(env),
+    resolveSfuAppSecret(env),
+  ])
   return appId && appSecret ? { appId, appSecret } : null
 }
 
@@ -291,7 +295,10 @@ async function realtimeRequest(
   const headers = new Headers(init.headers)
   headers.set("Authorization", `Bearer ${credentials.appSecret}`)
   headers.set("Content-Type", "application/json")
-  const base = realtimeBaseUrl(env)
+  const base = realtimeBaseUrl({
+    SFU_APP_ID: credentials.appId,
+    SFU_RTC_BASE_URL: env.SFU_RTC_BASE_URL,
+  })
   if (!base) return json({ error: "sfu_not_configured" }, 503)
   return fetch(`${base}${path}`, { ...init, headers })
 }

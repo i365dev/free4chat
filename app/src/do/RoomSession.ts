@@ -2771,8 +2771,13 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
 
     const taskIndex = buildTaskProjectionIndex(room.messages, room.participants)
     const routes: RuntimeParticipantTransportRouteProjection[] = []
+    const roomHumans = Object.values(room.participants)
+      .filter(
+        (participant) => participant.kind === "human" && participant.connected
+      )
+      .slice(0, 32)
     for (const publication of Object.values(room.generatedApps ?? {})) {
-      if (routes.length >= MAX_GENERATED_APPS_PER_ROOM) break
+      if (routes.length >= MAX_GENERATED_APPS_PER_ROOM * 32) break
       const task = taskIndex.tasks.get(publication.taskRequestId)
       if (
         !task ||
@@ -2780,11 +2785,11 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
           participantId
       )
         continue
-      const humanParticipantId = [
+      const originatingHumanId = [
         task.request.fromParticipantId,
         task.request.targetParticipantId,
       ].find((candidateId) => room.participants[candidateId]?.kind === "human")
-      if (!humanParticipantId) continue
+      if (!originatingHumanId) continue
       // The Runtime's wire projection omits an empty capability list
       // (`omitempty`). Adapter removal therefore leaves this field absent;
       // treat that canonical empty projection as having no App routes.
@@ -2792,15 +2797,22 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
         .map((capability) => capability.capabilityId)
         .filter(isRuntimeCapabilityId)
       if (capabilityIds.length === 0) continue
-      routes.push({
-        appInstanceId: publication.appInstanceId,
-        bundleRevision: publication.bundleRevision,
-        taskRequestId: publication.taskRequestId,
-        agentParticipantId: participantId,
-        humanParticipantId,
-        runtimeHostId,
-        capabilityIds,
-      })
+      const authorizedHumans = [
+        ...roomHumans.filter((human) => human.id === originatingHumanId),
+        ...roomHumans.filter((human) => human.id !== originatingHumanId),
+      ]
+      for (const human of authorizedHumans) {
+        if (routes.length >= MAX_GENERATED_APPS_PER_ROOM * 32) break
+        routes.push({
+          appInstanceId: publication.appInstanceId,
+          bundleRevision: publication.bundleRevision,
+          taskRequestId: publication.taskRequestId,
+          agentParticipantId: participantId,
+          humanParticipantId: human.id,
+          runtimeHostId,
+          capabilityIds,
+        })
+      }
     }
     if (routes.length === 0) return { routes: [], sources: [] }
 

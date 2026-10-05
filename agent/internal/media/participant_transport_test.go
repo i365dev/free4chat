@@ -54,8 +54,8 @@ func TestRuntimeParticipantTransportUsesBoundedParticipantFrames(t *testing.T) {
 	transport := NewRuntimeParticipantTransport("https://example.invalid", DecodedHandle{ParticipantID: "agent-a"}, handler, nil)
 	transport.ctx = context.Background()
 	transport.outbound = map[string]reliableParticipantDataChannel{"human-a": channel}
-	transport.routes = map[string]types.RuntimeParticipantTransportRoute{
-		"generated:123e4567-e89b-12d3-a456-426614174000": {
+	transport.routes = map[participantRouteKey]types.RuntimeParticipantTransportRoute{
+		{appInstanceID: "generated:123e4567-e89b-12d3-a456-426614174000", humanParticipantID: "human-a"}: {
 			AppInstanceID:  "generated:123e4567-e89b-12d3-a456-426614174000",
 			BundleRevision: 2, TaskRequestID: "task-a", AgentParticipantID: "agent-a", HumanParticipantID: "human-a",
 			RuntimeHostID: "host-route-1", CapabilityIDs: []string{"printer_status"},
@@ -142,7 +142,7 @@ func TestRuntimeParticipantTransportReturnsBoundedErrorForEnvelopeOversizeResult
 	}
 }
 
-func TestRuntimeParticipantTransportKeepsCapabilityFramesOnTheTaskHumanPair(t *testing.T) {
+func TestRuntimeParticipantTransportRoutesEachHumanToItsOwnPair(t *testing.T) {
 	appID := "generated:123e4567-e89b-12d3-a456-426614174000"
 	handler := &capabilityTestHandler{
 		calls:       make(chan types.ResidentCapabilityRequest, 2),
@@ -153,10 +153,15 @@ func TestRuntimeParticipantTransportKeepsCapabilityFramesOnTheTaskHumanPair(t *t
 	transport := NewRuntimeParticipantTransport("https://example.invalid", DecodedHandle{ParticipantID: "agent-a"}, handler, nil)
 	transport.ctx = context.Background()
 	transport.outbound = map[string]reliableParticipantDataChannel{"human-a": humanA, "human-b": humanB}
-	transport.routes = map[string]types.RuntimeParticipantTransportRoute{
-		appID: {
+	transport.routes = map[participantRouteKey]types.RuntimeParticipantTransportRoute{
+		{appInstanceID: appID, humanParticipantID: "human-a"}: {
 			AppInstanceID: appID, BundleRevision: 2, TaskRequestID: "task-a",
 			AgentParticipantID: "agent-a", HumanParticipantID: "human-a",
+			RuntimeHostID: "host-route-1", CapabilityIDs: []string{"printer_status"},
+		},
+		{appInstanceID: appID, humanParticipantID: "human-b"}: {
+			AppInstanceID: appID, BundleRevision: 2, TaskRequestID: "task-a",
+			AgentParticipantID: "agent-a", HumanParticipantID: "human-b",
 			RuntimeHostID: "host-route-1", CapabilityIDs: []string{"printer_status"},
 		},
 	}
@@ -170,30 +175,38 @@ func TestRuntimeParticipantTransportKeepsCapabilityFramesOnTheTaskHumanPair(t *t
 	}
 	framePayload, _ := json.Marshal(frame)
 	wire, _ := json.Marshal(roomAppEnvelope{ProtocolVersion: 1, Lane: "reliable", AppInstanceID: appID, Payload: framePayload})
-	transport.receive(labelB, wire)
+	frameB := frame
+	frameB.RequestID = "request-b"
+	framePayloadB, _ := json.Marshal(frameB)
+	wireB, _ := json.Marshal(roomAppEnvelope{ProtocolVersion: 1, Lane: "reliable", AppInstanceID: appID, Payload: framePayloadB})
+	transport.receive(labelB, wireB)
 	transport.receive(labelA, wire)
-	select {
-	case got := <-handler.calls:
-		if got.RequestID != frame.RequestID {
-			t.Fatalf("Agent received unexpected request: %+v", got)
+	for range 2 {
+		select {
+		case <-handler.calls:
+		case <-time.After(time.Second):
+			t.Fatal("both Humans' private requests should reach the same Runtime")
 		}
-	case <-time.After(time.Second):
-		t.Fatal("Human A's private request did not reach the Agent")
+	}
+	assertRequest := func(payload []byte, wantRequestID string) {
+		t.Helper()
+		var envelope roomAppEnvelope
+		var result capabilityFrame
+		if err := json.Unmarshal(payload, &envelope); err != nil || json.Unmarshal(envelope.Payload, &result) != nil || result.Type != capabilityResultFrame || result.RequestID != wantRequestID {
+			t.Fatalf("result was not correlated to its requesting Human: %s", payload)
+		}
 	}
 	select {
 	case payload := <-humanA.payloads:
-		var envelope roomAppEnvelope
-		var result capabilityFrame
-		if err := json.Unmarshal(payload, &envelope); err != nil || json.Unmarshal(envelope.Payload, &result) != nil || result.Type != capabilityResultFrame {
-			t.Fatalf("Agent result was not returned to Human A's pair: %s", payload)
-		}
+		assertRequest(payload, "request-a")
 	case <-time.After(time.Second):
 		t.Fatal("Agent result was not sent to Human A's private channel")
 	}
 	select {
 	case payload := <-humanB.payloads:
-		t.Fatalf("Agent result was broadcast to Human B's pair channel: %s", payload)
-	default:
+		assertRequest(payload, "request-b")
+	case <-time.After(time.Second):
+		t.Fatal("Agent result was not sent to Human B's private channel")
 	}
 }
 
@@ -202,7 +215,7 @@ func TestRuntimeParticipantTransportDropsStaleRouteAndUnmappedSource(t *testing.
 	transport := NewRuntimeParticipantTransport("https://example.invalid", DecodedHandle{ParticipantID: "agent-a"}, handler, nil)
 	transport.ctx = context.Background()
 	transport.outbound = map[string]reliableParticipantDataChannel{"human-a": &capabilityTestChannel{payloads: make(chan []byte, 1)}}
-	transport.routes = map[string]types.RuntimeParticipantTransportRoute{}
+	transport.routes = map[participantRouteKey]types.RuntimeParticipantTransportRoute{}
 	transport.sources = map[string]string{participantDirectReliableChannelName("agent-a", "human-a"): "human-a"}
 	payload, _ := json.Marshal(roomAppEnvelope{ProtocolVersion: 1, Lane: "reliable", AppInstanceID: "generated:123e4567-e89b-12d3-a456-426614174000", Payload: json.RawMessage(`{"type":"runtime-capability-request","requestId":"request-a","appInstanceId":"generated:123e4567-e89b-12d3-a456-426614174000","bundleRevision":2,"taskRequestId":"task-a","agentParticipantId":"agent-a","capabilityId":"printer_status","operation":"observe"}`)})
 	transport.receive("participant-direct-reliable-unknown", payload)
@@ -253,7 +266,7 @@ func TestRuntimeParticipantTransportEnforcesCurrentDescriptorBeforeDispatch(t *t
 				AgentParticipantID: "agent-a", HumanParticipantID: "human-a", RuntimeHostID: "host-route-1",
 				CapabilityIDs: []string{"printer_status"},
 			}
-			transport.routes = map[string]types.RuntimeParticipantTransportRoute{appID: route}
+			transport.routes = map[participantRouteKey]types.RuntimeParticipantTransportRoute{{appInstanceID: appID, humanParticipantID: "human-a"}: route}
 			label := participantDirectReliableChannelName("agent-a", "human-a")
 			transport.sources = map[string]string{label: "human-a"}
 			frame := capabilityFrame{

@@ -326,6 +326,10 @@ type participantDataTransport interface {
 	Close()
 }
 
+type participantDataTransportUpdater interface {
+	Update(context.Context, types.RuntimeParticipantTransportProjection) error
+}
+
 // ResidentRuntime owns exactly one Free4Chat participant across many Harness
 // turns. The capability handle stays strictly inside this object: it never
 // reaches a Harness turn, status payload, or log line.
@@ -465,6 +469,7 @@ type ResidentRuntime struct {
 	participantTransportRetryCount int
 	participantTransportRetryDelay func(attempt int) time.Duration
 	participantTransportFactory    func(media.DecodedHandle) participantDataTransport
+	participantTransportUpdateMu   sync.Mutex
 	mediaMu                        sync.Mutex
 	// residentMediaStateApplyMu serializes cache changes with their Controller
 	// application. It is held across the apply call so a replay cannot take a
@@ -1498,9 +1503,18 @@ func (r *ResidentRuntime) observeRuntimeParticipantTransport(projection types.Ru
 	}
 	r.participantTransportRetryCount = 0
 	old := r.participantTransport
-	r.participantTransport = nil
 	r.participantTransportProjection = signature
 	handleText := r.participantHandle
+	if len(projection.Routes) > 0 && projection.Valid() && r.options.CapabilityHandler != nil && r.options.SiteOrigin != "" {
+		if updater, ok := old.(participantDataTransportUpdater); old != nil && ok {
+			r.mu.Unlock()
+			go r.updateRuntimeParticipantTransport(updater, old, projection, signature, generation)
+			return
+		}
+	} else {
+		r.participantTransport = nil
+	}
+	r.participantTransport = nil
 	r.mu.Unlock()
 	if old != nil {
 		old.Close()
@@ -1509,6 +1523,34 @@ func (r *ResidentRuntime) observeRuntimeParticipantTransport(projection types.Ru
 		return
 	}
 	r.startRuntimeParticipantTransport(projection, signature, generation, handleText)
+}
+
+func (r *ResidentRuntime) updateRuntimeParticipantTransport(
+	updater participantDataTransportUpdater,
+	transport participantDataTransport,
+	projection types.RuntimeParticipantTransportProjection,
+	signature string,
+	generation uint64,
+) {
+	r.participantTransportUpdateMu.Lock()
+	defer r.participantTransportUpdateMu.Unlock()
+	r.mu.Lock()
+	current := !r.stopped && r.participantTransport == transport &&
+		r.participantTransportGeneration == generation && r.participantTransportProjection == signature
+	r.mu.Unlock()
+	if !current {
+		return
+	}
+	if err := updater.Update(context.Background(), projection); err != nil {
+		r.log("runtime_participant_transport_update_failed", map[string]string{"reason": "projection_update_failed"})
+		r.mu.Lock()
+		if !r.stopped && r.participantTransport == transport &&
+			r.participantTransportGeneration == generation && r.participantTransportProjection == signature {
+			// The next private Room envelope retries this same bounded projection.
+			r.participantTransportProjection = ""
+		}
+		r.mu.Unlock()
+	}
 }
 
 func (r *ResidentRuntime) startRuntimeParticipantTransport(
