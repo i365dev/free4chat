@@ -466,6 +466,7 @@ type ResidentRuntime struct {
 	participantTransport           participantDataTransport
 	participantTransportProjection string
 	participantTransportGeneration uint64
+	participantTransportStarted    bool
 	participantTransportRetryTimer *time.Timer
 	participantTransportRetryCount int
 	participantTransportRetryDelay func(attempt int) time.Duration
@@ -1357,6 +1358,7 @@ func (r *ResidentRuntime) setResidentStream(
 	r.participantTransportRetryCount = 0
 	participantTransport := r.participantTransport
 	r.participantTransport = nil
+	r.participantTransportStarted = false
 	r.participantTransportProjection = ""
 	r.residentMu.Lock()
 	r.resident = stream
@@ -1504,18 +1506,18 @@ func (r *ResidentRuntime) observeRuntimeParticipantTransport(projection types.Ru
 	}
 	r.participantTransportRetryCount = 0
 	old := r.participantTransport
+	oldStarted := r.participantTransportStarted
 	r.participantTransportProjection = signature
 	handleText := r.participantHandle
-	if len(projection.Routes) > 0 && projection.Valid() && r.options.CapabilityHandler != nil && r.options.SiteOrigin != "" {
+	if oldStarted && len(projection.Routes) > 0 && projection.Valid() && r.options.CapabilityHandler != nil && r.options.SiteOrigin != "" {
 		if updater, ok := old.(participantDataTransportUpdater); old != nil && ok {
 			r.mu.Unlock()
 			go r.updateRuntimeParticipantTransport(updater, old, projection, signature, generation)
 			return
 		}
-	} else {
-		r.participantTransport = nil
 	}
 	r.participantTransport = nil
+	r.participantTransportStarted = false
 	r.mu.Unlock()
 	if old != nil {
 		old.Close()
@@ -1603,10 +1605,19 @@ func (r *ResidentRuntime) startRuntimeParticipantTransport(
 				r.participantTransportGeneration == generation &&
 				r.participantTransportProjection == signature {
 				r.participantTransport = nil
+				r.participantTransportStarted = false
 				r.scheduleRuntimeParticipantTransportRetryLocked(projection, signature, generation, handleText, nil, nil)
 			}
 			r.mu.Unlock()
+			return
 		}
+		r.mu.Lock()
+		if !r.stopped && r.participantTransport == transport &&
+			r.participantTransportGeneration == generation &&
+			r.participantTransportProjection == signature {
+			r.participantTransportStarted = true
+		}
+		r.mu.Unlock()
 	}()
 }
 
@@ -2917,6 +2928,7 @@ func (r *ResidentRuntime) releaseResources() {
 	r.participantTransportRetryCount = 0
 	participantTransport := r.participantTransport
 	r.participantTransport = nil
+	r.participantTransportStarted = false
 	r.participantTransportProjection = ""
 	r.mu.Unlock()
 	if participantTransport != nil {

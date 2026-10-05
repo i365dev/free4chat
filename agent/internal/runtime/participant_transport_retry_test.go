@@ -17,19 +17,29 @@ type participantTransportStartResult struct {
 }
 
 type scriptedParticipantTransport struct {
-	result        participantTransportStartResult
-	started       chan participantTransportStartResult
-	once          sync.Once
+	result  participantTransportStartResult
+	started chan participantTransportStartResult
+	once    sync.Once
+}
+
+type scriptedUpdatableParticipantTransport struct {
+	*scriptedParticipantTransport
 	updates       chan types.RuntimeParticipantTransportProjection
 	updateResults chan error
 }
 
 func newScriptedParticipantTransport(err error) *scriptedParticipantTransport {
 	return &scriptedParticipantTransport{
-		result:        participantTransportStartResult{err: err},
-		started:       make(chan participantTransportStartResult, 1),
-		updates:       make(chan types.RuntimeParticipantTransportProjection, 4),
-		updateResults: make(chan error, 16),
+		result:  participantTransportStartResult{err: err},
+		started: make(chan participantTransportStartResult, 1),
+	}
+}
+
+func newScriptedUpdatableParticipantTransport(err error) *scriptedUpdatableParticipantTransport {
+	return &scriptedUpdatableParticipantTransport{
+		scriptedParticipantTransport: newScriptedParticipantTransport(err),
+		updates:                      make(chan types.RuntimeParticipantTransportProjection, 4),
+		updateResults:                make(chan error, 16),
 	}
 }
 
@@ -42,7 +52,11 @@ func (t *scriptedParticipantTransport) Start(_ context.Context, projection types
 
 func (*scriptedParticipantTransport) Close() {}
 
-func (t *scriptedParticipantTransport) Update(_ context.Context, projection types.RuntimeParticipantTransportProjection) error {
+func (t *scriptedParticipantTransport) startResults() <-chan participantTransportStartResult {
+	return t.started
+}
+
+func (t *scriptedUpdatableParticipantTransport) Update(_ context.Context, projection types.RuntimeParticipantTransportProjection) error {
 	t.updates <- projection
 	select {
 	case err := <-t.updateResults:
@@ -52,7 +66,7 @@ func (t *scriptedParticipantTransport) Update(_ context.Context, projection type
 	}
 }
 
-func awaitParticipantTransportUpdate(t *testing.T, transport *scriptedParticipantTransport) types.RuntimeParticipantTransportProjection {
+func awaitParticipantTransportUpdate(t *testing.T, transport *scriptedUpdatableParticipantTransport) types.RuntimeParticipantTransportProjection {
 	t.Helper()
 	select {
 	case projection := <-transport.updates:
@@ -89,10 +103,12 @@ func configureParticipantTransportRuntime(t *testing.T, rt *ResidentRuntime, del
 	rt.mu.Unlock()
 }
 
-func awaitParticipantTransportStart(t *testing.T, transport *scriptedParticipantTransport) participantTransportStartResult {
+func awaitParticipantTransportStart(t *testing.T, transport interface {
+	startResults() <-chan participantTransportStartResult
+}) participantTransportStartResult {
 	t.Helper()
 	select {
-	case result := <-transport.started:
+	case result := <-transport.startResults():
 		return result
 	case <-time.After(2 * time.Second):
 		t.Fatal("participant transport did not start")
@@ -149,7 +165,7 @@ func TestParticipantTransportProjectionUpdatesExistingTransportInPlace(t *testin
 	rt, _ := newResidentFenceRuntime(t)
 	configureParticipantTransportRuntime(t, rt, 10*time.Millisecond)
 	defer rt.Stop()
-	transport := newScriptedParticipantTransport(nil)
+	transport := newScriptedUpdatableParticipantTransport(nil)
 	factoryCalls := 0
 	rt.participantTransportFactory = func(media.DecodedHandle) participantDataTransport {
 		factoryCalls++
@@ -211,7 +227,7 @@ func TestParticipantTransportUpdateRetriesAutonomouslyWithoutRoomEnvelope(t *tes
 	rt, _ := newResidentFenceRuntime(t)
 	configureParticipantTransportRuntime(t, rt, 10*time.Millisecond)
 	defer rt.Stop()
-	transport := newScriptedParticipantTransport(nil)
+	transport := newScriptedUpdatableParticipantTransport(nil)
 	rt.participantTransportFactory = func(media.DecodedHandle) participantDataTransport { return transport }
 	initial := participantTransportTestProjection("human-a", "session-a")
 	rt.observeRuntimeParticipantTransport(initial)
@@ -251,7 +267,7 @@ func TestParticipantTransportUpdateRetryIsFencedByNewerProjection(t *testing.T) 
 	rt, _ := newResidentFenceRuntime(t)
 	configureParticipantTransportRuntime(t, rt, 80*time.Millisecond)
 	defer rt.Stop()
-	transport := newScriptedParticipantTransport(nil)
+	transport := newScriptedUpdatableParticipantTransport(nil)
 	rt.participantTransportFactory = func(media.DecodedHandle) participantDataTransport { return transport }
 	rt.observeRuntimeParticipantTransport(participantTransportTestProjection("human-a", "session-a"))
 	if got := awaitParticipantTransportStart(t, transport); got.err != nil {
@@ -278,7 +294,7 @@ func TestParticipantTransportUpdateRetryStopsAndIsBounded(t *testing.T) {
 	t.Run("stops with runtime", func(t *testing.T) {
 		rt, _ := newResidentFenceRuntime(t)
 		configureParticipantTransportRuntime(t, rt, 40*time.Millisecond)
-		transport := newScriptedParticipantTransport(nil)
+		transport := newScriptedUpdatableParticipantTransport(nil)
 		rt.participantTransportFactory = func(media.DecodedHandle) participantDataTransport { return transport }
 		rt.observeRuntimeParticipantTransport(participantTransportTestProjection("human-a", "session-a"))
 		_ = awaitParticipantTransportStart(t, transport)
@@ -299,7 +315,7 @@ func TestParticipantTransportUpdateRetryStopsAndIsBounded(t *testing.T) {
 		rt, _ := newResidentFenceRuntime(t)
 		configureParticipantTransportRuntime(t, rt, time.Millisecond)
 		defer rt.Stop()
-		transport := newScriptedParticipantTransport(nil)
+		transport := newScriptedUpdatableParticipantTransport(nil)
 		rt.participantTransportFactory = func(media.DecodedHandle) participantDataTransport { return transport }
 		rt.observeRuntimeParticipantTransport(participantTransportTestProjection("human-a", "session-a"))
 		_ = awaitParticipantTransportStart(t, transport)
@@ -329,7 +345,7 @@ func TestParticipantTransportRetryDoesNotCrossProjectionGeneration(t *testing.T)
 	configureParticipantTransportRuntime(t, rt, 250*time.Millisecond)
 	defer rt.Stop()
 
-	stale := newScriptedParticipantTransport(errors.New("transient signaling failure"))
+	stale := newScriptedUpdatableParticipantTransport(errors.New("transient signaling failure"))
 	current := newScriptedParticipantTransport(nil)
 	var mu sync.Mutex
 	var factoryCalls int

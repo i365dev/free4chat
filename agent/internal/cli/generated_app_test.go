@@ -113,7 +113,7 @@ func TestGeneratedAppDescribeIsDeterministicAndSelfConsistent(t *testing.T) {
 	if js, _ := descriptor.Examples[0].Bundle["js"].(string); !strings.Contains(js, "items:[...items") || !strings.Contains(js, "shared.set") || !strings.Contains(js, "onSharedChange") {
 		t.Fatalf("describe example must demonstrate a real shared checklist update: %s", js)
 	}
-	rules := strings.Join(descriptor.Rules, "\n")
+	rules = strings.Join(descriptor.Rules, "\n")
 	for _, required := range []string{
 		"shared.set(nextState)",
 		"returns whether the message was queued",
