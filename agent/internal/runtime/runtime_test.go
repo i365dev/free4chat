@@ -925,7 +925,11 @@ type fakeAdapter struct {
 	// absent, the legacy reply-N/turnTargets behavior stays unchanged.
 	turnResults       []types.HarnessTurnResult
 	scopedTurnResults []types.HarnessTurnResult
-	turnWait          <-chan struct{}
+	// scopedTurnErrors scripts one-shot errors by one-based scoped turn call
+	// number. It lets end-to-end state-machine tests fail a queued follow-up
+	// without also failing the already-running turn that precedes it.
+	scopedTurnErrors map[int]error
+	turnWait         <-chan struct{}
 	// scopedTurnWait, when non-nil, blocks the NEXT scoped Harness turn. It is
 	// the scoped equivalent of turnWait and is how a test holds one Task's turn
 	// open while later Tasks are admitted behind it.
@@ -1188,6 +1192,7 @@ func (a *fakeAdapter) RunTurnFor(scope string, input types.HarnessTurnInput, exp
 	if a.scopedTurnDetails == nil {
 		a.scopedTurnDetails = make(map[string][]string)
 	}
+	callNumber := len(a.scopedRuns) + 1
 	if a.scopedSessionNews == nil {
 		a.scopedSessionNews = make(map[string][]bool)
 	}
@@ -1212,6 +1217,13 @@ func (a *fakeAdapter) RunTurnFor(scope string, input types.HarnessTurnInput, exp
 		<-scopedWait
 	}
 	a.mu.Lock()
+	if err, scripted := a.scopedTurnErrors[callNumber]; scripted {
+		delete(a.scopedTurnErrors, callNumber)
+		if err != nil {
+			a.mu.Unlock()
+			return types.HarnessTurnResult{}, err
+		}
+	}
 	if a.turnErr != nil {
 		err := a.turnErr
 		a.mu.Unlock()

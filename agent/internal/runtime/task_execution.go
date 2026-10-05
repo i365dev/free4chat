@@ -17,7 +17,8 @@ import (
  *   phase        <- whether an authorized interrupt was dispatched for that
  *                   same exact turn
  *   lastOutcome  <- whether that exact turn settled after a Human interrupt
- *   availability <- whether the retained Harness session for the Task died
+ *   availability <- whether the retained Harness session died or a selected
+ *                    native control cannot currently be applied
  *
  * The retained Task lifecycle (Starting|Working|Completed|Failed) and the
  * coarse Harness activity (working|thinking|using_tools|responding) stay
@@ -38,6 +39,8 @@ import (
 type taskExecutionFacts struct {
 	lastOutcome  types.TaskExecutionOutcome
 	availability types.TaskExecutionAvailability
+	failureClass string
+	retryAttempt int
 }
 
 type taskExecutionPublication struct {
@@ -87,8 +90,18 @@ func (r *ResidentRuntime) snapshotTaskExecution(scope string) (types.TaskExecuti
 	// over-report it (#484).
 	r.mu.Lock()
 	queued := 0
+	retrying := false
 	if ref := r.sessionRefLocked(scope); ref != nil {
 		queued = r.undeliveredDeliveryCountLocked(scope, ref, currentTurn)
+	}
+	if currentTurn == 0 {
+		for key, retry := range r.turnRetries {
+			if key.scope == normalizeScope(scope) && retry != nil && retry.attempt > 0 &&
+				!r.turnRecoveryClosedLocked(scope, key.target) {
+				retrying = true
+				break
+			}
+		}
 	}
 	r.mu.Unlock()
 
@@ -109,6 +122,8 @@ func (r *ResidentRuntime) snapshotTaskExecution(scope string) (types.TaskExecuti
 		if interrupting {
 			projection.Phase = types.TaskExecutionPhaseInterrupting
 		}
+	case queued > 0 && projection.Availability == "" && retrying:
+		projection.Phase = types.TaskExecutionPhaseRetrying
 	case queued > 0 && projection.Availability == "":
 		// Accepted work that no execution lane is running. This is the
 		// truthful "waiting for capacity" state (#421): a Task behind the
@@ -268,8 +283,8 @@ func (r *ResidentRuntime) clearTaskExecutionOutcome(scope string) {
 // settleHumanTask publishes the canonical terminal result for one accepted
 // Human Task. The Task request remains the lifecycle source of truth; the
 // transient execution projection only describes the current turn.
-func (r *ResidentRuntime) settleHumanTask(events []types.RoomEvent, status, summary string) bool {
-	request := humanTaskRequestFor(events, r.currentParticipantID())
+func (r *ResidentRuntime) settleHumanTask(scope string, events []types.RoomEvent, status, summary string) bool {
+	request := r.humanTaskRequestForScope(scope, events, r.currentParticipantID())
 	if request == nil {
 		return false
 	}
@@ -298,7 +313,7 @@ func (r *ResidentRuntime) failPendingHumanTasks(scopes []string, summary string)
 		r.mu.Unlock()
 		for _, target := range targets {
 			events, err := r.pendingContextFor(scope, target)
-			if err == nil && r.settleHumanTask(events, "failed", summary) {
+			if err == nil && r.settleHumanTask(scope, events, "failed", summary) {
 				// Once a terminal failure has been published, this canonical
 				// trigger must not be re-opened and later completed by a future
 				// addressed event in the same Task.
@@ -368,6 +383,104 @@ func (r *ResidentRuntime) markTaskSessionLost(scope string) {
 	}
 	r.taskExecutionMu.Unlock()
 	r.publishTaskExecution(scope)
+}
+
+func taskExecutionBlocked(r *ResidentRuntime, scope string) bool {
+	r.taskExecutionMu.Lock()
+	defer r.taskExecutionMu.Unlock()
+	availability := r.taskExecutionFacts[scope].availability
+	return availability == types.TaskExecutionAvailabilityControlUnavailable ||
+		availability == types.TaskExecutionAvailabilityNeedsAttention
+}
+
+func (r *ResidentRuntime) markTaskControlUnavailable(scope, failureClass string) {
+	r.taskExecutionMu.Lock()
+	r.taskExecutionFacts[scope] = taskExecutionFacts{
+		availability: types.TaskExecutionAvailabilityControlUnavailable,
+		failureClass: failureClass,
+	}
+	r.taskExecutionMu.Unlock()
+	r.publishTaskExecution(scope)
+}
+
+func (r *ResidentRuntime) markTaskBlockedForFailure(scope, failureClass string, controlUnavailable bool) {
+	r.markTaskAttentionAndQuarantine(scope, failureClass, controlUnavailable)
+}
+
+// discardUndeliveredTaskWorkLocked quarantines Runtime-owned pending work for
+// one Task after bounded delivery recovery has ended. The canonical Room
+// messages remain untouched and visible to the Human. Advancing the local
+// cursor prevents event replay from reconstructing the discarded queue.
+// Callers hold r.mu after the failed Harness call has returned.
+func (r *ResidentRuntime) discardUndeliveredTaskWorkLocked(scope string) int {
+	ref := r.sessionRefLocked(scope)
+	if ref == nil || ref.pendingAddressed == nil || ref.pendingContexts == nil {
+		return 0
+	}
+	dropped := len(*ref.pendingAddressed)
+	for _, sequence := range *ref.pendingAddressed {
+		delete(*ref.pendingContexts, sequence)
+		delete(r.turnRetries, canonicalTurnKey{scope: normalizeScope(scope), target: sequence})
+		r.forgetTurnRecoveryLocked(scope, sequence)
+		if sequence > *ref.deliveredThrough {
+			*ref.deliveredThrough = sequence
+		}
+	}
+	*ref.pendingAddressed = nil
+	return dropped
+}
+
+// markTaskAttentionAndQuarantine is the single exhaustion boundary for a
+// Task. Runtime bookkeeping is discarded atomically with publishing the
+// Human-visible state, so a later Human instruction can never be appended
+// behind a stale failed head.
+func (r *ResidentRuntime) markTaskAttentionAndQuarantine(scope, failureClass string, controlUnavailable bool) {
+	r.mu.Lock()
+	var retryAttempt int
+	for key, retry := range r.turnRetries {
+		if key.scope == normalizeScope(scope) && retry != nil && retry.attempt > retryAttempt {
+			retryAttempt = retry.attempt
+		}
+	}
+	if retryAttempt > maxTurnRetryAttempts {
+		retryAttempt = maxTurnRetryAttempts
+	}
+	r.discardUndeliveredTaskWorkLocked(scope)
+	for key := range r.turnRetries {
+		if key.scope == normalizeScope(scope) {
+			delete(r.turnRetries, key)
+		}
+	}
+	r.taskExecutionMu.Lock()
+	availability := types.TaskExecutionAvailabilityNeedsAttention
+	if controlUnavailable {
+		availability = types.TaskExecutionAvailabilityControlUnavailable
+	}
+	if r.taskExecutionFacts[scope].availability == types.TaskExecutionAvailabilitySessionLost {
+		availability = types.TaskExecutionAvailabilitySessionLost
+	}
+	r.taskExecutionFacts[scope] = taskExecutionFacts{
+		availability: availability,
+		failureClass: failureClass,
+		retryAttempt: retryAttempt,
+	}
+	r.taskExecutionMu.Unlock()
+	r.mu.Unlock()
+	r.wakeTurnRetryClock()
+	r.publishTaskExecution(scope)
+}
+
+func (r *ResidentRuntime) clearTaskExecutionBlocker(scope string) {
+	r.taskExecutionMu.Lock()
+	facts := r.taskExecutionFacts[scope]
+	if facts.availability == types.TaskExecutionAvailabilityControlUnavailable ||
+		facts.availability == types.TaskExecutionAvailabilityNeedsAttention {
+		facts.availability = ""
+		facts.failureClass = ""
+		facts.retryAttempt = 0
+		r.taskExecutionFacts[scope] = facts
+	}
+	r.taskExecutionMu.Unlock()
 }
 
 // clearTaskExecutionLocal drops all transient execution facts. It is used on
@@ -448,7 +561,7 @@ func (r *ResidentRuntime) settleInterruptedTurn(scope string, target, through, g
 	// trigger; this covers the idempotent case where it had nothing left to
 	// remove, so the interrupted outcome is always published.
 	r.publishTaskExecution(scope)
-	r.settleHumanTask(events, "failed", "Agent task was interrupted.")
+	r.settleHumanTask(scope, events, "failed", "Agent task was interrupted.")
 	reason := "cancelled"
 	if turnErr != nil {
 		// The cancelled turn may also have surfaced a real transport/Harness

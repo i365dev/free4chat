@@ -396,6 +396,39 @@ describe("Room execution reconciliation after DO hibernation (#421)", () => {
     ])
   })
 
+  it("restores a RETRYING projection during backoff after hibernation", async () => {
+    const test = harness()
+    const requestId = await createTask(test)
+    expect(
+      await test.publishExecution({
+        taskRequestId: requestId,
+        phase: "retrying",
+        queuedCount: 1,
+      })
+    ).toBe(200)
+
+    test.hibernate()
+    test.clearAgentFrames()
+    expect(test.executions()).toEqual([])
+
+    await test.connectHuman()
+    expect(test.resyncFrames()).toHaveLength(1)
+
+    await test.publishExecution({
+      taskRequestId: requestId,
+      phase: "retrying",
+      queuedCount: 1,
+    })
+    expect(test.executions()).toEqual([
+      {
+        agentParticipantId: "agent-a",
+        taskRequestId: requestId,
+        phase: "retrying",
+        queuedCount: 1,
+      },
+    ])
+  })
+
   it("never manufactures a Running projection for a completed Task", async () => {
     const test = harness()
     await createTask(test)

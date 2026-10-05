@@ -231,6 +231,49 @@ func humanTaskRequestFor(events []types.RoomEvent, participantID string) *types.
 	return newest
 }
 
+func (r *ResidentRuntime) humanTaskRequestForScope(scope string, events []types.RoomEvent, participantID string) *types.WireCollabEvent {
+	if request := humanTaskRequestFor(events, participantID); request != nil {
+		return request
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.humanTaskRequestForScopeLocked(scope, events, participantID)
+}
+
+// humanTaskRequestForScopeLocked returns the sanitized lifecycle token saved
+// from the Task's original Human request when a recovered instruction no
+// longer includes that original queue item. Human task content is never kept
+// here or replayed.
+func (r *ResidentRuntime) humanTaskRequestForScopeLocked(scope string, events []types.RoomEvent, participantID string) *types.WireCollabEvent {
+	if request := humanTaskRequestFor(events, participantID); request != nil {
+		return request
+	}
+	state := r.scopedSessions[normalizeScope(scope)]
+	if state == nil || state.taskRequest == nil ||
+		state.taskRequest.TargetParticipantID != participantID {
+		return nil
+	}
+	request := *state.taskRequest
+	return &request
+}
+
+func (r *ResidentRuntime) taskRequestAccepted(scope, requestID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	state := r.scopedSessions[normalizeScope(scope)]
+	return state != nil && state.taskRequest != nil &&
+		state.taskRequest.RequestID == requestID && state.taskRequestAccepted
+}
+
+func (r *ResidentRuntime) markTaskRequestAccepted(scope, requestID string) {
+	r.mu.Lock()
+	if state := r.scopedSessions[normalizeScope(scope)]; state != nil &&
+		state.taskRequest != nil && state.taskRequest.RequestID == requestID {
+		state.taskRequestAccepted = true
+	}
+	r.mu.Unlock()
+}
+
 func containsSequence(items []int64, sequence int64) bool {
 	for _, item := range items {
 		if item == sequence {
@@ -294,14 +337,39 @@ func (r *ResidentRuntime) ensureHarnessSession(scope string) error {
 		return ensureErr
 	}
 	if err := r.applyTaskSessionControls(scope); err != nil {
-		r.log("task_harness_control_unavailable", map[string]string{"scopeKind": "task"})
+		r.log("task_harness_control_unavailable", map[string]string{"scopeKind": "task", "reason": taskControlFailureReason(err)})
+		if taskControlApplyFailed(err) {
+			return errTaskHarnessControlApplyFailed
+		}
 		return errTaskHarnessControlUnavailable
 	}
 	if err := r.applySessionConfigFallbacks(scope); err != nil {
-		r.log("task_harness_control_unavailable", map[string]string{"scopeKind": "task"})
-		return errTaskHarnessControlUnavailable
+		r.log("task_harness_control_unavailable", map[string]string{"scopeKind": "task", "reason": "provider_fallback"})
+		return errTaskHarnessControlApplyFailed
 	}
 	return nil
+}
+
+type taskControlError struct {
+	reason string
+	cause  error
+}
+
+func (e *taskControlError) Error() string { return e.cause.Error() }
+func (e *taskControlError) Unwrap() error { return e.cause }
+
+func taskControlFailureReason(err error) string {
+	var controlErr *taskControlError
+	if errors.As(err, &controlErr) {
+		return controlErr.reason
+	}
+	return "unknown"
+}
+
+func taskControlApplyFailed(err error) bool {
+	var controlErr *taskControlError
+	return errors.As(err, &controlErr) &&
+		(controlErr.reason == "mode_set_failed" || controlErr.reason == "config_set_failed" || controlErr.reason == "controls_disappeared")
 }
 
 func (r *ResidentRuntime) applySessionConfigFallbacks(scope string) error {
@@ -328,9 +396,9 @@ func (r *ResidentRuntime) applyTaskSessionControls(scope string) error {
 	}
 	controls := adapter.SessionControlsFor(scope)
 	if controls == nil {
-		return errors.New("Harness session controls are unavailable")
+		return &taskControlError{"controls_missing", errors.New("Harness session controls are unavailable")}
 	}
-	if modeID != "" {
+	if modeID != "" && controls.CurrentModeID != modeID {
 		advertised := false
 		for _, mode := range controls.Modes {
 			if mode.ID == modeID {
@@ -339,23 +407,29 @@ func (r *ResidentRuntime) applyTaskSessionControls(scope string) error {
 			}
 		}
 		if !advertised {
-			return errors.New("selected Harness session mode is no longer advertised")
+			return &taskControlError{"mode_not_advertised", errors.New("selected Harness session mode is no longer advertised")}
 		}
 		if controls.CurrentModeID != modeID {
 			if err := adapter.SetModeFor(scope, modeID); err != nil {
-				return err
+				return &taskControlError{"mode_set_failed", err}
 			}
 			controls = adapter.SessionControlsFor(scope)
 			if controls == nil {
-				return errors.New("Harness session controls became unavailable")
+				return &taskControlError{"controls_disappeared", errors.New("Harness session controls became unavailable")}
 			}
 		}
 	}
 	for configID, value := range configOptions {
 		advertised := false
+		current := ""
 		for _, option := range controls.ConfigOptions {
 			if option.ID != configID || option.Type != "select" {
 				continue
+			}
+			current = option.CurrentValue
+			if current == value {
+				advertised = true
+				break
 			}
 			for _, candidate := range option.Options {
 				if candidate.Value == value {
@@ -368,22 +442,15 @@ func (r *ResidentRuntime) applyTaskSessionControls(scope string) error {
 			}
 		}
 		if !advertised {
-			return errors.New("selected Harness session config value is no longer advertised")
-		}
-		current := ""
-		for _, option := range controls.ConfigOptions {
-			if option.ID == configID && option.Type == "select" {
-				current = option.CurrentValue
-				break
-			}
+			return &taskControlError{"config_not_advertised", errors.New("selected Harness session config value is no longer advertised")}
 		}
 		if current != value {
 			if err := adapter.SetConfigOptionFor(scope, configID, value); err != nil {
-				return err
+				return &taskControlError{"config_set_failed", err}
 			}
 			controls = adapter.SessionControlsFor(scope)
 			if controls == nil {
-				return errors.New("Harness session controls became unavailable")
+				return &taskControlError{"controls_disappeared", errors.New("Harness session controls became unavailable")}
 			}
 		}
 	}
@@ -1020,13 +1087,15 @@ func (r *ResidentRuntime) steerWouldBeNextLocked(scope string, ref *logicalSessi
 //	the running turn is never selected here (its scope is skipped by callers);
 //	a steer is delivered before ordinary not-yet-started follow-ups;
 //	among steers, canonical order wins;
-//	a scope whose only runnable work is a closed-recovery head stays parked.
+//	closed Room steer entries keep their existing delivery behavior.
 func (r *ResidentRuntime) nextPendingTargetLocked(scope string, ref *logicalSessionRef) (int64, bool) {
 	if ref == nil || ref.pendingAddressed == nil || len(*ref.pendingAddressed) == 0 {
 		return 0, false
 	}
+	if taskExecutionBlocked(r, scope) {
+		return 0, false
+	}
 	head := int64(0)
-	headFound := false
 	for _, sequence := range *ref.pendingAddressed {
 		context, ok := (*ref.pendingContexts)[sequence]
 		if ok && context.delivered {
@@ -1036,16 +1105,19 @@ func (r *ResidentRuntime) nextPendingTargetLocked(scope string, ref *logicalSess
 			continue
 		}
 		if r.turnRecoveryClosedLocked(scope, sequence) {
+			// Task delivery exhaustion drops Runtime queue bookkeeping and
+			// projects needs-attention; closed per-instruction markers remain
+			// only for the ordinary Room conversation path.
 			continue
 		}
-		if !headFound {
-			head, headFound = sequence, true
+		if head == 0 {
+			head = sequence
 		}
 		if ok && context.steer {
 			return sequence, true
 		}
 	}
-	if !headFound {
+	if head == 0 {
 		return 0, false
 	}
 	return head, true

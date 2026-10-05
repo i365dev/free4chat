@@ -1891,12 +1891,14 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       state: "working" as const,
       turnSequence: 42,
     }
+    const sendTaskInterrupt = vi.fn(() => true)
     const base = {
       ...baseHookReturn,
       connectionStatus: "connected",
       messages: [taskRequest],
       participants,
       agentActivities: [activity],
+      sendTaskInterrupt,
       localParticipantId: "human-local",
       getLocalRoomAuth: vi.fn(() => ({ participantId: "human-local" })),
     }
@@ -1946,6 +1948,10 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     expect(screen.getByTestId("task-agent-activity")).toHaveTextContent(
       "Running · 2 queued"
     )
+    expect(screen.getByTestId("task-interrupt")).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId("task-interrupt"))
+    expect(sendTaskInterrupt).toHaveBeenCalledWith("task-exec", 42)
+    expect(screen.queryByTestId("task-replace-pending-and-send")).toBeNull()
     queuedBehind.unmount()
 
     // Queued but not current: no interrupt control is offered.
@@ -1968,6 +1974,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       "Queued · 1 queued"
     )
     expect(screen.queryByTestId("task-interrupt")).not.toBeInTheDocument()
+    expect(screen.queryByTestId("task-replace-pending-and-send")).toBeNull()
     queuedOnly.unmount()
 
     // Interrupting: the interrupt control is disabled.
@@ -2018,6 +2025,24 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         },
         "Session lost",
       ],
+      [
+        {
+          agentParticipantId: "agent-codex",
+          taskRequestId: "task-exec",
+          queuedCount: 1,
+          availability: "control_unavailable" as const,
+        },
+        "Needs attention",
+      ],
+      [
+        {
+          agentParticipantId: "agent-codex",
+          taskRequestId: "task-exec",
+          queuedCount: 1,
+          availability: "needs_attention" as const,
+        },
+        "Needs attention",
+      ],
     ] as const) {
       mockUseSfuChatRoom.mockReturnValue({
         ...base,
@@ -2031,6 +2056,25 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       expect(screen.getByTestId("task-agent-activity")).toHaveTextContent(
         expected
       )
+      if (expected === "Needs attention") {
+        expect(screen.queryByTestId("task-interrupt")).not.toBeInTheDocument()
+        expect(screen.getByTestId("task-agent-activity")).toHaveTextContent(
+          "Recent instructions may not have reached the Agent"
+        )
+        const composer = screen.getByRole("textbox", {
+          name: "Message the room or @ an Agent",
+        })
+        expect(composer).toBeEnabled()
+        fireEvent.change(composer, {
+          target: { value: "send a fresh instruction" },
+        })
+        fireEvent.click(screen.getByRole("button", { name: "Send message" }))
+        expect(baseHookReturn.sendTextMessage).toHaveBeenCalledWith(
+          "send a fresh instruction",
+          [],
+          "task-exec"
+        )
+      }
       view.unmount()
     }
   })
@@ -2255,7 +2299,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     )
   })
 
-  it("keeps an orphaned Task's composer reachable only for an explicit replacement", () => {
+  it("keeps an orphaned Task's composer reachable for explicit Agent handoff", () => {
     const taskRequest: Message = {
       peerId: "human-local",
       name: "Hannah",

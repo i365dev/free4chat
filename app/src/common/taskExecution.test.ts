@@ -17,6 +17,7 @@ describe("Task execution projection shape (#421)", () => {
     expect(isTaskExecutionPhase("running")).toBe(true)
     expect(isTaskExecutionPhase("interrupting")).toBe(true)
     expect(isTaskExecutionPhase("queued")).toBe(true)
+    expect(isTaskExecutionPhase("retrying")).toBe(true)
     expect(isTaskExecutionPhase("waiting")).toBe(false)
     expect(isTaskExecutionPhase(undefined)).toBe(false)
   })
@@ -29,6 +30,12 @@ describe("Task execution projection shape (#421)", () => {
         queuedCount: 0,
       })
     ).toBe(true)
+    expect(
+      isValidTaskExecutionShape({ phase: "retrying", queuedCount: 1 })
+    ).toBe(true)
+    expect(
+      isValidTaskExecutionShape({ phase: "retrying", queuedCount: 0 })
+    ).toBe(false)
     expect(
       isValidTaskExecutionShape({
         currentTurnSequence: 7,
@@ -85,6 +92,16 @@ describe("Task execution labels (#421)", () => {
         queuedCount: 3,
       })
     ).toEqual({ label: "Interrupting", detail: "3 queued" })
+    // A later failed queued instruction cannot hide the exact turn already
+    // running; recovery availability describes what happens after it settles.
+    expect(
+      taskExecutionLabel({
+        currentTurnSequence: 9,
+        phase: "running",
+        queuedCount: 2,
+        availability: "needs_attention",
+      })
+    ).toEqual({ label: "Running", detail: "2 queued" })
   })
 
   it("still prefers a lost session over every other presentation", () => {
@@ -95,6 +112,36 @@ describe("Task execution labels (#421)", () => {
         availability: "session_lost",
       })
     ).toEqual({ label: "Session lost" })
+  })
+
+  it("does not label bounded retries as lane contention", () => {
+    expect(taskExecutionLabel({ phase: "retrying", queuedCount: 1 })).toEqual({
+      label: "Retrying",
+      detail: "1 retained instruction",
+    })
+  })
+
+  it("renders unavailable or exhausted delivery as needs attention, never queued", () => {
+    expect(
+      taskExecutionLabel({
+        phase: "queued",
+        queuedCount: 2,
+        availability: "control_unavailable",
+      })
+    ).toEqual({
+      label: "Needs attention",
+      detail: "Recent instructions may not have reached the Agent",
+    })
+    expect(
+      taskExecutionLabel({
+        phase: "queued",
+        queuedCount: 2,
+        availability: "needs_attention",
+      })
+    ).toEqual({
+      label: "Needs attention",
+      detail: "Recent instructions may not have reached the Agent",
+    })
   })
 
   it("keeps the legacy depth-only projection rendering as before", () => {

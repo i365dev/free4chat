@@ -10,6 +10,7 @@ const lifecycleLeaveFailureText = "I couldn't leave the Room; I'm still connecte
 // model can never turn its own unverified wording into a successful-leave
 // claim while this participant remains resident.
 func (r *ResidentRuntime) handleLifecycleIntent(
+	scope string,
 	input *types.HarnessTurnInput,
 	result types.HarnessTurnResult,
 	roomEvents []types.RoomEvent,
@@ -23,7 +24,7 @@ func (r *ResidentRuntime) handleLifecycleIntent(
 	if result.LifecycleIntent != types.LifecycleIntentLeave ||
 		len(result.TargetParticipantIDs) != 0 || !hasAddressedHuman(input) {
 		r.log("lifecycle_leave_failed", nil)
-		r.settleHumanTask(roomEvents, "failed", "Agent left before completing the task.")
+		r.settleHumanTask(scope, roomEvents, "failed", "Agent left before completing the task.")
 		r.publishLifecycleLeaveFailure()
 		return true
 	}
@@ -32,7 +33,7 @@ func (r *ResidentRuntime) handleLifecycleIntent(
 	handle, err := r.requireHandle()
 	if err != nil {
 		r.log("lifecycle_leave_failed", nil)
-		r.settleHumanTask(roomEvents, "failed", "Agent left before completing the task.")
+		r.settleHumanTask(scope, roomEvents, "failed", "Agent left before completing the task.")
 		r.publishLifecycleLeaveFailure()
 		return true
 	}
@@ -43,8 +44,8 @@ func (r *ResidentRuntime) handleLifecycleIntent(
 	// `leave_room` invalidates the participant capability on success. Settle
 	// the completed Task and fail other captured Tasks before that call, while
 	// credentials and pending contexts are still valid.
-	if request := humanTaskRequestFor(roomEvents, r.currentParticipantID()); request != nil &&
-		!r.settleHumanTask(roomEvents, "completed", "Agent completed the task before leaving the Room.") {
+	if request := r.humanTaskRequestForScope(scope, roomEvents, r.currentParticipantID()); request != nil &&
+		!r.settleHumanTask(scope, roomEvents, "completed", "Agent completed the task before leaving the Room.") {
 		r.reopenAdmissionsAfterFailedLeave()
 		r.log("lifecycle_leave_failed", nil)
 		r.publishLifecycleLeaveFailure()

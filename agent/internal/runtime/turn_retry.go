@@ -46,8 +46,9 @@ type turnRetryPlan struct {
 // turnRetryState is the bounded autonomous retry budget of ONE canonical
 // pending turn. Plan is nil while the retry is running or already dispatched.
 type turnRetryState struct {
-	attempt int
-	plan    *turnRetryPlan
+	attempt      int
+	failureClass string
+	plan         *turnRetryPlan
 }
 
 // canonicalTurnKey identifies one canonical pending turn: the logical scope
@@ -88,6 +89,9 @@ func turnFailureClassOf(err error) string {
 	if errors.Is(err, errTaskHarnessControlUnavailable) {
 		return "HARNESS_CONTROL_UNAVAILABLE"
 	}
+	if errors.Is(err, errTaskHarnessControlApplyFailed) {
+		return "HARNESS_CONTROL_APPLY_FAILED"
+	}
 	return turnFailureOther
 }
 
@@ -99,6 +103,18 @@ func turnFailureClassOf(err error) string {
 // instead of letting another scope's fresh work proceed.
 func permanentTurnFailure(err error) bool {
 	return errors.Is(err, errScopedHarnessUnsupported) || errors.Is(err, errAdoptedSessionUnavailable) || errors.Is(err, errTaskHarnessControlUnavailable)
+}
+
+// preHarnessTaskFailure reports failures that prevent an accepted Task
+// instruction from reaching its selected Harness session. These failures
+// leave a Human recovery decision to make; errors returned by an actual
+// Harness turn are terminal turn outcomes and must not poison future work in
+// the same Task scope after their canonical request has been settled.
+func preHarnessTaskFailure(err error) bool {
+	return errors.Is(err, errScopedHarnessUnsupported) ||
+		errors.Is(err, errAdoptedSessionUnavailable) ||
+		errors.Is(err, errTaskHarnessControlUnavailable) ||
+		errors.Is(err, errTaskHarnessControlApplyFailed)
 }
 
 // turnRetryIndexFor reports how many autonomous retries the canonical turn
@@ -149,7 +165,18 @@ func (r *ResidentRuntime) failTurn(
 	if retryable {
 		r.scheduleTurnRetry(scope, target, failureClass, elapsedMs)
 		if r.turnRecoveryClosed(scope, target) {
-			r.failPendingHumanTasks([]string{scope}, "Agent task failed before completion.")
+			if taskExecutionScope(scope) &&
+				(preHarnessTaskFailure(err) || r.pendingUndeliveredFor(scope, target)) {
+				r.markTaskBlockedForFailure(scope, failureClass,
+					errors.Is(err, errTaskHarnessControlApplyFailed) || errors.Is(err, errTaskHarnessControlUnavailable))
+			} else if !taskExecutionScope(scope) {
+				r.failPendingHumanTasks([]string{scope}, "Agent task failed before completion.")
+			}
+		} else if taskExecutionScope(scope) {
+			// A canonical instruction with an armed retry is not waiting for an
+			// execution lane. Publish the distinct retrying phase immediately so
+			// Room UI never reports false lane contention during back-off.
+			r.publishTaskExecution(scope)
 		}
 		return
 	}
@@ -160,7 +187,13 @@ func (r *ResidentRuntime) failTurn(
 	r.mu.Lock()
 	r.closeTurnRecoveryLocked(scope, target)
 	r.mu.Unlock()
-	r.failPendingHumanTasks([]string{scope}, "Agent task failed before completion.")
+	if taskExecutionScope(scope) &&
+		(preHarnessTaskFailure(err) || r.pendingUndeliveredFor(scope, target)) {
+		r.markTaskBlockedForFailure(scope, failureClass,
+			errors.Is(err, errTaskHarnessControlApplyFailed) || errors.Is(err, errTaskHarnessControlUnavailable))
+	} else if !taskExecutionScope(scope) {
+		r.failPendingHumanTasks([]string{scope}, "Agent task failed before completion.")
+	}
 }
 
 // recordDeliveredTurnFailure records a Room-side failure after the Harness has
@@ -206,6 +239,7 @@ func (r *ResidentRuntime) scheduleTurnRetry(scope string, target int64, failureC
 		state = &turnRetryState{}
 		r.turnRetries[key] = state
 	}
+	state.failureClass = failureClass
 	state.attempt++
 	attempt := state.attempt
 	if attempt > maxTurnRetryAttempts {
@@ -220,6 +254,15 @@ func (r *ResidentRuntime) scheduleTurnRetry(scope string, target int64, failureC
 			"failureClass": failureClass,
 			"retryAttempt": strconv.Itoa(maxTurnRetryAttempts),
 		})
+		// Retry exhaustion can be reached outside failTurn (for example when
+		// the frozen Room context cannot be recovered). Publish the same
+		// fail-closed state for any retained, undelivered Task head here so all
+		// bounded retry entry points project recovery accurately.
+		if taskExecutionScope(scope) && r.pendingUndeliveredFor(scope, target) {
+			r.markTaskBlockedForFailure(scope, failureClass,
+				failureClass == "HARNESS_CONTROL_UNAVAILABLE" ||
+					failureClass == "HARNESS_CONTROL_APPLY_FAILED")
+		}
 		return
 	}
 	delay := RetryDelay(attempt - 1)
@@ -360,7 +403,7 @@ func (r *ResidentRuntime) turnRecoveryClosedLocked(scope string, target int64) b
 // drain refuses to re-execute it for unrelated later Room traffic.
 func (r *ResidentRuntime) closeTurnRecoveryLocked(scope string, target int64) {
 	scope = normalizeScope(scope)
-	if scope == "" {
+	if scope == "" || taskExecutionScope(scope) {
 		return
 	}
 	ref := r.sessionRefLocked(scope)

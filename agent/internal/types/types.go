@@ -616,12 +616,15 @@ const (
 	// distinguishable from a Task that is simply hanging (#421). It is valid
 	// only with no current turn and a positive queue depth.
 	TaskExecutionPhaseQueued TaskExecutionPhase = "queued"
+	// TaskExecutionPhaseRetrying means a failed canonical turn has a bounded
+	// autonomous retry scheduled. It is not waiting for execution capacity.
+	TaskExecutionPhaseRetrying TaskExecutionPhase = "retrying"
 )
 
 func (phase TaskExecutionPhase) Valid() bool {
 	switch phase {
 	case TaskExecutionPhaseRunning, TaskExecutionPhaseInterrupting,
-		TaskExecutionPhaseQueued:
+		TaskExecutionPhaseQueued, TaskExecutionPhaseRetrying:
 		return true
 	default:
 		return false
@@ -651,10 +654,19 @@ const (
 	// TaskExecutionAvailabilitySessionLost means the retained Harness session
 	// for this Task died unexpectedly and no replacement turn has started yet.
 	TaskExecutionAvailabilitySessionLost TaskExecutionAvailability = "session_lost"
+	// TaskExecutionAvailabilityControlUnavailable means the selected native
+	// Harness control cannot currently be restored without changing its value.
+	TaskExecutionAvailabilityControlUnavailable TaskExecutionAvailability = "control_unavailable"
+	// TaskExecutionAvailabilityNeedsAttention means automatic delivery stopped
+	// and one or more recent Human instructions may not have reached the Agent.
+	// Canonical Room history remains available for inspection and re-send.
+	TaskExecutionAvailabilityNeedsAttention TaskExecutionAvailability = "needs_attention"
 )
 
 func (availability TaskExecutionAvailability) Valid() bool {
-	return availability == TaskExecutionAvailabilitySessionLost
+	return availability == TaskExecutionAvailabilitySessionLost ||
+		availability == TaskExecutionAvailabilityControlUnavailable ||
+		availability == TaskExecutionAvailabilityNeedsAttention
 }
 
 // TaskExecutionProjection is the Runtime-authoritative TRANSIENT execution
@@ -673,20 +685,22 @@ type TaskExecutionProjection struct {
 	// CurrentTurnSequence is the canonical Room sequence of the exact turn this
 	// Runtime owns for the Task; 0 means no turn is current.
 	CurrentTurnSequence int64 `json:"currentTurnSequence,omitempty"`
-	// Phase is present only while CurrentTurnSequence is.
+	// Phase distinguishes the exact running turn, lane waiting, or a bounded
+	// retry. Running phases require CurrentTurnSequence; queued/retrying do not.
 	Phase TaskExecutionPhase `json:"phase,omitempty"`
 	// QueuedCount counts accepted instructions waiting behind the current turn
 	// (or all of them when no turn is current).
 	QueuedCount int `json:"queuedCount"`
 	// LastOutcome is present only while it is still meaningful.
 	LastOutcome TaskExecutionOutcome `json:"lastOutcome,omitempty"`
-	// Availability is present only while the retained session is known lost.
+	// Availability reports a lost session or an explicit execution blocker.
 	Availability TaskExecutionAvailability `json:"availability,omitempty"`
 }
 
 // Valid enforces the projection's closed shape fail-closed: a RUNNING or
-// INTERRUPTING phase may only exist with a positive current turn, and a QUEUED
-// phase may only exist with no current turn and real accepted work waiting.
+// INTERRUPTING phase may only exist with a positive current turn, while a
+// QUEUED or RETRYING phase may only exist with no current turn and real
+// accepted work waiting.
 func (p TaskExecutionProjection) Valid() bool {
 	if p.TaskRequestID == "" || len(p.TaskRequestID) > MaxResidentTaskRequestID {
 		return false
@@ -700,13 +714,13 @@ func (p TaskExecutionProjection) Valid() bool {
 	if p.CurrentTurnSequence == 0 {
 		// No current turn: the only truthful phase is "nothing is executing",
 		// stated either as absent or as QUEUED when accepted work is waiting.
-		if p.Phase != "" && p.Phase != TaskExecutionPhaseQueued {
+		if p.Phase != "" && p.Phase != TaskExecutionPhaseQueued && p.Phase != TaskExecutionPhaseRetrying {
 			return false
 		}
-		if p.Phase == TaskExecutionPhaseQueued && p.QueuedCount == 0 {
+		if (p.Phase == TaskExecutionPhaseQueued || p.Phase == TaskExecutionPhaseRetrying) && p.QueuedCount == 0 {
 			return false
 		}
-	} else if !p.Phase.Valid() || p.Phase == TaskExecutionPhaseQueued {
+	} else if !p.Phase.Valid() || p.Phase == TaskExecutionPhaseQueued || p.Phase == TaskExecutionPhaseRetrying {
 		return false
 	}
 	if p.LastOutcome != "" && !p.LastOutcome.Valid() {

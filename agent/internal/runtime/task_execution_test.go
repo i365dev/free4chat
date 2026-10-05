@@ -1,8 +1,10 @@
 package runtime
 
 import (
+	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -307,6 +309,343 @@ func TestTaskExecutionSessionLostOnlyForRealHarnessDeath(t *testing.T) {
 	}
 	adapter.releaseTurn()
 	waitForDone(t, again, "recovered turn to settle")
+}
+
+func TestExhaustedTaskDeliveryQuarantinesOldQueueAndNewHumanInstructionRecovers(t *testing.T) {
+	rt, adapter, client := newExecutionRuntime(t)
+	defer rt.Stop()
+
+	const scope = "task:req-T"
+	initial := startTurn(rt, scopedEvent(200, scope, "initial task"))
+	waitForActiveScope(t, rt, scope)
+	adapter.releaseTurn()
+	waitForDone(t, initial, "initial Task turn")
+	if got := adapter.runCount(scope); got != 1 {
+		t.Fatalf("initial Task did not complete before follow-up: run count=%d", got)
+	}
+
+	// A Harness turn failure after the initial Task has settled leaves this
+	// ordinary follow-up undelivered. Once the small retry budget is exhausted,
+	// Runtime bookkeeping is discarded while the canonical Room history stays
+	// untouched.
+	rt.acceptEvent(scopedEvent(201, scope, "follow-up that fails in Harness"))
+	rt.turnRetryDelay = func(int) time.Duration { return time.Hour }
+	for attempt := 0; attempt <= maxTurnRetryAttempts; attempt++ {
+		rt.failTurn(scope, 201, "harness", turnFailureOther, time.Now(), errors.New("Harness turn failed"), true)
+	}
+	if rt.turnRetryIndexFor(scope, 201) != 0 {
+		t.Fatal("exhausted Task retry state was retained as executable work")
+	}
+	attention := waitForExecution(t, client, "req-T", "exhausted Harness follow-up needs attention", func(p types.TaskExecutionProjection) bool {
+		return p.Availability == types.TaskExecutionAvailabilityNeedsAttention && p.QueuedCount == 0
+	})
+	if attention.Phase == types.TaskExecutionPhaseQueued || attention.CurrentTurnSequence != 0 {
+		t.Fatalf("an exhausted Harness follow-up was presented as lane contention: %+v", attention)
+	}
+	if pending := rt.pendingAddressedSnapshotFor(scope); len(pending) != 0 {
+		t.Fatalf("failed Task bookkeeping remained queued after exhaustion: %v", pending)
+	}
+	if got := adapter.runCount(scope); got != 1 {
+		t.Fatalf("failed follow-up entered automatic Harness retry unexpectedly: run count=%d", got)
+	}
+
+	// New Human work is the escape hatch. It clears attention, excludes the
+	// old failed instruction from its Runtime context, and reaches Harness once.
+	rt.acceptEvent(scopedEvent(202, scope, "fresh Human instruction C"))
+	rt.drainTurns()
+	if got := adapter.runCount(scope); got != 2 {
+		t.Fatalf("fresh Human instruction did not reach Harness exactly once: run count=%d", got)
+	}
+	if pending := rt.pendingAddressedSnapshotFor(scope); len(pending) != 0 {
+		t.Fatalf("fresh instruction did not settle normally: %v", pending)
+	}
+	_, details := adapter.scopedRunSnapshot()
+	if got := details[scope][1]; got != "fresh Human instruction C" {
+		t.Fatalf("old failed instructions leaked into the recovery turn: %q", got)
+	}
+	recovered := waitForExecution(t, client, "req-T", "Task usable after new Human instruction", func(p types.TaskExecutionProjection) bool {
+		return p.Availability == "" && p.CurrentTurnSequence == 0 && p.QueuedCount == 0
+	})
+	if recovered.Phase == types.TaskExecutionPhaseQueued {
+		t.Fatalf("recovered Task retained fake queue contention: %+v", recovered)
+	}
+}
+
+func TestOrdinaryHumanMessageDoesNotResetBoundedRetryBudget(t *testing.T) {
+	rt, _, _ := newExecutionRuntime(t)
+	defer rt.Stop()
+	rt.turnRetryDelay = func(int) time.Duration { return time.Hour }
+	const scope = "task:req-T"
+	rt.acceptEvent(scopedEvent(110, scope, "instruction B"))
+	rt.failTurn(scope, 110, "harness", turnFailureOther, time.Now(), errors.New("temporary failure"), true)
+	if got := rt.turnRetryIndexFor(scope, 110); got != 1 {
+		t.Fatalf("first bounded retry attempt = %d, want 1", got)
+	}
+	rt.acceptEvent(scopedEvent(111, scope, "ordinary Human instruction C"))
+	if got := rt.turnRetryIndexFor(scope, 110); got != 1 {
+		t.Fatalf("new ordinary Human message reset the old retry budget to %d", got)
+	}
+	if pending := rt.pendingAddressedSnapshotFor(scope); !reflect.DeepEqual(pending, []int64{110, 111}) {
+		t.Fatalf("ordinary Human message changed the pending queue while retrying: %v", pending)
+	}
+}
+
+func TestNewHumanInstructionRechecksUnavailableControlWithoutRetryLoop(t *testing.T) {
+	rt, adapter, client := newExecutionRuntime(t)
+	defer rt.Stop()
+
+	// The Task's existing session works until a Human selects a native control
+	// that this adapter cannot apply. The failed second instruction is never
+	// delivered to the Harness.
+	initial := startTurn(rt, scopedEvent(130, "task:req-T", "previous turn completes"))
+	waitForActiveScope(t, rt, "task:req-T")
+	adapter.releaseTurn()
+	waitForDone(t, initial, "previous turn to complete")
+	rt.mu.Lock()
+	rt.taskIdentities["task:req-T"] = &taskIdentity{modeID: "workspace"}
+	rt.mu.Unlock()
+	rt.acceptEvent(scopedEvent(131, "task:req-T", "selected native mode instruction"))
+	rt.drainTurns()
+	blocked := waitForExecution(t, client, "req-T", "unavailable selected control blocks Task", func(p types.TaskExecutionProjection) bool {
+		return p.Availability == types.TaskExecutionAvailabilityControlUnavailable
+	})
+	if blocked.Phase == types.TaskExecutionPhaseQueued || adapter.runCount("task:req-T") != 1 {
+		t.Fatalf("pre-Harness control failure was shown as queue contention or delivered: projection=%+v runs=%d", blocked, adapter.runCount("task:req-T"))
+	}
+
+	rt.acceptEvent(scopedEvent(132, "task:req-T", "later ordinary instruction"))
+	rt.drainTurns()
+	if adapter.runCount("task:req-T") != 1 || len(rt.pendingAddressedSnapshotFor("task:req-T")) != 0 {
+		t.Fatalf("exhausted work remained executable after attention: runs=%d pending=%v", adapter.runCount("task:req-T"), rt.pendingAddressedSnapshotFor("task:req-T"))
+	}
+
+	latest := scopedEvent(133, "task:req-T", "fresh Human instruction")
+	rt.acceptEvent(latest)
+	rt.drainTurns()
+	stillBlocked := waitForExecution(t, client, "req-T", "still-unavailable control re-blocks fresh instruction", func(p types.TaskExecutionProjection) bool {
+		return p.Availability == types.TaskExecutionAvailabilityControlUnavailable && p.QueuedCount == 0
+	})
+	if stillBlocked.Phase == types.TaskExecutionPhaseQueued || adapter.runCount("task:req-T") != 1 ||
+		len(rt.pendingAddressedSnapshotFor("task:req-T")) != 0 {
+		t.Fatalf("fresh instruction bypassed a genuinely unavailable native control: projection=%+v runs=%d pending=%v", stillBlocked, adapter.runCount("task:req-T"), rt.pendingAddressedSnapshotFor("task:req-T"))
+	}
+	// Replaying a duplicate Room event cannot create an autonomous retry or a
+	// second blocked attempt while the underlying provider limitation remains.
+	rt.acceptEvent(latest)
+	rt.drainTurns()
+	time.Sleep(20 * time.Millisecond)
+	if adapter.runCount("task:req-T") != 1 || len(rt.pendingAddressedSnapshotFor("task:req-T")) != 0 {
+		t.Fatalf("replayed Human instruction caused duplicate work: runs=%d pending=%v", adapter.runCount("task:req-T"), rt.pendingAddressedSnapshotFor("task:req-T"))
+	}
+}
+
+func TestDiagnosticsSnapshotIdentifiesLiveTaskTurnWithoutTaskContent(t *testing.T) {
+	rt, adapter, _ := newExecutionRuntime(t)
+	defer rt.Stop()
+	adapter.blockNextTurn()
+	drained := startTurn(rt, scopedEvent(120, "task:req-private", "private prompt content /private/project-path credential-secret model-secret"))
+	waitForActiveScope(t, rt, "task:req-private")
+
+	diagnostic := rt.DiagnosticsSnapshot()
+	_, ok := diagnostic["execution"].(map[string]any)
+	if !ok {
+		t.Fatalf("execution diagnostics are missing: %#v", diagnostic)
+	}
+	encoded, err := json.Marshal(diagnostic)
+	if err != nil {
+		t.Fatalf("encode diagnostics: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("decode diagnostics: %v", err)
+	}
+	rows, ok := decoded["execution"].(map[string]any)["tasks"].([]any)
+	if !ok || len(rows) != 1 {
+		t.Fatalf("task execution diagnostic shape = %#v", decoded["execution"])
+	}
+	row, ok := rows[0].(map[string]any)
+	if !ok || row["scopeKind"] != "task" || row["state"] != "running" || row["currentTurnSequence"] != float64(120) {
+		t.Fatalf("live Task turn was not diagnosed precisely: %#v", rows[0])
+	}
+	for _, forbidden := range []string{"req-private", "private prompt content", "/private/project-path", "credential-secret", "model-secret", "native-session-secret"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("diagnostics exposed sensitive Task/Harness data %q: %s", forbidden, encoded)
+		}
+	}
+	adapter.releaseTurn()
+	waitForDone(t, drained, "diagnostic Task turn to settle")
+	rt.markTaskControlUnavailable("task:req-private", "HARNESS_CONTROL_UNAVAILABLE")
+	blocked, err := json.Marshal(rt.DiagnosticsSnapshot())
+	if err != nil {
+		t.Fatalf("encode blocked diagnostics: %v", err)
+	}
+	if !strings.Contains(string(blocked), `"state":"blocked"`) ||
+		!strings.Contains(string(blocked), `"availabilityReason":"HARNESS_CONTROL_UNAVAILABLE"`) {
+		t.Fatalf("blocked Task diagnostics omit the failure class: %s", blocked)
+	}
+}
+
+type taskDiagnosticsAdapter struct {
+	*interruptAdapter
+}
+
+func (a *taskDiagnosticsAdapter) DiagnosticsSnapshot() types.HarnessDiagnosticSnapshot {
+	return types.HarnessDiagnosticSnapshot{
+		Provider: "test",
+		Capacity: 1,
+		Lanes: []types.HarnessLaneDiagnostic{{
+			Lane:        0,
+			State:       "idle",
+			Scope:       "task:req-provider-private",
+			SessionHash: "opaque-session-hash",
+		}},
+	}
+}
+
+func TestDiagnosticsDistinguishRunningRetryingNeedsAttentionAndBlocked(t *testing.T) {
+	rt := NewResidentRuntime(Options{
+		InstanceID: "diagnostics-state-machine",
+		RoomID:     "room-diagnostics-state-machine",
+		Name:       "Agent",
+		Client:     newExecutionClient(),
+		Adapter:    &taskDiagnosticsAdapter{interruptAdapter: newInterruptAdapter()},
+	})
+	rt.adoptJoin(types.JoinResult{
+		ParticipantID: "agent", ParticipantHandle: "room-secret", Cursor: 0,
+		ExpiresAt: time.Now().Add(time.Hour).UnixMilli(),
+	})
+	defer rt.Stop()
+
+	scopes := []string{
+		"task:req-running-private",
+		"task:req-retrying-private",
+		"task:req-recovery-private",
+		"task:req-blocked-private",
+	}
+	sequences := []int64{501, 502, 503, 504}
+	for index, scope := range scopes {
+		rt.acceptEvent(scopedEvent(sequences[index], scope, "prompt-private /private/path model-private credential-private"))
+	}
+	rt.mu.Lock()
+	rt.taskIdentities[scopes[0]] = &taskIdentity{
+		projectCwd:    "/private/path",
+		configOptions: map[string]string{"model": "model-private"},
+	}
+	rt.turnRetries[canonicalTurnKey{scope: scopes[1], target: sequences[1]}] = &turnRetryState{
+		attempt:      1,
+		failureClass: turnFailureTimeout,
+		plan: &turnRetryPlan{
+			scope: scopes[1], target: sequences[1], failureClass: turnFailureTimeout,
+			attempt: 1, dueAt: time.Now().Add(time.Minute),
+		},
+	}
+	rt.turnRetries[canonicalTurnKey{scope: scopes[2], target: sequences[2]}] = &turnRetryState{
+		attempt:      maxTurnRetryAttempts,
+		failureClass: turnFailureSession,
+	}
+	rt.mu.Unlock()
+	rt.beginActivity(scopes[0], sequences[0])
+	rt.markTaskBlockedForFailure(scopes[2], turnFailureSession, false)
+	rt.markTaskControlUnavailable(scopes[3], "HARNESS_CONTROL_UNAVAILABLE")
+
+	encoded, err := json.Marshal(rt.DiagnosticsSnapshot())
+	if err != nil {
+		t.Fatalf("encode execution diagnostics: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("decode execution diagnostics: %v", err)
+	}
+	tasks, ok := decoded["execution"].(map[string]any)["tasks"].([]any)
+	if !ok || len(tasks) != len(scopes) {
+		t.Fatalf("bounded task diagnostics missing: %s", encoded)
+	}
+	want := map[string]string{
+		scopes[0]: "running",
+		scopes[1]: "retrying",
+		scopes[2]: "needs_attention",
+		scopes[3]: "blocked",
+	}
+	seen := make(map[string]bool, len(want))
+	for _, raw := range tasks {
+		row := raw.(map[string]any)
+		for scope, state := range want {
+			if row["scopeKey"] == diagnosticScopeKey(scope) {
+				if row["state"] != state {
+					t.Fatalf("Task diagnostic %s state = %v, want %s: %s", diagnosticScopeKey(scope), row["state"], state, encoded)
+				}
+				if scope == scopes[1] && row["retryFailureClass"] != turnFailureTimeout {
+					t.Fatalf("retry failure class is not visible: %#v", row)
+				}
+				if scope == scopes[2] && row["availabilityReason"] != turnFailureSession {
+					t.Fatalf("needs-attention failure class is not visible: %#v", row)
+				}
+				if scope == scopes[2] && row["retryAttempt"] != float64(maxTurnRetryAttempts) {
+					t.Fatalf("exhausted retry attempt is not visible: %#v", row)
+				}
+				seen[scope] = true
+			}
+		}
+	}
+	for scope := range want {
+		if !seen[scope] {
+			t.Fatalf("Task diagnostic missing for %s: %s", diagnosticScopeKey(scope), encoded)
+		}
+	}
+	for _, forbidden := range []string{
+		"req-running-private", "req-retrying-private", "req-recovery-private", "req-blocked-private",
+		"prompt-private", "/private/path", "credential-private", "model-private", "native-session-secret", "req-provider-private",
+	} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("diagnostics exposed sensitive value %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestDirectContextRetryExhaustionNeedsAttentionAndAllowsNewInstruction(t *testing.T) {
+	rt, adapter, client := newExecutionRuntime(t)
+	defer rt.Stop()
+
+	const scope = "task:req-T"
+	const sequence = int64(205)
+	event := scopedEvent(sequence, scope, "instruction with unavailable context")
+	rt.acceptEvent(event)
+	// Model local snapshot loss followed by a failed authenticated Room read.
+	rt.mu.Lock()
+	ref := rt.sessionRefLocked(scope)
+	pending := (*ref.pendingContexts)[sequence]
+	pending.events = nil
+	(*ref.pendingContexts)[sequence] = pending
+	rt.eventBuffer.Clear()
+	client.fakeClient.contextErr = errors.New("room context unavailable")
+	rt.mu.Unlock()
+
+	for range maxTurnRetryAttempts + 1 {
+		rt.runTurn(scope, sequence)
+	}
+	blocked := waitForExecution(t, client, "req-T", "direct context retry exhaustion needs attention", func(p types.TaskExecutionProjection) bool {
+		return p.Availability == types.TaskExecutionAvailabilityNeedsAttention && p.QueuedCount == 0
+	})
+	if blocked.Phase == types.TaskExecutionPhaseQueued || blocked.CurrentTurnSequence != 0 {
+		t.Fatalf("closed direct-context retry was presented as lane contention: %+v", blocked)
+	}
+
+	rt.acceptEvent(scopedEvent(sequence+1, scope, "fresh Human instruction after context failure"))
+	if got := adapter.runCount(scope); got != 0 {
+		t.Fatalf("context-unavailable turn reached Harness unexpectedly: runs=%d", got)
+	}
+	client.fakeClient.mu.Lock()
+	client.fakeClient.contextErr = nil
+	client.fakeClient.mu.Unlock()
+	adapter.releaseTurn()
+	rt.drainTurns()
+	if got := adapter.runCount(scope); got != 1 {
+		t.Fatalf("fresh instruction did not escape the failed context state exactly once: runs=%d", got)
+	}
+	_, details := adapter.scopedRunSnapshot()
+	if got := details[scope][0]; got != "fresh Human instruction after context failure" {
+		t.Fatalf("discarded context failure leaked into the recovery turn: %q", got)
+	}
 }
 
 func TestTaskExecutionPublicationIsBestEffort(t *testing.T) {
@@ -630,7 +969,7 @@ func TestEmptySuccessfulHumanTaskPublishesCompletedLifecycle(t *testing.T) {
 	}
 }
 
-func TestFinalHarnessFailureSettlesHumanTaskAsFailed(t *testing.T) {
+func TestFinalHarnessFailureQuarantinesTaskForHumanRecovery(t *testing.T) {
 	client := newExecutionClient()
 	adapter := &fakeAdapter{name: "pi"}
 	rt := NewResidentRuntime(Options{
@@ -651,8 +990,99 @@ func TestFinalHarnessFailureSettlesHumanTaskAsFailed(t *testing.T) {
 	rt.failTurn("task:req-failed", 1, "harness", turnFailureOther, time.Now(), errors.New("final Harness failure"), false)
 
 	results := client.fakeClient.snapshotCollabResults()
-	if len(results) != 1 || results[0].RequestID != "req-failed" || results[0].Status != "failed" {
-		t.Fatalf("a final Harness failure must settle its Human Task: %+v", results)
+	if len(results) != 0 {
+		t.Fatalf("an undelivered Harness instruction must remain recoverable, not terminally settled: %+v", results)
+	}
+	if got := rt.pendingAddressedSnapshotFor("task:req-failed"); len(got) != 0 {
+		t.Fatalf("failed Task work was left as queue contention: %v", got)
+	}
+	projection, ok := rt.snapshotTaskExecution("task:req-failed")
+	if !ok || projection.Availability != types.TaskExecutionAvailabilityNeedsAttention {
+		t.Fatalf("failed Task should require Human attention: %+v, ok=%v", projection, ok)
+	}
+}
+
+func TestAttachmentFirstTaskRecoveryRetainsOnlyCanonicalRequestCorrelation(t *testing.T) {
+	client := newExecutionClient()
+	adapter := &fakeAdapter{name: "pi", scopedTurnResults: []types.HarnessTurnResult{{}}}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "unaccepted-task-recovery",
+		RoomID:     "room-unaccepted-task-recovery",
+		Name:       "Pi",
+		Client:     client,
+		Adapter:    adapter,
+	})
+	rt.adoptJoin(types.JoinResult{
+		ParticipantID:     "agent",
+		ParticipantHandle: "room-secret",
+		Cursor:            0,
+		ExpiresAt:         time.Now().Add(time.Hour).UnixMilli(),
+	})
+	defer rt.Stop()
+
+	const scope = "task:req-recover"
+	attachment := roomEvent(1, false)
+	attachment.ScopeID = scope
+	attachment.Type = "image"
+	attachment.Attachment = &types.RoomAttachmentMetadata{
+		ID: "private-attachment-id", FileName: "private-attachment.png", MimeType: "image/png", Size: 42,
+	}
+	rt.acceptEvent(attachment)
+	rt.mu.Lock()
+	identity := rt.recordTaskIdentityLocked(scope)
+	if state := rt.scopedSessions[scope]; state == nil || state.admittedSequence != 0 {
+		rt.mu.Unlock()
+		t.Fatalf("pre-Task attachment incorrectly established the Task request sequence: state=%+v", state)
+	}
+	if identity.requestSequence != 0 {
+		rt.mu.Unlock()
+		t.Fatalf("pre-Task attachment incorrectly dated Task identity: %+v", identity)
+	}
+	rt.mu.Unlock()
+
+	initial := taskRequestEvent(2, scope, "req-recover", "human-1")
+	initial.Collab.Summary = "private initial summary"
+	initial.Collab.Details = map[string]string{"task": "private initial details"}
+	initial.Collab.AttachmentIDs = []string{"private-attachment-id"}
+	rt.acceptEvent(initial)
+	rt.mu.Lock()
+	state := rt.scopedSessions[scope]
+	identity = rt.taskIdentities[scope]
+	if state == nil || state.admittedSequence != 2 || identity == nil || identity.requestSequence != 2 {
+		rt.mu.Unlock()
+		t.Fatalf("canonical Task request did not date lifecycle identity: state=%+v identity=%+v", state, identity)
+	}
+	retained := state.taskRequest
+	if retained == nil || retained.RequestID != "req-recover" || retained.TargetParticipantID != "agent" ||
+		retained.Summary != "" || retained.Details != nil || len(retained.AttachmentIDs) != 0 || retained.FromParticipantID != "" {
+		rt.mu.Unlock()
+		t.Fatalf("Runtime retained more than the sanitized Task lifecycle correlation: %+v", retained)
+	}
+	rt.mu.Unlock()
+
+	// Fail before Harness admission/acceptance. The new Human instruction must
+	// be able to resume the canonical Task without retaining or replaying this
+	// prompt as Runtime-owned execution work.
+	rt.failTurn(scope, 2, "harness", turnFailureSession, time.Now(), errScopedHarnessUnsupported, false)
+	if got := rt.pendingAddressedSnapshotFor(scope); len(got) != 0 {
+		t.Fatalf("unaccepted initial request remained as queue contention: %v", got)
+	}
+	if responses := client.snapshotCollabResponses(); len(responses) != 0 {
+		t.Fatalf("pre-Harness failure unexpectedly accepted the Task: %+v", responses)
+	}
+
+	waitForDone(t, startTurn(rt, scopedEvent(3, scope, "fresh Human instruction C")), "fresh Human recovery instruction")
+	responses := client.snapshotCollabResponses()
+	if len(responses) != 1 || responses[0].RequestID != "req-recover" || responses[0].Decision != "accepted" {
+		t.Fatalf("recovery did not accept the canonical Task exactly once: %+v", responses)
+	}
+	runs, contexts := adapter.scopedRunSnapshot()
+	if got := contexts[scope]; len(runs) != 1 || len(got) != 1 || got[0] != "fresh Human instruction C" {
+		t.Fatalf("recovery did not send only C to Harness exactly once: runs=%v contexts=%v", runs, got)
+	}
+	results := client.snapshotCollabResults()
+	if len(results) != 1 || results[0].RequestID != "req-recover" || results[0].Status != "completed" {
+		t.Fatalf("recovery completion did not correlate to the original Task: %+v", results)
 	}
 }
 
@@ -677,11 +1107,11 @@ func TestTerminalTaskFailureCannotBeReopenedBySameScopeTrigger(t *testing.T) {
 	rt.acceptEvent(taskRequestEvent(1, "task:req-shared", "req-terminal", "human-1"))
 	rt.failTurn("task:req-shared", 1, "harness", turnFailureOther, time.Now(), errors.New("permanent Harness failure"), false)
 	if pending := rt.pendingAddressedSnapshotFor("task:req-shared"); len(pending) != 0 {
-		t.Fatalf("terminal Task failure remained reopenable: %v", pending)
+		t.Fatalf("failed Task work remained as queue contention: %v", pending)
 	}
 	results := client.fakeClient.snapshotCollabResults()
-	if len(results) != 1 || results[0].RequestID != "req-terminal" || results[0].Status != "failed" {
-		t.Fatalf("terminal failure did not publish exactly one failed result: %+v", results)
+	if len(results) != 0 {
+		t.Fatalf("undelivered work must not be falsely terminally settled: %+v", results)
 	}
 
 	// A later request in the same Task scope is new work. It must not replay the
@@ -689,9 +1119,8 @@ func TestTerminalTaskFailureCannotBeReopenedBySameScopeTrigger(t *testing.T) {
 	// req-terminal.
 	waitForDone(t, startTurn(rt, taskRequestEvent(2, "task:req-shared", "req-new", "human-1")), "new Task trigger after terminal failure")
 	results = client.fakeClient.snapshotCollabResults()
-	if len(results) != 2 || results[0].RequestID != "req-terminal" || results[0].Status != "failed" ||
-		results[1].RequestID != "req-new" || results[1].Status != "completed" {
-		t.Fatalf("later same-scope work contradicted the terminal Task outcome: %+v", results)
+	if len(results) != 1 || results[0].RequestID != "req-new" || results[0].Status != "completed" {
+		t.Fatalf("later same-scope work did not recover normally: %+v", results)
 	}
 }
 

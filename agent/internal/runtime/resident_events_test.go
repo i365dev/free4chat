@@ -90,6 +90,18 @@ type residentTestClient struct {
 	openParticIDs []string
 }
 
+// residentExecutionTestClient combines the real resident transport seam with
+// the Runtime execution projection sink so reconnect regressions assert the
+// same state the Room and Browser consume.
+type residentExecutionTestClient struct {
+	*residentTestClient
+	execution *executionClient
+}
+
+func (c *residentExecutionTestClient) UpdateTaskExecution(roomID string, projection types.TaskExecutionProjection) error {
+	return c.execution.UpdateTaskExecution(roomID, projection)
+}
+
 type parsedLeaseResidentClient struct {
 	*free4chat.Client
 	stream types.ResidentEventStream
@@ -476,6 +488,158 @@ func TestResidentRuntimeReconnectPreservesParticipantAndCursor(t *testing.T) {
 		t.Fatalf("transient stream close must not create a new participant: joins=%d", joins)
 	}
 	rt.Stop()
+}
+
+func TestResidentTransportReconnectKeepsExactActiveTaskTurn(t *testing.T) {
+	first := newResidentTestStream()
+	second := newResidentTestStream()
+	client := &residentTestClient{
+		fakeClient: &fakeClient{},
+		streams:    make(chan *residentTestStream, 2),
+	}
+	client.streams <- first
+	client.streams <- second
+	rt := NewResidentRuntime(Options{
+		InstanceID: "resident-active-reconnect",
+		RoomID:     "room",
+		Name:       "Agent",
+		Client:     client,
+		Adapter:    &fakeAdapter{name: "pi"},
+	})
+	if err := rt.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Stop()
+	waitFor(t, time.Second, func() bool {
+		open, _, _ := client.residentOpenSnapshot()
+		return open == 1
+	}, "first resident stream open")
+
+	// The current turn belongs to the local Harness process. A Room transport
+	// interruption may hide projections temporarily, but cannot erase identity.
+	rt.beginActivity("task:req-T", 77)
+	if err := first.Close(); err != nil {
+		t.Fatalf("close resident stream: %v", err)
+	}
+	waitFor(t, 3*time.Second, func() bool {
+		open, _, _ := client.residentOpenSnapshot()
+		return open >= 2
+	}, "resident stream reconnect")
+	if sequence, active := rt.activeTurnOf("task:req-T"); !active || sequence != 77 {
+		t.Fatalf("transport reconnect erased the exact active Task turn: sequence=%d active=%v", sequence, active)
+	}
+}
+
+func TestResidentReconnectPreservesExactRunningTaskProjectionAndSteerTarget(t *testing.T) {
+	first := newResidentTestStream()
+	second := newResidentTestStream()
+	transport := &residentTestClient{
+		fakeClient: &fakeClient{},
+		streams:    make(chan *residentTestStream, 2),
+	}
+	transport.streams <- first
+	transport.streams <- second
+	client := &residentExecutionTestClient{
+		residentTestClient: transport,
+		execution:          newExecutionClient(),
+	}
+	adapter := newInterruptAdapter()
+	hold := adapter.holdTurns()
+	rt := NewResidentRuntime(Options{
+		InstanceID: "resident-projection-reconnect",
+		RoomID:     "room",
+		Name:       "Agent",
+		Client:     client,
+		Adapter:    adapter,
+	})
+	if err := rt.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		closeGateIgnoringDoubleClose(hold)
+		adapter.releaseAllTurns()
+		rt.Stop()
+	}()
+	waitFor(t, time.Second, func() bool {
+		open, _, _ := transport.residentOpenSnapshot()
+		return open == 1
+	}, "initial resident stream")
+
+	const activeSequence int64 = 77
+	const queuedSequence int64 = 78
+	drained := startTurn(rt, scopedEvent(activeSequence, "task:req-T", "long running instruction A"))
+	waitForExecution(t, client.execution, "req-T", "Harness turn A projected running", func(p types.TaskExecutionProjection) bool {
+		return p.CurrentTurnSequence == activeSequence && p.Phase == types.TaskExecutionPhaseRunning
+	})
+	rt.acceptEvent(scopedEvent(queuedSequence, "task:req-T", "queued Human instruction B"))
+	beforeReconnect := waitForExecution(t, client.execution, "req-T", "instruction B queued behind A", func(p types.TaskExecutionProjection) bool {
+		return p.CurrentTurnSequence == activeSequence && p.Phase == types.TaskExecutionPhaseRunning && p.QueuedCount == 1
+	})
+	if beforeReconnect.CurrentTurnSequence != activeSequence || adapter.runCount("task:req-T") != 1 {
+		t.Fatalf("the fixture did not establish the running A + queued B incident: projection=%+v runs=%d", beforeReconnect, adapter.runCount("task:req-T"))
+	}
+
+	if err := first.Close(); err != nil {
+		t.Fatalf("drop resident stream: %v", err)
+	}
+	waitFor(t, 3*time.Second, func() bool {
+		open, _, _ := transport.residentOpenSnapshot()
+		return open >= 2
+	}, "resident stream reconnect")
+	reconnected := waitForExecution(t, client.execution, "req-T", "reconciled running Task projection", func(p types.TaskExecutionProjection) bool {
+		return p.CurrentTurnSequence == activeSequence && p.Phase == types.TaskExecutionPhaseRunning && p.QueuedCount == 1
+	})
+	if reconnected.CurrentTurnSequence != activeSequence || reconnected.Phase != types.TaskExecutionPhaseRunning || reconnected.QueuedCount != 1 {
+		t.Fatalf("reconnect did not preserve the exact Room-facing projection: %+v", reconnected)
+	}
+	if adapter.cancelCount() != 0 || adapter.runCount("task:req-T") != 1 {
+		t.Fatalf("ordinary transport reconnect interrupted/restarted A or ran B: cancels=%d runs=%d", adapter.cancelCount(), adapter.runCount("task:req-T"))
+	}
+
+	// The exact projection sequence remains the control target after reconnect.
+	// Do not invoke the control: ordinary transport recovery must let A settle.
+	if reconnected.CurrentTurnSequence != activeSequence {
+		t.Fatalf("the reconnected Steer/Interrupt authority no longer names A: %+v", reconnected)
+	}
+	rt.turnRetryDelay = func(int) time.Duration { return time.Millisecond }
+	adapter.fakeAdapter.mu.Lock()
+	adapter.fakeAdapter.scopedTurnErrors = map[int]error{
+		2: errors.New("scripted bounded delivery failure"),
+		3: errors.New("scripted bounded delivery failure"),
+		4: errors.New("scripted bounded delivery failure"),
+	}
+	adapter.fakeAdapter.mu.Unlock()
+	adapter.releaseTurn()
+	closeGateIgnoringDoubleClose(hold)
+	attention := waitForExecution(t, client.execution, "req-T", "B retry exhaustion becomes needs-attention", func(p types.TaskExecutionProjection) bool {
+		return p.Availability == types.TaskExecutionAvailabilityNeedsAttention && p.CurrentTurnSequence == 0 && p.QueuedCount == 0
+	})
+	if attention.Phase == types.TaskExecutionPhaseQueued || adapter.runCount("task:req-T") != 4 {
+		t.Fatalf("failed B was mislabeled as queued or retried beyond its bound: projection=%+v runs=%d", attention, adapter.runCount("task:req-T"))
+	}
+	waitForDone(t, drained, "A and bounded B retries to settle")
+	time.Sleep(20 * time.Millisecond)
+	if adapter.runCount("task:req-T") != 4 || len(rt.pendingAddressedSnapshotFor("task:req-T")) != 0 {
+		t.Fatalf("exhausted B remained executable: runs=%d pending=%v", adapter.runCount("task:req-T"), rt.pendingAddressedSnapshotFor("task:req-T"))
+	}
+
+	// A new Human instruction clears stale Runtime recovery state and is sent
+	// once. Room history remains the source from which B could be copied/re-sent.
+	recovery := scopedEvent(queuedSequence+1, "task:req-T", "fresh Human instruction C")
+	rt.acceptEvent(recovery)
+	continued := make(chan struct{})
+	go func() {
+		rt.drainTurns()
+		close(continued)
+	}()
+	waitForDone(t, continued, "fresh C to reach Harness")
+	if adapter.runCount("task:req-T") != 5 {
+		t.Fatalf("C was not delivered exactly once: runs=%d", adapter.runCount("task:req-T"))
+	}
+	_, details := adapter.scopedRunSnapshot()
+	if detailsForTask := details["task:req-T"]; len(detailsForTask) != 5 || detailsForTask[4] != "fresh Human instruction C" {
+		t.Fatalf("recovery turn did not contain only C: %v", detailsForTask)
+	}
 }
 
 func TestResidentRuntimeDoesNotReconnectAfterTerminalEventProtocolError(t *testing.T) {

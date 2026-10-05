@@ -50,6 +50,7 @@ var (
 	// continue on a fresh one.
 	errAdoptedSessionUnavailable     = errors.New("the adopted session for this Task is no longer available")
 	errTaskHarnessControlUnavailable = errors.New("the selected Harness-native Task control is no longer available")
+	errTaskHarnessControlApplyFailed = errors.New("the selected Harness-native Task control could not be applied")
 )
 
 // maxAdoptedSessionIDRunes matches the adapter's own bound on an opaque ACP
@@ -737,12 +738,15 @@ func (r *ResidentRuntime) bindSessionAdoption(scope string, adoption *pendingSes
 		return errAdoptedSessionUnavailable
 	}
 	if err := r.applyTaskSessionControls(scope); err != nil {
-		r.log("task_harness_control_unavailable", map[string]string{"scopeKind": "task"})
+		r.log("task_harness_control_unavailable", map[string]string{"scopeKind": "task", "reason": taskControlFailureReason(err)})
+		if taskControlApplyFailed(err) {
+			return errTaskHarnessControlApplyFailed
+		}
 		return errTaskHarnessControlUnavailable
 	}
 	if err := r.applySessionConfigFallbacks(scope); err != nil {
-		r.log("task_harness_control_unavailable", map[string]string{"scopeKind": scopeKindOf(scope)})
-		return errTaskHarnessControlUnavailable
+		r.log("task_harness_control_unavailable", map[string]string{"scopeKind": scopeKindOf(scope), "reason": "provider_fallback"})
+		return errTaskHarnessControlApplyFailed
 	}
 	r.log("session_adopted", map[string]string{"scopeKind": scopeKindOf(scope)})
 	return nil

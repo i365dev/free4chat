@@ -316,6 +316,32 @@ describe("RoomSession transient Task execution (#409)", () => {
     ])
   })
 
+  it("accepts a RETRYING projection during bounded Harness backoff", async () => {
+    const test = harness()
+    test.connectAgentSocket("agent-a")
+    const requestId = await createTask(test)
+
+    const published = await test.control({
+      action: "agent-task-execution",
+      participantId: "agent-a",
+      token: "agent-a-token",
+      projection: {
+        taskRequestId: requestId,
+        phase: "retrying",
+        queuedCount: 1,
+      },
+    })
+    expect(published).toMatchObject({ status: 200, json: { ok: true } })
+    expect(test.executions()).toEqual([
+      {
+        agentParticipantId: "agent-a",
+        taskRequestId: requestId,
+        phase: "retrying",
+        queuedCount: 1,
+      },
+    ])
+  })
+
   it("rejects a self-contradictory queued projection", async () => {
     const test = harness()
     test.connectAgentSocket("agent-a")
@@ -324,12 +350,19 @@ describe("RoomSession transient Task execution (#409)", () => {
     for (const projection of [
       // Queued with nothing waiting claims a wait that does not exist.
       { taskRequestId: requestId, phase: "queued", queuedCount: 0 },
+      { taskRequestId: requestId, phase: "retrying", queuedCount: 0 },
       // Queued WITH a current turn contradicts itself: queued means no turn
       // is executing.
       {
         taskRequestId: requestId,
         currentTurnSequence: 42,
         phase: "queued",
+        queuedCount: 1,
+      },
+      {
+        taskRequestId: requestId,
+        currentTurnSequence: 42,
+        phase: "retrying",
         queuedCount: 1,
       },
     ]) {

@@ -230,10 +230,10 @@ func TestResidentActivityReconnectRetainsQueuedClear(t *testing.T) {
 	}
 
 	// Stream loss fail-closes the public state while the old HTTP request is
-	// still in flight. A reconnect resets local state but must retain this
-	// queued clear because the participant handle remains valid.
+	// still in flight. Reconciliation drops stale queued state but retains this
+	// queued clear behind the in-flight publication.
 	runtime.clearActivity()
-	runtime.resetActivityLocal()
+	runtime.reconcileActivityTransport()
 	close(client.release)
 
 	waitFor(t, time.Second, func() bool {
@@ -245,6 +245,43 @@ func TestResidentActivityReconnectRetainsQueuedClear(t *testing.T) {
 		updates[1] != (activityUpdate{scope: "room", state: ""}) {
 		t.Fatalf("reconnect activity lifecycle = %#v", updates)
 	}
+}
+
+func TestResidentActivityReconnectRepublishesPreservedCurrentState(t *testing.T) {
+	client := &activityClient{}
+	runtime := NewResidentRuntime(Options{Client: client})
+	runtime.mu.Lock()
+	runtime.participantHandle = "private-handle"
+	runtime.mu.Unlock()
+
+	runtime.beginActivity("room", 11)
+	runtime.beginActivity("task:request-1", 21)
+	runtime.setWaitingApproval("task:request-1")
+	waitFor(t, time.Second, func() bool {
+		return len(client.snapshot()) == 2
+	}, "initial Room and Task activity projections")
+
+	// The Room's resident socket replacement clears its transient activity
+	// projection. Runtime-owned state remains authoritative and must be sent
+	// again without waiting for a new Harness state transition.
+	runtime.reconcileActivityTransport()
+	waitFor(t, time.Second, func() bool {
+		return len(client.snapshot()) == 4
+	}, "reconciled activity projections")
+
+	counts := map[activityUpdate]int{}
+	for _, update := range client.snapshot() {
+		counts[update]++
+	}
+	for _, expected := range []activityUpdate{
+		{scope: "room", state: types.AgentActivityWorking, sequence: 11},
+		{scope: "task:request-1", state: types.AgentActivityWaitingApproval, sequence: 21},
+	} {
+		if counts[expected] != 2 {
+			t.Fatalf("current activity was not republished exactly once after reconnect: updates=%#v", client.snapshot())
+		}
+	}
+	runtime.clearActivity()
 }
 
 // TestResidentActivityKeepsExactTurnSequencePerTurn pins the #409 activity
