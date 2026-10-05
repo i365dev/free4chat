@@ -113,13 +113,32 @@ describe("RoomSession Runtime participant transport association", () => {
     return session
   }
 
-  it("projects only the originating Task Agent, current Host, capability IDs, and ready Human sources", () => {
+  it("projects the originating Task Agent and ready sources for every current Room Human", () => {
     const session = new RoomSession(
       {} as never,
       { ROOM_APPS_ENABLED: "true" } as never
     ) as any
     const state = session.projectRuntimeParticipantTransportState(
-      makeRoom(),
+      (() => {
+        const room: any = makeRoom()
+        room.participants.bob = {
+          id: "bob",
+          name: "Bob",
+          kind: "human",
+          connected: true,
+          joinedAt: 2,
+          lastSeenAt: 2,
+          token: "bob-token",
+          media: {
+            sessionId: "bob-session",
+            appDataChannelReady: true,
+            muted: false,
+            fileChannelReady: true,
+            tracks: [],
+          },
+        }
+        return room
+      })(),
       "resident"
     )
     expect(state).toEqual({
@@ -133,8 +152,20 @@ describe("RoomSession Runtime participant transport association", () => {
           runtimeHostId: hostId,
           capabilityIds: ["printer_status"],
         },
+        {
+          appInstanceId,
+          bundleRevision: 2,
+          taskRequestId: "task-origin",
+          agentParticipantId: "resident",
+          humanParticipantId: "bob",
+          runtimeHostId: hostId,
+          capabilityIds: ["printer_status"],
+        },
       ],
-      sources: [{ participantId: "owner", sessionId: "owner-session" }],
+      sources: [
+        { participantId: "owner", sessionId: "owner-session" },
+        { participantId: "bob", sessionId: "bob-session" },
+      ],
     })
     expect(JSON.stringify(state)).not.toMatch(
       /runtime-capability-(request|result)|requestId|operation|args/
@@ -152,7 +183,7 @@ describe("RoomSession Runtime participant transport association", () => {
     ).toEqual({ routes: [], sources: [] })
   })
 
-  it("keeps source-backed Human routes when another Human disconnects or loses App readiness", () => {
+  it("projects every Task App to each connected, App-ready Room Human", () => {
     const session = new RoomSession(
       {} as never,
       { ROOM_APPS_ENABLED: "true" } as never
@@ -206,29 +237,43 @@ describe("RoomSession Runtime participant transport association", () => {
       session.projectRuntimeParticipantTransportState(room, "resident")
     const bothReady = project()
     expect(
-      bothReady.routes.map((route: any) => route.humanParticipantId)
-    ).toEqual(["owner", "bob"])
+      bothReady.routes.map((route: any) => [
+        route.appInstanceId,
+        route.humanParticipantId,
+      ])
+    ).toEqual([
+      [appInstanceId, "owner"],
+      [appInstanceId, "bob"],
+      [appInstanceIdB, "bob"],
+      [appInstanceIdB, "owner"],
+    ])
     expect(
       bothReady.sources.map((source: any) => source.participantId)
     ).toEqual(["owner", "bob"])
 
     room.participants.bob.connected = false
-    expect(project()).toEqual({
-      routes: [expect.objectContaining({ humanParticipantId: "owner" })],
-      sources: [{ participantId: "owner", sessionId: "owner-session" }],
-    })
+    const bobDisconnected = project()
+    expect(
+      bobDisconnected.routes.map((route: any) => route.humanParticipantId)
+    ).toEqual(["owner", "owner"])
+    expect(bobDisconnected.sources).toEqual([
+      { participantId: "owner", sessionId: "owner-session" },
+    ])
 
     room.participants.bob.connected = true
     room.participants.bob.media.appDataChannelReady = false
-    expect(project()).toEqual({
-      routes: [expect.objectContaining({ humanParticipantId: "owner" })],
-      sources: [{ participantId: "owner", sessionId: "owner-session" }],
-    })
+    const bobNotReady = project()
+    expect(
+      bobNotReady.routes.map((route: any) => route.humanParticipantId)
+    ).toEqual(["owner", "owner"])
+    expect(bobNotReady.sources).toEqual([
+      { participantId: "owner", sessionId: "owner-session" },
+    ])
 
     room.participants.bob.media.appDataChannelReady = true
     expect(
       project().routes.map((route: any) => route.humanParticipantId)
-    ).toEqual(["owner", "bob"])
+    ).toEqual(["owner", "bob", "bob", "owner"])
   })
 
   it("accepts ready=false for the current session after the last route disappears", async () => {
@@ -347,7 +392,7 @@ describe("RoomSession Runtime participant transport association", () => {
     ])
   })
 
-  it("authorizes only the authenticated Human in the current Task/App Agent pair", async () => {
+  it("authorizes each authenticated Room Human on its own current pairwise lane", async () => {
     const session = new RoomSession(
       {} as never,
       { ROOM_APPS_ENABLED: "true" } as never
@@ -399,9 +444,8 @@ describe("RoomSession Runtime participant transport association", () => {
     const allowed = await session.fetch(request())
     expect(allowed.status).toBe(200)
 
-    // Bob supplies the victim's exact pair label and publisher session. Core
-    // still denies him because it authenticates Bob and checks the Task/App
-    // association, rather than trusting the channel label.
+    // A second current Room Human can use the same Task App, but only through
+    // Bob's own pair label and current SFU session.
     const denied = await session.fetch(
       new Request("https://room/control", {
         method: "POST",
@@ -415,16 +459,29 @@ describe("RoomSession Runtime participant transport association", () => {
           peerSessionId: "agent-direct-session",
           dataChannelName: participantDirectReliableChannelName(
             "resident",
-            "owner"
+            "bob"
           ),
           direction: "subscribe",
         }),
       })
     )
-    expect(denied.status).toBe(403)
-    expect(await denied.json()).toMatchObject({
-      error: "participant_direct_pair_not_authorized",
-    })
+    expect(denied.status).toBe(200)
+
+    const staleBobSession = await session.fetch(
+      request({
+        participantId: "bob",
+        token: "bob-token",
+        sessionId: "stale-bob-session",
+        peerParticipantId: "resident",
+        peerSessionId: "agent-direct-session",
+        dataChannelName: participantDirectReliableChannelName(
+          "resident",
+          "bob"
+        ),
+        direction: "subscribe",
+      })
+    )
+    expect(staleBobSession.status).toBe(403)
 
     const agentPublish = await session.fetch(
       request({

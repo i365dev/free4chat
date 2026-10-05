@@ -68,6 +68,25 @@ func TestRuntimeCapabilityProjectionAndRpcBounds(t *testing.T) {
 	if !transportProjection.Valid() {
 		t.Fatal("bounded participant transport association rejected")
 	}
+	secondHumanRoute := transportProjection.Routes[0]
+	secondHumanRoute.HumanParticipantID = "human-b"
+	transportProjection.Routes = append(transportProjection.Routes, secondHumanRoute)
+	transportProjection.Sources = append(transportProjection.Sources, RuntimeParticipantTransportSource{
+		ParticipantID: "human-b", SessionID: "human-session-2",
+	})
+	if !transportProjection.Valid() {
+		t.Fatal("one Task App route per Room Human should be valid")
+	}
+	transportProjection.Routes = append(transportProjection.Routes, secondHumanRoute)
+	if transportProjection.Valid() {
+		t.Fatal("duplicate Task App/Human route should be rejected")
+	}
+	transportProjection.Routes = transportProjection.Routes[:2]
+	tooManyRoutes := transportProjection
+	tooManyRoutes.Routes = make([]RuntimeParticipantTransportRoute, 129)
+	if tooManyRoutes.Valid() {
+		t.Fatal("more than four Apps times 32 Human routes should be rejected")
+	}
 	transportProjection.Sources[0].SessionID = "https://local.invalid/session"
 	if transportProjection.Valid() {
 		t.Fatal("unbounded session metadata accepted")

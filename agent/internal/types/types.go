@@ -1464,7 +1464,7 @@ var (
 )
 
 func (p RuntimeParticipantTransportProjection) Valid() bool {
-	if len(p.Routes) > 8 || len(p.Sources) > 32 {
+	if len(p.Routes) > 128 || len(p.Sources) > 32 {
 		return false
 	}
 	routes := make(map[string]struct{}, len(p.Routes))
@@ -1478,10 +1478,11 @@ func (p RuntimeParticipantTransportProjection) Valid() bool {
 			len(route.CapabilityIDs) == 0 || len(route.CapabilityIDs) > 8 {
 			return false
 		}
-		if _, exists := routes[route.AppInstanceID]; exists {
+		routeKey := route.AppInstanceID + "\x00" + route.HumanParticipantID
+		if _, exists := routes[routeKey]; exists {
 			return false
 		}
-		routes[route.AppInstanceID] = struct{}{}
+		routes[routeKey] = struct{}{}
 		seenCapabilities := make(map[string]struct{}, len(route.CapabilityIDs))
 		for _, id := range route.CapabilityIDs {
 			if !runtimeCapabilityIDPattern.MatchString(id) {

@@ -26,6 +26,21 @@ function makeRoom(): RoomRecord {
           tracks: [],
         },
       },
+      "human-2": {
+        id: "human-2",
+        name: "Human 2",
+        kind: "human",
+        connected: true,
+        joinedAt: 2,
+        lastSeenAt: Date.now(),
+        token: "human-token-2",
+        media: {
+          sessionId: "human-session-2",
+          muted: false,
+          fileChannelReady: true,
+          tracks: [],
+        },
+      },
       "agent-a": {
         id: "agent-a",
         name: "Agent",
@@ -66,7 +81,12 @@ function harness() {
   const storagePut = vi.fn(async (key: string, value: unknown) => {
     store.set(key, value)
   })
-  const humanSocket = { send: vi.fn() } as unknown as WebSocket
+  const humanSocketSend = vi.fn()
+  const secondHumanSocketSend = vi.fn()
+  const humanSocket = { send: humanSocketSend } as unknown as WebSocket
+  const secondHumanSocket = {
+    send: secondHumanSocketSend,
+  } as unknown as WebSocket
   const ctx = {
     storage: {
       get: async <T>(key: string) => store.get(key) as T | undefined,
@@ -78,10 +98,10 @@ function harness() {
       deleteAlarm: async () => undefined,
       getAlarm: async () => undefined,
     },
-    getWebSockets: () => [humanSocket],
+    getWebSockets: () => [humanSocket, secondHumanSocket],
   }
   const session = new RoomSession(ctx as never, { SFU_ROOM: {} } as never)
-  const sendHuman = async (message: unknown) =>
+  const sendHuman = async (message: unknown, participantId = "human-1") =>
     await (
       session as unknown as {
         handleClientMessage: (
@@ -91,18 +111,19 @@ function harness() {
         ) => Promise<void>
       }
     ).handleClientMessage(
-      humanSocket,
+      participantId === "human-1" ? humanSocket : secondHumanSocket,
       {
-        participantId: "human-1",
-        token: "human-token",
-        connectionNonce: "human-connection",
+        participantId,
+        token: participantId === "human-1" ? "human-token" : "human-token-2",
+        connectionNonce: `${participantId}-connection`,
       },
       message
     )
   const sendGeneratedState = async (
     appInstanceId: string,
     expectedRevision: number,
-    state: Record<string, unknown>
+    state: Record<string, unknown>,
+    participantId = "human-1"
   ) =>
     await (
       session as unknown as {
@@ -113,11 +134,11 @@ function harness() {
         ) => Promise<void>
       }
     ).handleClientMessage(
-      humanSocket,
+      participantId === "human-1" ? humanSocket : secondHumanSocket,
       {
-        participantId: "human-1",
-        token: "human-token",
-        connectionNonce: "human-connection",
+        participantId,
+        token: participantId === "human-1" ? "human-token" : "human-token-2",
+        connectionNonce: `${participantId}-connection`,
       },
       {
         type: "generated-app-state-update",
@@ -153,6 +174,9 @@ function harness() {
     session,
     storagePut,
     humanSocket,
+    secondHumanSocket,
+    humanSocketSend,
+    secondHumanSocketSend,
   }
 }
 
@@ -283,7 +307,7 @@ describe("RoomSession generated Task App publication", () => {
         stateRevision: 40,
       })
       expect(test.storagePut).toHaveBeenCalledTimes(writesBeforeReject)
-      expect(test.humanSocket.send).toHaveBeenCalledWith(
+      expect(test.humanSocketSend).toHaveBeenCalledWith(
         expect.stringContaining('"generated_app_state_rate_limited"')
       )
 
@@ -327,8 +351,91 @@ describe("RoomSession generated Task App publication", () => {
       stateRevision: 20,
     })
     expect(test.storagePut).toHaveBeenCalledTimes(writesBeforeReject)
-    expect(test.humanSocket.send).toHaveBeenCalledWith(
+    expect(test.humanSocketSend).toHaveBeenCalledWith(
       expect.stringContaining('"generated_app_state_rate_limited"')
     )
+  })
+
+  it("broadcasts accepted shared state to both Humans and preserves it across a same-Task bundle revision", async () => {
+    const test = harness()
+    await test.sendHuman({
+      type: "collab-request",
+      targetParticipantId: "agent-a",
+      summary: "Create a shared checklist",
+    })
+    const taskRequestId = test.stored().messages[0]?.collab?.requestId
+    if (!taskRequestId) throw new Error("missing task request")
+    const firstPublication = (
+      await test.publish(taskRequestId, bundle("Checklist", "first"))
+    ).json.publication
+
+    test.humanSocketSend.mockClear()
+    test.secondHumanSocketSend.mockClear()
+    await test.sendGeneratedState(firstPublication.appInstanceId, 0, {
+      status: "A wrote",
+    })
+    expect(
+      test.stored().generatedApps?.[firstPublication.appInstanceId]
+    ).toMatchObject({
+      bundleRevision: 1,
+      stateRevision: 1,
+    })
+    expect(test.humanSocketSend).toHaveBeenCalledWith(
+      expect.stringContaining('"sourceParticipantId":"human-1"')
+    )
+    expect(test.secondHumanSocketSend).toHaveBeenCalledWith(
+      expect.stringContaining('"generated-app-state"')
+    )
+
+    test.humanSocketSend.mockClear()
+    test.secondHumanSocketSend.mockClear()
+    await test.sendGeneratedState(
+      firstPublication.appInstanceId,
+      1,
+      {
+        status: "B wrote",
+      },
+      "human-2"
+    )
+    expect(
+      test.stored().generatedApps?.[firstPublication.appInstanceId]
+    ).toMatchObject({
+      bundleRevision: 1,
+      stateRevision: 2,
+    })
+    expect(test.humanSocketSend).toHaveBeenCalledWith(
+      expect.stringContaining('"status":"B wrote"')
+    )
+    expect(test.secondHumanSocketSend).toHaveBeenCalledWith(
+      expect.stringContaining('"status":"B wrote"')
+    )
+
+    const updated = await test.publish(
+      taskRequestId,
+      bundle("Updated checklist", "second")
+    )
+    expect(updated.json.publication).toMatchObject({
+      appInstanceId: firstPublication.appInstanceId,
+      bundleRevision: 2,
+      stateRevision: 2,
+    })
+    const lateJoinBootstrap = await test.session.fetch(
+      new Request(
+        `https://room/generated-app?appInstanceId=${encodeURIComponent(
+          firstPublication.appInstanceId
+        )}`,
+        {
+          headers: {
+            "X-Room-Participant-Id": "human-2",
+            "X-Room-Participant-Token": "human-token-2",
+          },
+        }
+      )
+    )
+    expect(lateJoinBootstrap.status).toBe(200)
+    expect(await lateJoinBootstrap.json()).toMatchObject({
+      publication: { bundleRevision: 2, stateRevision: 2 },
+      state: { status: "B wrote" },
+    })
   })
 })

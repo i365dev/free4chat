@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -68,6 +69,15 @@ type reliableParticipantDataChannel interface {
 	SendText(string) error
 }
 
+type participantDataChannelRetirer interface {
+	Close() error
+}
+
+type participantRouteKey struct {
+	appInstanceID      string
+	humanParticipantID string
+}
+
 // RuntimeParticipantTransport owns a media-free Pion connection for the
 // currently authorized participant-pair projection. Its first consumer is
 // Generated App capability RPC. It has no queue: messages are admitted only
@@ -78,20 +88,23 @@ type RuntimeParticipantTransport struct {
 	handler    types.ResidentCapabilityController
 	log        func(string, map[string]string)
 
-	mu          sync.Mutex
-	closed      bool
-	starting    bool
-	generation  uint64
-	ctx         context.Context
-	cancel      context.CancelFunc
-	session     string
-	engine      *Engine
-	outbound    map[string]reliableParticipantDataChannel // Human participant id -> private pair lane
-	routes      map[string]types.RuntimeParticipantTransportRoute
-	sources     map[string]string // local pairwise publisher label -> Human participant id
-	inflight    chan struct{}
-	seen        map[string]time.Time
-	readyUpdate func(session string, ready bool) error
+	mu            sync.Mutex
+	updateMu      sync.Mutex
+	closed        bool
+	starting      bool
+	generation    uint64
+	ctx           context.Context
+	cancel        context.CancelFunc
+	session       string
+	engine        *Engine
+	outbound      map[string]reliableParticipantDataChannel // Human participant id -> private pair lane
+	routes        map[participantRouteKey]types.RuntimeParticipantTransportRoute
+	sources       map[string]string // local pairwise publisher label -> Human participant id
+	peerSessions  map[string]string // Human participant id -> Room-projected SFU session
+	channelTokens map[string]any    // Human participant id -> exact current Engine channel object
+	inflight      chan struct{}
+	seen          map[string]time.Time
+	readyUpdate   func(session string, ready bool) error
 }
 
 func NewRuntimeParticipantTransport(siteOrigin string, handle DecodedHandle, handler types.ResidentCapabilityController, log func(string, map[string]string)) *RuntimeParticipantTransport {
@@ -167,7 +180,9 @@ func (t *RuntimeParticipantTransport) Start(ctx context.Context, projection type
 	}
 	t.session = session
 	t.mu.Unlock()
-	events := EngineEvents{OnDataChannelMessage: func(label string, payload []byte) { t.receive(label, payload) }}
+	events := EngineEvents{OnDataChannelMessage: func(label string, channel *ParticipantDataChannel, payload []byte) {
+		t.receive(label, channel, payload)
+	}}
 	engine := NewEngine(events, t.log)
 	fail := func(err error) error {
 		cancel()
@@ -220,6 +235,8 @@ func (t *RuntimeParticipantTransport) Start(ctx context.Context, projection type
 	}
 	outbound := make(map[string]reliableParticipantDataChannel, len(projection.Sources))
 	sources := make(map[string]string, len(projection.Sources))
+	peerSessions := make(map[string]string, len(projection.Sources))
+	channelTokens := make(map[string]any, len(projection.Sources))
 	channelsReady := make([]*ParticipantDataChannel, 0, len(projection.Sources))
 	for i, source := range projection.Sources {
 		label := participantDirectReliableChannelName(t.handle.ParticipantID, source.ParticipantID)
@@ -229,6 +246,8 @@ func (t *RuntimeParticipantTransport) Start(ctx context.Context, projection type
 		}
 		channelsReady = append(channelsReady, channel)
 		sources[label] = channelHumans[i]
+		peerSessions[source.ParticipantID] = source.SessionID
+		channelTokens[source.ParticipantID] = channel
 		outbound[source.ParticipantID] = channel
 	}
 	allReady := func() bool {
@@ -250,21 +269,268 @@ func (t *RuntimeParticipantTransport) Start(ctx context.Context, projection type
 	if !allReady() {
 		return fail(errors.New("capability_datachannel_timeout"))
 	}
-	routes := make(map[string]types.RuntimeParticipantTransportRoute, len(projection.Routes))
+	routes := make(map[participantRouteKey]types.RuntimeParticipantTransportRoute, len(projection.Routes))
 	for _, route := range projection.Routes {
-		routes[route.AppInstanceID] = route
+		routes[participantRouteKey{appInstanceID: route.AppInstanceID, humanParticipantID: route.HumanParticipantID}] = route
 	}
 	t.mu.Lock()
 	if t.closed || t.generation != generation || transportCtx.Err() != nil || t.session != session {
 		t.mu.Unlock()
 		return fail(errors.New("participant_data_transport_closed"))
 	}
-	t.session, t.engine, t.outbound, t.routes, t.sources = session, engine, outbound, routes, sources
+	t.session, t.engine, t.outbound, t.routes, t.sources, t.peerSessions, t.channelTokens = session, engine, outbound, routes, sources, peerSessions, channelTokens
 	t.mu.Unlock()
 	if err := t.publishReadyAndCheckCurrent(session, engine, generation); err != nil {
 		return fail(err)
 	}
 	return nil
+}
+
+// Update applies a fresh Room projection without replacing the Runtime's
+// participant session. Existing Human lanes are retained; newly-ready Human
+// sources receive negotiated channels on the same SFU session. Removed routes
+// are immediately removed from authorization even if their old channel has not
+// closed yet.
+func (t *RuntimeParticipantTransport) Update(ctx context.Context, projection types.RuntimeParticipantTransportProjection) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if !projection.Valid() || len(projection.Routes) == 0 {
+		return errors.New("participant_data_transport_unavailable")
+	}
+	if t.handler == nil {
+		return errors.New("capability_controller_unavailable")
+	}
+	available := make(map[string]struct{})
+	for _, capability := range t.handler.DescribeCapabilities() {
+		if capability.Valid() {
+			available[capability.CapabilityID] = struct{}{}
+		}
+	}
+	filteredRoutes := make([]types.RuntimeParticipantTransportRoute, 0, len(projection.Routes))
+	for _, route := range projection.Routes {
+		if route.AgentParticipantID != t.handle.ParticipantID {
+			return errors.New("capability_route_participant_mismatch")
+		}
+		capabilityIDs := make([]string, 0, len(route.CapabilityIDs))
+		for _, id := range route.CapabilityIDs {
+			if _, ok := available[id]; ok {
+				capabilityIDs = append(capabilityIDs, id)
+			}
+		}
+		if len(capabilityIDs) == 0 {
+			continue
+		}
+		route.CapabilityIDs = capabilityIDs
+		filteredRoutes = append(filteredRoutes, route)
+	}
+	if len(filteredRoutes) == 0 {
+		return errors.New("capability_controller_unavailable")
+	}
+
+	t.updateMu.Lock()
+	defer t.updateMu.Unlock()
+	t.mu.Lock()
+	if t.closed || t.starting || t.session == "" || t.engine == nil || t.ctx == nil {
+		t.mu.Unlock()
+		return errors.New("participant_data_transport_unavailable")
+	}
+	session, engine, transportCtx := t.session, t.engine, t.ctx
+	desiredSources := make(map[string]string, len(projection.Sources))
+	for _, source := range projection.Sources {
+		desiredSources[source.ParticipantID] = source.SessionID
+	}
+	desiredRoutes := make(map[participantRouteKey]types.RuntimeParticipantTransportRoute, len(filteredRoutes))
+	for _, route := range filteredRoutes {
+		desiredRoutes[participantRouteKey{appInstanceID: route.AppInstanceID, humanParticipantID: route.HumanParticipantID}] = route
+	}
+	t.mu.Unlock()
+	retired := t.deauthorizeParticipantProjection(desiredSources, desiredRoutes)
+	for _, channel := range retired {
+		retireParticipantDataChannel(channel)
+	}
+	t.mu.Lock()
+	if t.closed || t.session != session || t.engine != engine || t.ctx != transportCtx {
+		t.mu.Unlock()
+		return errors.New("participant_data_transport_closed")
+	}
+	currentOutbound := make(map[string]reliableParticipantDataChannel, len(t.outbound))
+	currentPeerSessions := make(map[string]string, len(t.peerSessions))
+	for id, channel := range t.outbound {
+		currentOutbound[id] = channel
+	}
+	for id, peerSession := range t.peerSessions {
+		currentPeerSessions[id] = peerSession
+	}
+	t.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	newSources := make([]types.RuntimeParticipantTransportSource, 0, len(projection.Sources))
+	for _, source := range projection.Sources {
+		channel := currentOutbound[source.ParticipantID]
+		if currentPeerSessions[source.ParticipantID] != source.SessionID || channel == nil || !channel.Ready() {
+			newSources = append(newSources, source)
+		}
+	}
+	newOutbound := make(map[string]reliableParticipantDataChannel, len(newSources))
+	rest := NewSfuRestClient(t.siteOrigin, t.handle)
+	var allocatedIDs []uint16
+	committed := false
+	defer func() {
+		if !committed {
+			for _, channel := range newOutbound {
+				retireParticipantDataChannel(channel)
+			}
+			if len(allocatedIDs) > 0 {
+				_ = rest.CloseParticipantDataChannels(session, allocatedIDs)
+			}
+		}
+	}()
+	if len(newSources) > 0 {
+		channels := make([]map[string]any, 0, len(newSources))
+		for _, source := range newSources {
+			label := participantDirectReliableChannelName(t.handle.ParticipantID, source.ParticipantID)
+			if label == "" {
+				return errors.New("participant_direct_channel_invalid")
+			}
+			channels = append(channels, map[string]any{
+				"location": "local", "dataChannelName": label, "ordered": true,
+				"peerParticipantId": source.ParticipantID,
+			})
+		}
+		ids, err := rest.CreateParticipantDataChannels(session, channels)
+		if err != nil {
+			return err
+		}
+		allocatedIDs = ids
+		channelsReady := make([]*ParticipantDataChannel, 0, len(newSources))
+		for i, source := range newSources {
+			label := participantDirectReliableChannelName(t.handle.ParticipantID, source.ParticipantID)
+			channel, err := engine.CreateParticipantDataChannel(label, ids[i])
+			if err != nil {
+				return err
+			}
+			channelsReady = append(channelsReady, channel)
+			newOutbound[source.ParticipantID] = channel
+		}
+		deadline := time.Now().Add(10 * time.Second)
+		allReady := func() bool {
+			for _, channel := range channelsReady {
+				if !channel.Ready() {
+					return false
+				}
+			}
+			return true
+		}
+		for time.Now().Before(deadline) && !allReady() {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-transportCtx.Done():
+				return transportCtx.Err()
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+		if !allReady() {
+			return errors.New("capability_datachannel_timeout")
+		}
+	}
+
+	routes := make(map[participantRouteKey]types.RuntimeParticipantTransportRoute, len(filteredRoutes))
+	activeSources := make(map[string]string, len(projection.Sources))
+	peerSessions := make(map[string]string, len(projection.Sources))
+	channelTokens := make(map[string]any, len(projection.Sources))
+	outbound := make(map[string]reliableParticipantDataChannel, len(projection.Sources))
+	for _, source := range projection.Sources {
+		channel := newOutbound[source.ParticipantID]
+		if channel == nil && currentPeerSessions[source.ParticipantID] == source.SessionID {
+			channel = currentOutbound[source.ParticipantID]
+		}
+		if channel == nil {
+			return errors.New("participant_data_transport_unavailable")
+		}
+		label := participantDirectReliableChannelName(t.handle.ParticipantID, source.ParticipantID)
+		activeSources[label] = source.ParticipantID
+		peerSessions[source.ParticipantID] = source.SessionID
+		channelTokens[source.ParticipantID] = channel
+		outbound[source.ParticipantID] = channel
+	}
+	for _, route := range filteredRoutes {
+		if outbound[route.HumanParticipantID] == nil {
+			continue
+		}
+		routes[participantRouteKey{appInstanceID: route.AppInstanceID, humanParticipantID: route.HumanParticipantID}] = route
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.closed || t.session != session || t.engine != engine || t.ctx != transportCtx || transportCtx.Err() != nil {
+		return errors.New("participant_data_transport_closed")
+	}
+	t.routes, t.sources, t.outbound, t.peerSessions, t.channelTokens = routes, activeSources, outbound, peerSessions, channelTokens
+	committed = true
+	return nil
+}
+
+// deauthorizeParticipantProjection removes route and lane state that is no
+// longer represented by the current Room projection. The authorization maps
+// are updated before callers close channels or negotiate replacements.
+func (t *RuntimeParticipantTransport) deauthorizeParticipantProjection(
+	desiredSources map[string]string,
+	desiredRoutes map[participantRouteKey]types.RuntimeParticipantTransportRoute,
+) []reliableParticipantDataChannel {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for key, current := range t.routes {
+		desired, ok := desiredRoutes[key]
+		if !ok || !sameParticipantRoute(current, desired) {
+			delete(t.routes, key)
+		}
+	}
+	retired := make([]reliableParticipantDataChannel, 0)
+	for humanID, oldSession := range t.peerSessions {
+		desiredSession, remains := desiredSources[humanID]
+		oldChannel := t.outbound[humanID]
+		if remains && desiredSession == oldSession && oldChannel != nil && oldChannel.Ready() {
+			continue
+		}
+		for key := range t.routes {
+			if key.humanParticipantID == humanID {
+				delete(t.routes, key)
+			}
+		}
+		label := participantDirectReliableChannelName(t.handle.ParticipantID, humanID)
+		delete(t.sources, label)
+		if oldChannel != nil {
+			retired = append(retired, oldChannel)
+		}
+		delete(t.outbound, humanID)
+		delete(t.peerSessions, humanID)
+		delete(t.channelTokens, humanID)
+	}
+	return retired
+}
+
+func sameParticipantRoute(a, b types.RuntimeParticipantTransportRoute) bool {
+	if a.AppInstanceID != b.AppInstanceID || a.BundleRevision != b.BundleRevision ||
+		a.TaskRequestID != b.TaskRequestID || a.AgentParticipantID != b.AgentParticipantID ||
+		a.HumanParticipantID != b.HumanParticipantID || a.RuntimeHostID != b.RuntimeHostID ||
+		len(a.CapabilityIDs) != len(b.CapabilityIDs) {
+		return false
+	}
+	for i := range a.CapabilityIDs {
+		if a.CapabilityIDs[i] != b.CapabilityIDs[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func retireParticipantDataChannel(channel reliableParticipantDataChannel) {
+	if closer, ok := channel.(participantDataChannelRetirer); ok {
+		_ = closer.Close()
+	}
 }
 
 func (t *RuntimeParticipantTransport) updateParticipantDataReady(session string, ready bool) error {
@@ -308,6 +574,8 @@ func (t *RuntimeParticipantTransport) finishStartFailure(generation uint64, sess
 		t.outbound = nil
 		t.routes = nil
 		t.sources = nil
+		t.peerSessions = nil
+		t.channelTokens = nil
 	}
 	t.starting = false
 }
@@ -353,14 +621,15 @@ func completeParticipantDataTransportBootstrap(
 	return waitConnected(ctx, 30*time.Second)
 }
 
-func (t *RuntimeParticipantTransport) receive(label string, payload []byte) {
+func (t *RuntimeParticipantTransport) receive(label string, channel any, payload []byte) {
 	if len(payload) == 0 || len(payload) > capabilityPayloadLimit {
 		return
 	}
 	t.mu.Lock()
 	humanParticipantID := t.sources[label]
 	out := t.outbound[humanParticipantID]
-	if t.closed || humanParticipantID == "" || out == nil || !out.Ready() {
+	if t.closed || humanParticipantID == "" || out == nil || !out.Ready() ||
+		!sameParticipantChannelToken(t.channelTokens[humanParticipantID], channel) {
 		t.mu.Unlock()
 		return
 	}
@@ -370,8 +639,8 @@ func (t *RuntimeParticipantTransport) receive(label string, payload []byte) {
 		t.mu.Unlock()
 		return
 	}
-	route, ok := t.routes[frame.AppInstanceID]
-	if !ok || route.HumanParticipantID != humanParticipantID || frame.BundleRevision != route.BundleRevision || frame.TaskRequestID != route.TaskRequestID || frame.AgentID != route.AgentParticipantID || !containsString(route.CapabilityIDs, frame.CapabilityID) || frame.RequestID == "" || len(frame.RequestID) > 64 || strings.TrimSpace(frame.RequestID) != frame.RequestID {
+	route, ok := t.routes[participantRouteKey{appInstanceID: frame.AppInstanceID, humanParticipantID: humanParticipantID}]
+	if !ok || frame.BundleRevision != route.BundleRevision || frame.TaskRequestID != route.TaskRequestID || frame.AgentID != route.AgentParticipantID || !containsString(route.CapabilityIDs, frame.CapabilityID) || frame.RequestID == "" || len(frame.RequestID) > 64 || strings.TrimSpace(frame.RequestID) != frame.RequestID {
 		t.mu.Unlock()
 		return
 	}
@@ -413,6 +682,15 @@ func (t *RuntimeParticipantTransport) receive(label string, payload []byte) {
 		return
 	}
 	go t.execute(transportCtx, out, route, frame)
+}
+
+func sameParticipantChannelToken(current, incoming any) bool {
+	if current == nil || incoming == nil || reflect.TypeOf(current) != reflect.TypeOf(incoming) {
+		return false
+	}
+	value := reflect.ValueOf(current)
+	other := reflect.ValueOf(incoming)
+	return value.Kind() == reflect.Pointer && value.Pointer() == other.Pointer()
 }
 
 func (t *RuntimeParticipantTransport) execute(transportCtx context.Context, out reliableParticipantDataChannel, route types.RuntimeParticipantTransportRoute, frame capabilityFrame) {
@@ -524,6 +802,8 @@ func (t *RuntimeParticipantTransport) Close() {
 	t.outbound = nil
 	t.routes = nil
 	t.sources = nil
+	t.peerSessions = nil
+	t.channelTokens = nil
 	t.mu.Unlock()
 	if cancel != nil {
 		cancel()

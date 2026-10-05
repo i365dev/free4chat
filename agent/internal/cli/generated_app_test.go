@@ -110,8 +110,19 @@ func TestGeneratedAppDescribeIsDeterministicAndSelfConsistent(t *testing.T) {
 	); err != nil {
 		t.Fatalf("describe example is not accepted by the validator: %v", err)
 	}
-	if js, _ := descriptor.Examples[0].Bundle["js"].(string); !strings.Contains(js, "items:[...items") || !strings.Contains(js, "shared.set") {
+	if js, _ := descriptor.Examples[0].Bundle["js"].(string); !strings.Contains(js, "items:[...items") || !strings.Contains(js, "shared.set") || !strings.Contains(js, "onSharedChange") {
 		t.Fatalf("describe example must demonstrate a real shared checklist update: %s", js)
+	}
+	rules = strings.Join(descriptor.Rules, "\n")
+	for _, required := range []string{
+		"shared.set(nextState)",
+		"returns whether the message was queued",
+		"render that canonical state on load and after every accepted change",
+		"Do not rely on local variables or capability polling",
+	} {
+		if !strings.Contains(rules, required) {
+			t.Fatalf("descriptor is missing shared-state guidance %q: %#v", required, descriptor.Rules)
+		}
 	}
 }
 

@@ -262,6 +262,30 @@ func (c *SfuRestClient) CreateParticipantDataChannels(sessionID string, channels
 	return ids, nil
 }
 
+// CloseParticipantDataChannels retires channels allocated on the exact
+// participant transport session. It is used to clean up partial in-place
+// projection updates that cannot make every negotiated channel authoritative.
+func (c *SfuRestClient) CloseParticipantDataChannels(sessionID string, channelIDs []uint16) error {
+	if sessionID == "" || len(channelIDs) == 0 || len(channelIDs) > 32 {
+		return errors.New("invalid_datachannel_count")
+	}
+	channels := make([]map[string]any, 0, len(channelIDs))
+	seen := make(map[uint16]struct{}, len(channelIDs))
+	for _, id := range channelIDs {
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		channels = append(channels, map[string]any{"id": id, "sessionId": sessionID})
+	}
+	body := c.base()
+	body["sessionId"] = sessionID
+	body["purpose"] = string(PurposeParticipantReliable)
+	body["dataChannels"] = channels
+	_, err := c.request("datachannels/close", http.MethodPut, body)
+	return err
+}
+
 // EstablishDataChannelTransport establishes the initial WebRTC transport
 // exactly as the browser does, submitting the gathered LOCAL offer (client
 // offer + server answer); the returned description's actual type is honored.

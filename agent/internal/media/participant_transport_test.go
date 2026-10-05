@@ -3,7 +3,11 @@ package media
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -13,9 +17,15 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
-type capabilityTestChannel struct{ payloads chan []byte }
+type capabilityTestChannel struct {
+	payloads chan []byte
+	id       uint16
+	closed   bool
+}
 
-func (c *capabilityTestChannel) Ready() bool { return true }
+func (c *capabilityTestChannel) Ready() bool  { return !c.closed }
+func (c *capabilityTestChannel) ID() uint16   { return c.id }
+func (c *capabilityTestChannel) Close() error { c.closed = true; return nil }
 func (c *capabilityTestChannel) SendText(payload string) error {
 	c.payloads <- []byte(payload)
 	return nil
@@ -45,6 +55,181 @@ func validCapabilityTestDescriptor(capabilityID string, observe bool) types.Runt
 	return descriptor
 }
 
+func TestParticipantDataTransportRetiresRotatedHumanLaneAndFencesOldChannel(t *testing.T) {
+	appID := "generated:123e4567-e89b-12d3-a456-426614174000"
+	route := func(humanID string) types.RuntimeParticipantTransportRoute {
+		return types.RuntimeParticipantTransportRoute{
+			AppInstanceID: appID, BundleRevision: 1, TaskRequestID: "task-a",
+			AgentParticipantID: "agent-a", HumanParticipantID: humanID,
+			RuntimeHostID: "host-route-1", CapabilityIDs: []string{"printer_status"},
+		}
+	}
+	handler := &capabilityTestHandler{calls: make(chan types.ResidentCapabilityRequest, 8), descriptors: []types.RuntimeCapabilityProjection{validCapabilityTestDescriptor("printer_status", true)}}
+	transport := NewRuntimeParticipantTransport("https://example.invalid", DecodedHandle{ParticipantID: "agent-a"}, handler, nil)
+	transport.ctx = context.Background()
+	humanA := &capabilityTestChannel{payloads: make(chan []byte, 8), id: 42}
+	humanB1 := &capabilityTestChannel{payloads: make(chan []byte, 8), id: 43}
+	labelA := participantDirectReliableChannelName("agent-a", "human-a")
+	labelB := participantDirectReliableChannelName("agent-a", "human-b")
+	transport.outbound = map[string]reliableParticipantDataChannel{"human-a": humanA, "human-b": humanB1}
+	transport.sources = map[string]string{labelA: "human-a", labelB: "human-b"}
+	transport.peerSessions = map[string]string{"human-a": "session-a", "human-b": "session-b-1"}
+	transport.channelTokens = map[string]any{"human-a": humanA, "human-b": humanB1}
+	transport.routes = map[participantRouteKey]types.RuntimeParticipantTransportRoute{
+		{appInstanceID: appID, humanParticipantID: "human-a"}: route("human-a"),
+		{appInstanceID: appID, humanParticipantID: "human-b"}: route("human-b"),
+	}
+
+	desiredSources := map[string]string{"human-a": "session-a", "human-b": "session-b-2"}
+	desiredRoutes := map[participantRouteKey]types.RuntimeParticipantTransportRoute{
+		{appInstanceID: appID, humanParticipantID: "human-a"}: route("human-a"),
+		{appInstanceID: appID, humanParticipantID: "human-b"}: route("human-b"),
+	}
+	for _, channel := range transport.deauthorizeParticipantProjection(desiredSources, desiredRoutes) {
+		retireParticipantDataChannel(channel)
+	}
+	if !humanB1.closed || humanA.closed {
+		t.Fatalf("rotation close state: old B closed=%v, unchanged A closed=%v", humanB1.closed, humanA.closed)
+	}
+	if len(transport.outbound) != 1 || transport.outbound["human-a"] != humanA {
+		t.Fatalf("rotated B lane was not removed while A remained: %+v", transport.outbound)
+	}
+
+	makeRequest := func(requestID string) []byte {
+		t.Helper()
+		frame, err := json.Marshal(capabilityFrame{
+			Type: capabilityRequestFrame, RequestID: requestID, AppInstanceID: appID,
+			BundleRevision: 1, TaskRequestID: "task-a", AgentID: "agent-a",
+			CapabilityID: "printer_status", Operation: types.ResidentCapabilityObserve,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		wire, err := json.Marshal(roomAppEnvelope{ProtocolVersion: 1, Lane: "reliable", AppInstanceID: appID, Payload: frame})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return wire
+	}
+	transport.receive(labelB, humanB1, makeRequest("old-b"))
+	transport.receive(labelA, humanA, makeRequest("human-a"))
+	select {
+	case got := <-handler.calls:
+		if got.RequestID != "human-a" {
+			t.Fatalf("old B channel was admitted after rotation: %+v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("unchanged Human A lane stopped working during B rotation")
+	}
+
+	registerHuman := func(sessionID string, channel *capabilityTestChannel) {
+		transport.mu.Lock()
+		transport.outbound["human-b"] = channel
+		transport.peerSessions["human-b"] = sessionID
+		transport.channelTokens["human-b"] = channel
+		transport.sources[labelB] = "human-b"
+		transport.routes[participantRouteKey{appInstanceID: appID, humanParticipantID: "human-b"}] = route("human-b")
+		transport.mu.Unlock()
+	}
+	current := &capabilityTestChannel{payloads: make(chan []byte, 8), id: 44}
+	registerHuman("session-b-2", current)
+	transport.receive(labelB, humanB1, makeRequest("old-b-after-replacement"))
+	transport.receive(labelB, current, makeRequest("new-b"))
+	select {
+	case got := <-handler.calls:
+		if got.RequestID != "new-b" {
+			t.Fatalf("unexpected request after B replacement: %+v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("replacement Human B channel was not admitted")
+	}
+
+	for rotation := 3; rotation < 8; rotation++ {
+		sessionID := "session-b-" + strconv.Itoa(rotation)
+		desiredSources["human-b"] = sessionID
+		retired := transport.deauthorizeParticipantProjection(desiredSources, desiredRoutes)
+		if len(retired) == 1 {
+			retireParticipantDataChannel(retired[0])
+		}
+		if len(retired) != 1 || retired[0] != current || !current.closed {
+			t.Fatalf("rotation %d failed to retire exactly the old B lane: retired=%d closed=%v", rotation, len(retired), current.closed)
+		}
+		current = &capabilityTestChannel{payloads: make(chan []byte, 8), id: uint16(44 + rotation)}
+		registerHuman(sessionID, current)
+		if len(transport.outbound) != 2 || transport.outbound["human-a"] != humanA {
+			t.Fatalf("rotation %d accumulated lanes or disrupted A: %+v", rotation, transport.outbound)
+		}
+	}
+}
+
+func TestParticipantDataTransportPartialUpdateClosesAllocatedChannels(t *testing.T) {
+	var closedIDs []uint16
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/sfu/datachannels/new":
+			_, _ = io.WriteString(w, `{"dataChannels":[{"id":42},{"id":42}]}`)
+		case "/api/sfu/datachannels/close":
+			var body struct {
+				DataChannels []struct {
+					ID uint16 `json:"id"`
+				} `json:"dataChannels"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode channel cleanup request: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			for _, channel := range body.DataChannels {
+				closedIDs = append(closedIDs, channel.ID)
+			}
+			_, _ = io.WriteString(w, `{}`)
+		default:
+			t.Errorf("unexpected cleanup request path %q", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	engine := NewEngine(EngineEvents{}, nil)
+	if err := engine.Create(); err != nil {
+		t.Skipf("Pion unavailable: %v", err)
+	}
+	defer engine.Close()
+	transport := NewRuntimeParticipantTransport(server.URL, DecodedHandle{
+		Room: "room-a", ParticipantID: "agent-a", ParticipantToken: "token-a",
+	}, &capabilityTestHandler{descriptors: []types.RuntimeCapabilityProjection{validCapabilityTestDescriptor("printer_status", true)}}, nil)
+	transport.session = "agent-session"
+	transport.engine = engine
+	transport.ctx = context.Background()
+
+	projection := types.RuntimeParticipantTransportProjection{
+		Routes: []types.RuntimeParticipantTransportRoute{{
+			AppInstanceID: "generated:123e4567-e89b-12d3-a456-426614174000", BundleRevision: 1,
+			TaskRequestID: "task-a", AgentParticipantID: "agent-a", HumanParticipantID: "human-a",
+			RuntimeHostID: "11111111-2222-3333-4444-555555555555", CapabilityIDs: []string{"printer_status"},
+		}},
+		Sources: []types.RuntimeParticipantTransportSource{{ParticipantID: "human-a", SessionID: "session-a"}},
+	}
+	projection.Routes = append(projection.Routes, types.RuntimeParticipantTransportRoute{
+		AppInstanceID: projection.Routes[0].AppInstanceID, BundleRevision: 1,
+		TaskRequestID: projection.Routes[0].TaskRequestID, AgentParticipantID: "agent-a",
+		HumanParticipantID: "human-b", RuntimeHostID: projection.Routes[0].RuntimeHostID,
+		CapabilityIDs: []string{"printer_status"},
+	})
+	projection.Sources = append(projection.Sources, types.RuntimeParticipantTransportSource{ParticipantID: "human-b", SessionID: "session-b"})
+
+	if err := transport.Update(context.Background(), projection); err == nil {
+		t.Fatal("duplicate negotiated channel id unexpectedly committed an update")
+	}
+	if len(closedIDs) != 1 || closedIDs[0] != 42 {
+		t.Fatalf("partial update did not close all allocated SFU channels: %v", closedIDs)
+	}
+	if len(transport.routes) != 0 || len(transport.sources) != 0 || len(transport.outbound) != 0 {
+		t.Fatalf("failed partial update left authorized state: routes=%d sources=%d lanes=%d", len(transport.routes), len(transport.sources), len(transport.outbound))
+	}
+}
+
 func TestRuntimeParticipantTransportUsesBoundedParticipantFrames(t *testing.T) {
 	handler := &capabilityTestHandler{
 		calls:       make(chan types.ResidentCapabilityRequest, 1),
@@ -54,8 +239,8 @@ func TestRuntimeParticipantTransportUsesBoundedParticipantFrames(t *testing.T) {
 	transport := NewRuntimeParticipantTransport("https://example.invalid", DecodedHandle{ParticipantID: "agent-a"}, handler, nil)
 	transport.ctx = context.Background()
 	transport.outbound = map[string]reliableParticipantDataChannel{"human-a": channel}
-	transport.routes = map[string]types.RuntimeParticipantTransportRoute{
-		"generated:123e4567-e89b-12d3-a456-426614174000": {
+	transport.routes = map[participantRouteKey]types.RuntimeParticipantTransportRoute{
+		{appInstanceID: "generated:123e4567-e89b-12d3-a456-426614174000", humanParticipantID: "human-a"}: {
 			AppInstanceID:  "generated:123e4567-e89b-12d3-a456-426614174000",
 			BundleRevision: 2, TaskRequestID: "task-a", AgentParticipantID: "agent-a", HumanParticipantID: "human-a",
 			RuntimeHostID: "host-route-1", CapabilityIDs: []string{"printer_status"},
@@ -70,7 +255,8 @@ func TestRuntimeParticipantTransportUsesBoundedParticipantFrames(t *testing.T) {
 		CapabilityID: "printer_status", Operation: types.ResidentCapabilityObserve,
 	})
 	request, _ := json.Marshal(roomAppEnvelope{ProtocolVersion: 1, Lane: "reliable", AppInstanceID: "generated:123e4567-e89b-12d3-a456-426614174000", Payload: requestPayload})
-	transport.receive(label, request)
+	transport.channelTokens = map[string]any{"human-a": channel}
+	transport.receive(label, channel, request)
 	select {
 	case got := <-handler.calls:
 		if got.RequestID != "request-a" || got.RuntimeHostID != "host-route-1" || got.CapabilityID != "printer_status" {
@@ -142,7 +328,7 @@ func TestRuntimeParticipantTransportReturnsBoundedErrorForEnvelopeOversizeResult
 	}
 }
 
-func TestRuntimeParticipantTransportKeepsCapabilityFramesOnTheTaskHumanPair(t *testing.T) {
+func TestRuntimeParticipantTransportRoutesEachHumanToItsOwnPair(t *testing.T) {
 	appID := "generated:123e4567-e89b-12d3-a456-426614174000"
 	handler := &capabilityTestHandler{
 		calls:       make(chan types.ResidentCapabilityRequest, 2),
@@ -153,10 +339,15 @@ func TestRuntimeParticipantTransportKeepsCapabilityFramesOnTheTaskHumanPair(t *t
 	transport := NewRuntimeParticipantTransport("https://example.invalid", DecodedHandle{ParticipantID: "agent-a"}, handler, nil)
 	transport.ctx = context.Background()
 	transport.outbound = map[string]reliableParticipantDataChannel{"human-a": humanA, "human-b": humanB}
-	transport.routes = map[string]types.RuntimeParticipantTransportRoute{
-		appID: {
+	transport.routes = map[participantRouteKey]types.RuntimeParticipantTransportRoute{
+		{appInstanceID: appID, humanParticipantID: "human-a"}: {
 			AppInstanceID: appID, BundleRevision: 2, TaskRequestID: "task-a",
 			AgentParticipantID: "agent-a", HumanParticipantID: "human-a",
+			RuntimeHostID: "host-route-1", CapabilityIDs: []string{"printer_status"},
+		},
+		{appInstanceID: appID, humanParticipantID: "human-b"}: {
+			AppInstanceID: appID, BundleRevision: 2, TaskRequestID: "task-a",
+			AgentParticipantID: "agent-a", HumanParticipantID: "human-b",
 			RuntimeHostID: "host-route-1", CapabilityIDs: []string{"printer_status"},
 		},
 	}
@@ -170,30 +361,39 @@ func TestRuntimeParticipantTransportKeepsCapabilityFramesOnTheTaskHumanPair(t *t
 	}
 	framePayload, _ := json.Marshal(frame)
 	wire, _ := json.Marshal(roomAppEnvelope{ProtocolVersion: 1, Lane: "reliable", AppInstanceID: appID, Payload: framePayload})
-	transport.receive(labelB, wire)
-	transport.receive(labelA, wire)
-	select {
-	case got := <-handler.calls:
-		if got.RequestID != frame.RequestID {
-			t.Fatalf("Agent received unexpected request: %+v", got)
+	frameB := frame
+	frameB.RequestID = "request-b"
+	framePayloadB, _ := json.Marshal(frameB)
+	wireB, _ := json.Marshal(roomAppEnvelope{ProtocolVersion: 1, Lane: "reliable", AppInstanceID: appID, Payload: framePayloadB})
+	transport.channelTokens = map[string]any{"human-a": humanA, "human-b": humanB}
+	transport.receive(labelB, humanB, wireB)
+	transport.receive(labelA, humanA, wire)
+	for range 2 {
+		select {
+		case <-handler.calls:
+		case <-time.After(time.Second):
+			t.Fatal("both Humans' private requests should reach the same Runtime")
 		}
-	case <-time.After(time.Second):
-		t.Fatal("Human A's private request did not reach the Agent")
+	}
+	assertRequest := func(payload []byte, wantRequestID string) {
+		t.Helper()
+		var envelope roomAppEnvelope
+		var result capabilityFrame
+		if err := json.Unmarshal(payload, &envelope); err != nil || json.Unmarshal(envelope.Payload, &result) != nil || result.Type != capabilityResultFrame || result.RequestID != wantRequestID {
+			t.Fatalf("result was not correlated to its requesting Human: %s", payload)
+		}
 	}
 	select {
 	case payload := <-humanA.payloads:
-		var envelope roomAppEnvelope
-		var result capabilityFrame
-		if err := json.Unmarshal(payload, &envelope); err != nil || json.Unmarshal(envelope.Payload, &result) != nil || result.Type != capabilityResultFrame {
-			t.Fatalf("Agent result was not returned to Human A's pair: %s", payload)
-		}
+		assertRequest(payload, "request-a")
 	case <-time.After(time.Second):
 		t.Fatal("Agent result was not sent to Human A's private channel")
 	}
 	select {
 	case payload := <-humanB.payloads:
-		t.Fatalf("Agent result was broadcast to Human B's pair channel: %s", payload)
-	default:
+		assertRequest(payload, "request-b")
+	case <-time.After(time.Second):
+		t.Fatal("Agent result was not sent to Human B's private channel")
 	}
 }
 
@@ -201,12 +401,14 @@ func TestRuntimeParticipantTransportDropsStaleRouteAndUnmappedSource(t *testing.
 	handler := &capabilityTestHandler{calls: make(chan types.ResidentCapabilityRequest, 1)}
 	transport := NewRuntimeParticipantTransport("https://example.invalid", DecodedHandle{ParticipantID: "agent-a"}, handler, nil)
 	transport.ctx = context.Background()
-	transport.outbound = map[string]reliableParticipantDataChannel{"human-a": &capabilityTestChannel{payloads: make(chan []byte, 1)}}
-	transport.routes = map[string]types.RuntimeParticipantTransportRoute{}
+	channel := &capabilityTestChannel{payloads: make(chan []byte, 1)}
+	transport.outbound = map[string]reliableParticipantDataChannel{"human-a": channel}
+	transport.routes = map[participantRouteKey]types.RuntimeParticipantTransportRoute{}
 	transport.sources = map[string]string{participantDirectReliableChannelName("agent-a", "human-a"): "human-a"}
+	transport.channelTokens = map[string]any{"human-a": channel}
 	payload, _ := json.Marshal(roomAppEnvelope{ProtocolVersion: 1, Lane: "reliable", AppInstanceID: "generated:123e4567-e89b-12d3-a456-426614174000", Payload: json.RawMessage(`{"type":"runtime-capability-request","requestId":"request-a","appInstanceId":"generated:123e4567-e89b-12d3-a456-426614174000","bundleRevision":2,"taskRequestId":"task-a","agentParticipantId":"agent-a","capabilityId":"printer_status","operation":"observe"}`)})
-	transport.receive("participant-direct-reliable-unknown", payload)
-	transport.receive(participantDirectReliableChannelName("agent-a", "human-a"), payload)
+	transport.receive("participant-direct-reliable-unknown", channel, payload)
+	transport.receive(participantDirectReliableChannelName("agent-a", "human-a"), channel, payload)
 	select {
 	case <-handler.calls:
 		t.Fatal("stale or unmapped route reached the capability controller")
@@ -253,9 +455,10 @@ func TestRuntimeParticipantTransportEnforcesCurrentDescriptorBeforeDispatch(t *t
 				AgentParticipantID: "agent-a", HumanParticipantID: "human-a", RuntimeHostID: "host-route-1",
 				CapabilityIDs: []string{"printer_status"},
 			}
-			transport.routes = map[string]types.RuntimeParticipantTransportRoute{appID: route}
+			transport.routes = map[participantRouteKey]types.RuntimeParticipantTransportRoute{{appInstanceID: appID, humanParticipantID: "human-a"}: route}
 			label := participantDirectReliableChannelName("agent-a", "human-a")
 			transport.sources = map[string]string{label: "human-a"}
+			transport.channelTokens = map[string]any{"human-a": outbound}
 			frame := capabilityFrame{
 				Type: capabilityRequestFrame, RequestID: "request-a", AppInstanceID: appID,
 				BundleRevision: 2, TaskRequestID: "task-a", AgentID: "agent-a",
@@ -264,7 +467,7 @@ func TestRuntimeParticipantTransportEnforcesCurrentDescriptorBeforeDispatch(t *t
 			}
 			framePayload, _ := json.Marshal(frame)
 			wire, _ := json.Marshal(roomAppEnvelope{ProtocolVersion: 1, Lane: "reliable", AppInstanceID: appID, Payload: framePayload})
-			transport.receive(label, wire)
+			transport.receive(label, outbound, wire)
 
 			if test.wantDispatch {
 				select {
@@ -292,7 +495,7 @@ func TestNoMediaPionPairwiseReliableChannelsDeliverTextResultOnlyToRequestingHum
 		isString       bool
 	}
 	engineMessages := make(chan channelMessage, 4)
-	engine := NewEngine(EngineEvents{OnDataChannelMessage: func(label string, payload []byte) {
+	engine := NewEngine(EngineEvents{OnDataChannelMessage: func(label string, _ *ParticipantDataChannel, payload []byte) {
 		engineMessages <- channelMessage{label: label, payload: string(payload)}
 	}}, nil)
 	if err := engine.Create(); err != nil {
