@@ -25,8 +25,45 @@ experiment procedures.
   secret names, and binding names, but must never retrieve or receive secret
   values. `.dev.vars` remains supported for Human/local development outside
   this deployed-agent workflow.
+- Treat the SFU App ID and App Secret as separate inputs. `SFU_APP_ID` is a
+  non-secret Worker variable; `SFU_APP_SECRET` is a secret. They must belong to
+  the same Cloudflare Calls/SFU app. Bind the pre-provisioned secret as
+  `SFU_APP_SECRET_STORE` using the Secrets Store binding below; never fetch its
+  value or ask a Human to paste it. Do not assume the App ID can be inferred
+  from the Secret Store name or metadata, and do not reuse the production
+  Worker’s App ID for a disposable environment.
+- Resolve the dogfood App ID before creating temporary Cloudflare resources.
+  Use the Cloudflare dashboard or the read-only Calls app-list endpoint
+  (`GET /accounts/{account_id}/calls/apps`) with `Calls Read` permission, then
+  match the app name to the pre-provisioned dogfood secret. `wrangler whoami`
+  must show the intended account; if the matching App ID or required read
+  permission is unavailable, stop before creating a Worker or KV namespace.
+  Ask only for the non-secret App ID or the missing read permission, never the
+  App Secret value.
 - Keep temporary configuration outside the repository whenever possible.
 - Do not create a release, tag, production deployment, or automatic merge.
+
+Example temporary Wrangler binding (use the verified store ID and secret name;
+these are metadata, not secret values):
+
+```jsonc
+"vars": {
+  "SFU_APP_ID": "<verified-dogfood-app-id>",
+  "TURNSTILE_DISABLED": "true"
+},
+"secrets_store_secrets": [
+  {
+    "binding": "SFU_APP_SECRET_STORE",
+    "store_id": "<verified-store-id>",
+    "secret_name": "<verified-dogfood-secret-name>"
+  }
+]
+```
+
+Cloudflare Secrets Store bindings expose `get()` on the Worker environment; the
+secret value is fetched only by the deployed Worker at runtime. The App ID is
+configured separately because it is a Worker variable, not a Secrets Store
+secret.
 
 ## Provenance and deployment
 
