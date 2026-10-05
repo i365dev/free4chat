@@ -17,17 +17,19 @@ type participantTransportStartResult struct {
 }
 
 type scriptedParticipantTransport struct {
-	result  participantTransportStartResult
-	started chan participantTransportStartResult
-	once    sync.Once
-	updates chan types.RuntimeParticipantTransportProjection
+	result        participantTransportStartResult
+	started       chan participantTransportStartResult
+	once          sync.Once
+	updates       chan types.RuntimeParticipantTransportProjection
+	updateResults chan error
 }
 
 func newScriptedParticipantTransport(err error) *scriptedParticipantTransport {
 	return &scriptedParticipantTransport{
-		result:  participantTransportStartResult{err: err},
-		started: make(chan participantTransportStartResult, 1),
-		updates: make(chan types.RuntimeParticipantTransportProjection, 4),
+		result:        participantTransportStartResult{err: err},
+		started:       make(chan participantTransportStartResult, 1),
+		updates:       make(chan types.RuntimeParticipantTransportProjection, 4),
+		updateResults: make(chan error, 16),
 	}
 }
 
@@ -42,7 +44,23 @@ func (*scriptedParticipantTransport) Close() {}
 
 func (t *scriptedParticipantTransport) Update(_ context.Context, projection types.RuntimeParticipantTransportProjection) error {
 	t.updates <- projection
-	return nil
+	select {
+	case err := <-t.updateResults:
+		return err
+	default:
+		return nil
+	}
+}
+
+func awaitParticipantTransportUpdate(t *testing.T, transport *scriptedParticipantTransport) types.RuntimeParticipantTransportProjection {
+	t.Helper()
+	select {
+	case projection := <-transport.updates:
+		return projection
+	case <-time.After(2 * time.Second):
+		t.Fatal("participant transport update did not run")
+		return types.RuntimeParticipantTransportProjection{}
+	}
 }
 
 func participantTransportTestProjection(humanID, sessionID string) types.RuntimeParticipantTransportProjection {
@@ -187,6 +205,123 @@ func TestParticipantTransportProjectionUpdatesExistingTransportInPlace(t *testin
 	if current != transport || factoryCalls != 1 {
 		t.Fatalf("reconnect restarted the participant transport: current=%T factoryCalls=%d", current, factoryCalls)
 	}
+}
+
+func TestParticipantTransportUpdateRetriesAutonomouslyWithoutRoomEnvelope(t *testing.T) {
+	rt, _ := newResidentFenceRuntime(t)
+	configureParticipantTransportRuntime(t, rt, 10*time.Millisecond)
+	defer rt.Stop()
+	transport := newScriptedParticipantTransport(nil)
+	rt.participantTransportFactory = func(media.DecodedHandle) participantDataTransport { return transport }
+	initial := participantTransportTestProjection("human-a", "session-a")
+	rt.observeRuntimeParticipantTransport(initial)
+	if got := awaitParticipantTransportStart(t, transport); got.err != nil {
+		t.Fatalf("initial transport Start failed: %v", got.err)
+	}
+	transport.updateResults <- errors.New("temporary allocation failure")
+	lateHuman := participantTransportTestProjection("human-a", "session-a")
+	lateHuman.Routes = append(lateHuman.Routes, types.RuntimeParticipantTransportRoute{
+		AppInstanceID: lateHuman.Routes[0].AppInstanceID, BundleRevision: 1,
+		TaskRequestID: lateHuman.Routes[0].TaskRequestID, AgentParticipantID: "agent-a",
+		HumanParticipantID: "human-b", RuntimeHostID: lateHuman.Routes[0].RuntimeHostID,
+		CapabilityIDs: []string{"printer_status"},
+	})
+	lateHuman.Sources = append(lateHuman.Sources, types.RuntimeParticipantTransportSource{ParticipantID: "human-b", SessionID: "session-b"})
+	rt.observeRuntimeParticipantTransport(lateHuman)
+	if got := awaitParticipantTransportUpdate(t, transport); len(got.Sources) != 2 {
+		t.Fatalf("first update projection = %+v, want both Humans", got.Sources)
+	}
+	if got := awaitParticipantTransportUpdate(t, transport); len(got.Sources) != 2 || got.Sources[1].SessionID != "session-b" {
+		t.Fatalf("autonomous retry projection = %+v", got.Sources)
+	}
+	rt.mu.Lock()
+	current := rt.participantTransport
+	rt.mu.Unlock()
+	if current != transport {
+		t.Fatal("successful in-place retry replaced the participant transport")
+	}
+	select {
+	case <-transport.updates:
+		t.Fatal("update retried more than once after its successful retry")
+	case <-time.After(30 * time.Millisecond):
+	}
+}
+
+func TestParticipantTransportUpdateRetryIsFencedByNewerProjection(t *testing.T) {
+	rt, _ := newResidentFenceRuntime(t)
+	configureParticipantTransportRuntime(t, rt, 80*time.Millisecond)
+	defer rt.Stop()
+	transport := newScriptedParticipantTransport(nil)
+	rt.participantTransportFactory = func(media.DecodedHandle) participantDataTransport { return transport }
+	rt.observeRuntimeParticipantTransport(participantTransportTestProjection("human-a", "session-a"))
+	if got := awaitParticipantTransportStart(t, transport); got.err != nil {
+		t.Fatalf("initial transport Start failed: %v", got.err)
+	}
+	transport.updateResults <- errors.New("temporary update failure")
+	projectionN := participantTransportTestProjection("human-a", "session-a")
+	projectionN.Routes[0].BundleRevision = 2
+	rt.observeRuntimeParticipantTransport(projectionN)
+	_ = awaitParticipantTransportUpdate(t, transport)
+	projectionN1 := participantTransportTestProjection("human-a", "session-a")
+	projectionN1.Routes[0].BundleRevision = 3
+	rt.observeRuntimeParticipantTransport(projectionN1)
+	if got := awaitParticipantTransportUpdate(t, transport); got.Routes[0].BundleRevision != 3 {
+		t.Fatalf("new projection update = revision %d, want 3", got.Routes[0].BundleRevision)
+	}
+	time.Sleep(120 * time.Millisecond)
+	if got := len(transport.updates); got != 0 {
+		t.Fatalf("stale retry crossed the newer projection; queued updates = %d", got)
+	}
+}
+
+func TestParticipantTransportUpdateRetryStopsAndIsBounded(t *testing.T) {
+	t.Run("stops with runtime", func(t *testing.T) {
+		rt, _ := newResidentFenceRuntime(t)
+		configureParticipantTransportRuntime(t, rt, 40*time.Millisecond)
+		transport := newScriptedParticipantTransport(nil)
+		rt.participantTransportFactory = func(media.DecodedHandle) participantDataTransport { return transport }
+		rt.observeRuntimeParticipantTransport(participantTransportTestProjection("human-a", "session-a"))
+		_ = awaitParticipantTransportStart(t, transport)
+		transport.updateResults <- errors.New("temporary update failure")
+		rt.observeRuntimeParticipantTransport(participantTransportTestProjection("human-b", "session-b"))
+		_ = awaitParticipantTransportUpdate(t, transport)
+		if !rt.beginStop("") {
+			t.Fatal("Runtime did not enter stopped state")
+		}
+		time.Sleep(60 * time.Millisecond)
+		if got := len(transport.updates); got != 0 {
+			t.Fatalf("update retry ran after Runtime stop; queued updates = %d", got)
+		}
+		rt.releaseResources()
+	})
+
+	t.Run("exhausts after bounded retries", func(t *testing.T) {
+		rt, _ := newResidentFenceRuntime(t)
+		configureParticipantTransportRuntime(t, rt, time.Millisecond)
+		defer rt.Stop()
+		transport := newScriptedParticipantTransport(nil)
+		rt.participantTransportFactory = func(media.DecodedHandle) participantDataTransport { return transport }
+		rt.observeRuntimeParticipantTransport(participantTransportTestProjection("human-a", "session-a"))
+		_ = awaitParticipantTransportStart(t, transport)
+		for range participantTransportRetryLimit + 1 {
+			transport.updateResults <- errors.New("persistent update failure")
+		}
+		projection := participantTransportTestProjection("human-b", "session-b")
+		rt.observeRuntimeParticipantTransport(projection)
+		for range participantTransportRetryLimit + 1 {
+			_ = awaitParticipantTransportUpdate(t, transport)
+		}
+		time.Sleep(25 * time.Millisecond)
+		if got := len(transport.updates); got != 0 {
+			t.Fatalf("retry exceeded configured limit; queued updates = %d", got)
+		}
+		rt.mu.Lock()
+		got := rt.participantTransportRetryCount
+		rt.mu.Unlock()
+		if got != participantTransportRetryLimit {
+			t.Fatalf("retry count = %d, want bounded limit %d", got, participantTransportRetryLimit)
+		}
+	})
 }
 
 func TestParticipantTransportRetryDoesNotCrossProjectionGeneration(t *testing.T) {

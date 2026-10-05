@@ -105,6 +105,9 @@ type AnalyticsWindow = Window & {
 
 const trackWithZaraz = (eventName: string, eventData: AnalyticsProperties) => {
   const send = () => {
+    // A delayed retry can outlive the browser/test environment that scheduled
+    // it (for example, after a jsdom test file has torn down its window).
+    if (typeof window === "undefined") return false
     const zaraz = (window as AnalyticsWindow).zaraz
     if (!zaraz) return false
     try {

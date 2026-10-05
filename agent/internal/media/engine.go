@@ -81,7 +81,7 @@ type EngineEvents struct {
 	OnAudioFrame func(AudioFrameEvent)
 	// OnDataChannelMessage exposes bounded participant DataChannel payloads to
 	// generic Runtime transport owners. It carries no media or Harness semantics.
-	OnDataChannelMessage func(label string, payload []byte)
+	OnDataChannelMessage func(label string, channel *ParticipantDataChannel, payload []byte)
 }
 
 // Engine is the in-process Pion PeerConnection (no JSONL boundary). It is a
@@ -235,9 +235,10 @@ func (e *Engine) Create() error {
 		e.handleIncomingTrack(track, receiver)
 	})
 	pc.OnDataChannel(func(channel *webrtc.DataChannel) {
+		participantChannel := &ParticipantDataChannel{channel: channel}
 		channel.OnMessage(func(message webrtc.DataChannelMessage) {
 			if e.ev.OnDataChannelMessage != nil {
-				e.ev.OnDataChannelMessage(channel.Label(), append([]byte(nil), message.Data...))
+				e.ev.OnDataChannelMessage(channel.Label(), participantChannel, append([]byte(nil), message.Data...))
 			}
 		})
 	})
@@ -255,6 +256,27 @@ func (c *ParticipantDataChannel) Label() string {
 		return ""
 	}
 	return c.channel.Label()
+}
+
+func (c *ParticipantDataChannel) ID() uint16 {
+	if c == nil || c.channel == nil {
+		return 0
+	}
+	return participantDataChannelID(c.channel)
+}
+
+func participantDataChannelID(channel *webrtc.DataChannel) uint16 {
+	if channel == nil || channel.ID() == nil {
+		return 0
+	}
+	return *channel.ID()
+}
+
+func (c *ParticipantDataChannel) Close() error {
+	if c == nil || c.channel == nil {
+		return nil
+	}
+	return c.channel.Close()
 }
 
 func (c *ParticipantDataChannel) Send(payload []byte) error {
@@ -298,12 +320,13 @@ func (e *Engine) CreateParticipantDataChannel(label string, id uint16) (*Partici
 	if err != nil {
 		return nil, err
 	}
+	participantChannel := &ParticipantDataChannel{channel: channel}
 	channel.OnMessage(func(message webrtc.DataChannelMessage) {
 		if e.ev.OnDataChannelMessage != nil {
-			e.ev.OnDataChannelMessage(channel.Label(), append([]byte(nil), message.Data...))
+			e.ev.OnDataChannelMessage(channel.Label(), participantChannel, append([]byte(nil), message.Data...))
 		}
 	})
-	return &ParticipantDataChannel{channel: channel}, nil
+	return participantChannel, nil
 }
 
 // CreateServerEventsChannel creates the server-events DataChannel BEFORE any

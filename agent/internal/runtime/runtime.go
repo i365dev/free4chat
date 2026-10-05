@@ -44,6 +44,7 @@ func diagnosticScopeKey(scope string) string {
 const (
 	participantTransportRetryInitialDelay = 250 * time.Millisecond
 	participantTransportRetryMaxDelay     = 4 * time.Second
+	participantTransportRetryLimit        = 5
 )
 
 var errTaskTextUnsupported = errors.New("task-scoped text transport is unavailable")
@@ -1546,11 +1547,17 @@ func (r *ResidentRuntime) updateRuntimeParticipantTransport(
 		r.mu.Lock()
 		if !r.stopped && r.participantTransport == transport &&
 			r.participantTransportGeneration == generation && r.participantTransportProjection == signature {
-			// The next private Room envelope retries this same bounded projection.
-			r.participantTransportProjection = ""
+			r.scheduleRuntimeParticipantTransportRetryLocked(projection, signature, generation, "", updater, transport)
 		}
 		r.mu.Unlock()
+		return
 	}
+	r.mu.Lock()
+	if !r.stopped && r.participantTransport == transport &&
+		r.participantTransportGeneration == generation && r.participantTransportProjection == signature {
+		r.participantTransportRetryCount = 0
+	}
+	r.mu.Unlock()
 }
 
 func (r *ResidentRuntime) startRuntimeParticipantTransport(
@@ -1596,7 +1603,7 @@ func (r *ResidentRuntime) startRuntimeParticipantTransport(
 				r.participantTransportGeneration == generation &&
 				r.participantTransportProjection == signature {
 				r.participantTransport = nil
-				r.scheduleRuntimeParticipantTransportRetryLocked(projection, signature, generation, handleText)
+				r.scheduleRuntimeParticipantTransportRetryLocked(projection, signature, generation, handleText, nil, nil)
 			}
 			r.mu.Unlock()
 		}
@@ -1608,10 +1615,24 @@ func (r *ResidentRuntime) scheduleRuntimeParticipantTransportRetryLocked(
 	signature string,
 	generation uint64,
 	handleText string,
+	updater participantDataTransportUpdater,
+	transport participantDataTransport,
 ) {
 	if r.stopped || r.participantTransportGeneration != generation ||
-		r.participantTransportProjection != signature || r.participantTransport != nil ||
-		r.participantTransportRetryTimer != nil {
+		r.participantTransportProjection != signature || r.participantTransportRetryTimer != nil {
+		return
+	}
+	if updater == nil && r.participantTransport != nil {
+		return
+	}
+	if updater != nil && (transport == nil || r.participantTransport != transport) {
+		return
+	}
+	if r.participantTransportRetryCount >= participantTransportRetryLimit {
+		// Leave the failed projection unauthorised. A later Room envelope may
+		// restart attempts, while an idle Room stays fail-closed.
+		r.participantTransportProjection = ""
+		r.log("runtime_participant_transport_retry_exhausted", map[string]string{"reason": "retry_limit_reached"})
 		return
 	}
 	r.participantTransportRetryCount++
@@ -1632,13 +1653,19 @@ func (r *ResidentRuntime) scheduleRuntimeParticipantTransportRetryLocked(
 	r.participantTransportRetryTimer = time.AfterFunc(delay, func() {
 		r.mu.Lock()
 		if r.stopped || r.participantTransportGeneration != generation ||
-			r.participantTransportProjection != signature || r.participantTransport != nil {
+			r.participantTransportProjection != signature ||
+			(updater == nil && r.participantTransport != nil) ||
+			(updater != nil && r.participantTransport != transport) {
 			r.mu.Unlock()
 			return
 		}
 		r.participantTransportRetryTimer = nil
 		r.mu.Unlock()
-		r.startRuntimeParticipantTransport(projection, signature, generation, handleText)
+		if updater != nil {
+			go r.updateRuntimeParticipantTransport(updater, transport, projection, signature, generation)
+		} else {
+			r.startRuntimeParticipantTransport(projection, signature, generation, handleText)
+		}
 	})
 }
 
