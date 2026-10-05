@@ -359,7 +359,7 @@ func run(args []string) error {
 			id := option(args, "--id")
 			action := option(args, "--action")
 			argsJSON := option(args, "--args")
-			if id == "" || action == "" || (len(args) != 4 && len(args) != 6) {
+			if id == "" || action == "" || !validCapabilityInvokeArgs(args) {
 				return errUsage()
 			}
 			if argsJSON == "" {
@@ -762,6 +762,20 @@ func run(args []string) error {
 	default:
 		return errUsage()
 	}
+}
+
+func validCapabilityInvokeArgs(args []string) bool {
+	seen := make(map[string]bool, 3)
+	for index := 0; index < len(args); {
+		flag := args[index]
+		if flag != "--id" && flag != "--action" && flag != "--args" || seen[flag] || index+1 >= len(args) {
+			return false
+		}
+		seen[flag] = true
+		index += 2
+	}
+	return len(args) == 4 && seen["--id"] && seen["--action"] && !seen["--args"] ||
+		len(args) == 6 && seen["--id"] && seen["--action"] && seen["--args"]
 }
 
 // joinRequest keeps the low-level join parsing shared with the developer

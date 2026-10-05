@@ -111,6 +111,7 @@ func describeGeneratedApp() generatedAppDescriptor {
 			"networkOrigins must be [] in V0; native network access is unavailable.",
 			"A Human click may call the originating Task Agent Runtime through the host-owned capabilities bridge; capability results are semantic and bounded.",
 			"Call observe/invoke synchronously inside the trusted click handler for the concrete control; one control click authorizes one operation.",
+			"Each capability call returns a Promise that resolves a bounded result object, including failures such as {ok:false,error:'unavailable'}; failures are not guaranteed to reject. Always await it and inspect result.ok before showing success.",
 			"Do not select a runtimeHostId or include credentials, local endpoints, or device/network details in the App.",
 			"Use shared.get() before a write, pass the returned revision through shared.set(), and handle a later shared change as the canonical state.",
 			"A changed application bundle must tolerate or migrate any existing shared state schema itself.",

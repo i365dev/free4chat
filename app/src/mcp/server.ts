@@ -787,7 +787,8 @@ function createMcpServer(context: McpRequestContext) {
     "publish_generated_app",
     {
       description:
-        "Publish one small self-contained collaborative Task Room App. The bundle is business/UI code only: {version:1, manifest:{title,networkOrigins:[]}, html, css, js, initialState}. Free4Chat supplies the sandbox, Room-owned persistence, shared state, and realtime bridge. One Task has at most one publication: an identical retry is a duplicate, while a changed valid bundle keeps appInstanceId and increments bundleRevision; stateRevision remains independent. The Room independently validates conservative bounds and creates appInstanceId.",
+        "Publish one small self-contained collaborative Task Room App. The bundle is business/UI code only: {version:1, manifest:{title,networkOrigins:[]}, html, css, js, initialState}. Free4Chat supplies the sandbox, Room-owned persistence, shared state, and realtime bridge. A Task has one independent App identity; an identical retry is a duplicate, while a changed valid bundle in the same Task keeps appInstanceId and increments bundleRevision without resetting shared state. stateRevision remains independent. The Room independently validates conservative bounds and creates appInstanceId." +
+        " free4chat.capabilities.observe/invoke return Promises that resolve bounded result objects; failures may resolve as {ok:false,error:'unavailable'} instead of rejecting. Always await and check result.ok before showing success.",
       inputSchema: {
         participantHandle: z.string().min(1),
         taskRequestId: z.string().trim().min(1).max(64),

@@ -82,6 +82,15 @@ func TestGeneratedAppDescribeIsDeterministicAndSelfConsistent(t *testing.T) {
 		!strings.Contains(bridge, "free4chat.capabilities.invoke(capabilityId, action, args)") {
 		t.Fatalf("descriptor is missing the bounded Runtime capability bridge: %#v", descriptor.Bridge)
 	}
+	rules := strings.Join(descriptor.Rules, "\n")
+	for _, contract := range []string{"Promise", "not guaranteed to reject", "await it and inspect result.ok"} {
+		if !strings.Contains(rules, contract) {
+			t.Errorf("generated-app machine contract omits %q", contract)
+		}
+	}
+	if !strings.Contains(descriptor.Revision.ChangedBundle, "appInstanceId") || !strings.Contains(descriptor.Revision.ChangedBundle, "bundleRevision") {
+		t.Fatalf("changed same-Task bundle contract is incomplete: %#v", descriptor.Revision)
+	}
 	if descriptor.Limits.MaxBundleBytes != maxGeneratedAppBytes ||
 		descriptor.Limits.MaxStateBytes != generatedAppStateBytes ||
 		descriptor.Bundle.Version != 1 || len(descriptor.Bundle.NetworkOrigins) != 0 {
