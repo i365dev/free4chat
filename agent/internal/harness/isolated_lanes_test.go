@@ -49,8 +49,8 @@ func (f *fakeIsolatedLane) SessionControlsFor(string) *types.HarnessSessionContr
 }
 func (f *fakeIsolatedLane) SetModeFor(string, string) error                 { return nil }
 func (f *fakeIsolatedLane) SetConfigOptionFor(string, string, string) error { return nil }
-func (f *fakeIsolatedLane) ApplySessionConfigFallbacksFor(string, map[string]string) error {
-	return nil
+func (f *fakeIsolatedLane) ApplySessionConfigFallbacksFor(string, map[string]string) ([]types.AppliedSessionConfigFallback, error) {
+	return nil, nil
 }
 func (f *fakeIsolatedLane) SessionGenerationFor(string) int64 { return 1 }
 func (f *fakeIsolatedLane) RunTurnFor(scope string, _ types.HarnessTurnInput, _ int64) (types.HarnessTurnResult, error) {

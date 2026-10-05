@@ -184,10 +184,10 @@ func (a *IsolatedACPAdapter) SetConfigOptionFor(scope, configID, value string) e
 	return adapter.SetConfigOptionFor(scope, configID, value)
 }
 
-func (a *IsolatedACPAdapter) ApplySessionConfigFallbacksFor(scope string, humanSelections map[string]string) error {
+func (a *IsolatedACPAdapter) ApplySessionConfigFallbacksFor(scope string, humanSelections map[string]string) ([]types.AppliedSessionConfigFallback, error) {
 	adapter, err := a.adapterForScope(scope, false)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	return adapter.ApplySessionConfigFallbacksFor(scope, humanSelections)
 }
