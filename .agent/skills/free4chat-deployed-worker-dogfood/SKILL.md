@@ -23,10 +23,55 @@ experiment procedures.
   dogfood. Required real Worker secrets must come from pre-provisioned
   Cloudflare Secrets Store bindings. The Agent may inspect store IDs/names,
   secret names, and binding names, but must never retrieve or receive secret
-  values. `.dev.vars` remains supported for Human/local development outside
-  this deployed-agent workflow.
+  values. Do not read `.dev.vars` for deployed dogfood.
+- Treat the SFU App ID and App Secret as separate inputs. Use `SFU_APP_ID`
+  through its pre-provisioned Cloudflare Secrets Store entry without reading
+  or printing its value. Store both inputs as pre-provisioned Cloudflare Secrets Store
+  entries, and bind them as `SFU_APP_ID_STORE` and `SFU_APP_SECRET_STORE`.
+  They must belong to the same Cloudflare Calls/SFU app. For this repository's
+  dogfood setup, verify the metadata names `free4chat-dogfood-sfu-appid` and
+  `free4chat-dogfood-sfu-secret` are active and scoped to Workers. Never read
+  either value and never use `.dev.vars` for a deployed run. The App ID is
+  treated as opaque configuration so the experiment has one credential source
+  and cannot accidentally print local values.
+- The App ID may identify the production SFU app. In that case the temporary
+  Worker uses the production SFU API to create media sessions, while its Worker,
+  Durable Object namespace, and KV remain isolated. Do not deploy, mutate, tail,
+  or delete the production Worker or routes. The Human must explicitly request
+  this experiment before production SFU sessions are created.
+- Confirm the target source supports asynchronous `get()` calls on both Store
+  bindings before deployment. Do not bind a Secrets Store object under the
+  string `SFU_APP_ID` or assume a Worker `vars` entry can be populated directly
+  from a Store value. If the source lacks `SFU_APP_ID_STORE` support, add and
+  validate that generic binding support in the experiment branch before
+  deploying; do not retrieve the value to work around it.
 - Keep temporary configuration outside the repository whenever possible.
 - Do not create a release, tag, production deployment, or automatic merge.
+
+Example temporary Wrangler bindings (use the verified store ID and secret
+names; these are metadata, not secret values):
+
+```jsonc
+"vars": {
+  "TURNSTILE_DISABLED": "true"
+},
+"secrets_store_secrets": [
+  {
+    "binding": "SFU_APP_ID_STORE",
+    "store_id": "<verified-store-id>",
+    "secret_name": "free4chat-dogfood-sfu-appid"
+  },
+  {
+    "binding": "SFU_APP_SECRET_STORE",
+    "store_id": "<verified-store-id>",
+    "secret_name": "free4chat-dogfood-sfu-secret"
+  }
+]
+```
+
+Cloudflare Secrets Store bindings expose `get()` on the Worker environment; the
+Worker reads each value at runtime. Do not place either value in the temporary
+Wrangler config.
 
 ## Provenance and deployment
 
