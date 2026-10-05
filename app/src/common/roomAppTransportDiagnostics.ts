@@ -16,6 +16,7 @@ export type RoomAppDiagnosticName =
   | "remote_reliable_subscribe"
   | "remote_reliable_ready"
   | "remote_reliable_closed"
+  | "remote_reliable_recovery_scheduled"
   | "reliable_send_failed"
   | "reliable_sent"
   | "reliable_received"

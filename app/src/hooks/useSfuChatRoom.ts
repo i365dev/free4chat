@@ -253,9 +253,23 @@ interface RemoteRoomAppChannelAttempt {
   publisherSessionId: string
   participantKind: "human" | "agent"
   lane: RoomAppLane
+  direct: boolean
   attempt: number
   channel: RTCDataChannel | null
   channelId: number | null
+  ready?: boolean
+}
+
+interface RemoteRoomAppChannelRetry {
+  participantId: string
+  peerConnection: RTCPeerConnection
+  subscriberSessionId: string
+  publisherSessionId: string
+  participantKind: "human" | "agent"
+  lane: RoomAppLane
+  direct: boolean
+  retryAttempt: number
+  timeout: ReturnType<typeof setTimeout>
 }
 
 export interface RoomAppTransportStats {
@@ -823,6 +837,18 @@ export function useSfuChatRoom(
     new Map<string, RemoteRoomAppChannelAttempt>()
   )
   const remoteRoomAppChannelAttemptCountsRef = useRef(new Map<string, number>())
+  const remoteRoomAppChannelRetriesRef = useRef(
+    new Map<string, RemoteRoomAppChannelRetry>()
+  )
+  const scheduleRemoteRoomAppChannelRetryRef = useRef<
+    | ((
+        key: string,
+        participantId: string,
+        attempt: RemoteRoomAppChannelAttempt,
+        retryAttempt: number
+      ) => void)
+    | null
+  >(null)
   const roomAppDiagnosticRef = useRef<RoomAppTransportDiagnosticTrace | null>(
     null
   )
@@ -1889,6 +1915,20 @@ export function useSfuChatRoom(
     [roomName, roomAppDiagnostic]
   )
 
+  const clearRemoteRoomAppChannelRetry = useCallback((key: string) => {
+    const retry = remoteRoomAppChannelRetriesRef.current.get(key)
+    if (!retry) return false
+    clearTimeout(retry.timeout)
+    remoteRoomAppChannelRetriesRef.current.delete(key)
+    return true
+  }, [])
+
+  const clearAllRemoteRoomAppChannelRetries = useCallback(() => {
+    for (const retry of remoteRoomAppChannelRetriesRef.current.values())
+      clearTimeout(retry.timeout)
+    remoteRoomAppChannelRetriesRef.current.clear()
+  }, [])
+
   const cleanupRemoteRoomAppChannel = useCallback(
     (key: string, attempt: RemoteRoomAppChannelAttempt, reason: string) => {
       const activeAttempt = remoteRoomAppChannelAttemptsRef.current.get(key)
@@ -1926,6 +1966,7 @@ export function useSfuChatRoom(
 
   const clearAllRemoteRoomAppChannels = useCallback(
     (reason: string) => {
+      clearAllRemoteRoomAppChannelRetries()
       const keys = new Set([
         ...remoteRoomAppChannelAttemptsRef.current.keys(),
         ...remoteRoomAppChannelsRef.current.keys(),
@@ -1943,6 +1984,7 @@ export function useSfuChatRoom(
               publisherSessionId: "",
               participantKind: "human" as const,
               lane,
+              direct: false,
               attempt: 0,
               channel,
               channelId: remoteRoomAppChannelIdsRef.current.get(key) ?? null,
@@ -1952,13 +1994,14 @@ export function useSfuChatRoom(
       }
       remoteRoomAppChannelAttemptCountsRef.current.clear()
     },
-    [cleanupRemoteRoomAppChannel]
+    [clearAllRemoteRoomAppChannelRetries, cleanupRemoteRoomAppChannel]
   )
 
   const resetRemoteRoomAppParticipant = useCallback(
     (participantId: string, reason: string) => {
       for (const lane of ["reliable", "realtime"] as const) {
         const key = roomAppChannelKey(participantId, lane)
+        clearRemoteRoomAppChannelRetry(key)
         const attempt =
           remoteRoomAppChannelAttemptsRef.current.get(key) ??
           (() => {
@@ -1970,6 +2013,7 @@ export function useSfuChatRoom(
               publisherSessionId: "",
               participantKind: "human" as const,
               lane,
+              direct: false,
               attempt: 0,
               channel,
               channelId: remoteRoomAppChannelIdsRef.current.get(key) ?? null,
@@ -1979,7 +2023,11 @@ export function useSfuChatRoom(
         remoteRoomAppChannelAttemptCountsRef.current.delete(key)
       }
     },
-    [cleanupRemoteRoomAppChannel, roomAppChannelKey]
+    [
+      clearRemoteRoomAppChannelRetry,
+      cleanupRemoteRoomAppChannel,
+      roomAppChannelKey,
+    ]
   )
 
   const subscribeRoomAppChannel = useCallback(
@@ -1996,6 +2044,7 @@ export function useSfuChatRoom(
           ? participant.participantDataTransport?.ready === true
           : media?.appDataChannelReady === true
       const key = roomAppChannelKey(participant.id, lane)
+      clearRemoteRoomAppChannelRetry(key)
       if (
         !roomAppsEnabledRef.current ||
         !pc ||
@@ -2018,6 +2067,7 @@ export function useSfuChatRoom(
         publisherSessionId,
         participantKind: participant.kind,
         lane,
+        direct: false,
         attempt: attemptKey,
         channel: null,
         channelId: null,
@@ -2077,8 +2127,20 @@ export function useSfuChatRoom(
         channel.addEventListener("message", (event) =>
           handleRoomAppChannelMessage(participant.id, lane, event)
         )
-        const cleanup = () =>
-          cleanupRemoteRoomAppChannel(key, channelAttempt, "closed")
+        const cleanup = () => {
+          const removed = cleanupRemoteRoomAppChannel(
+            key,
+            channelAttempt,
+            "closed"
+          )
+          if (removed && channelAttempt.ready)
+            scheduleRemoteRoomAppChannelRetryRef.current?.(
+              key,
+              participant.id,
+              channelAttempt,
+              2
+            )
+        }
         channel.addEventListener("close", cleanup)
         channel.addEventListener("error", cleanup)
         await waitForDataChannelOpen(channel, ROOM_APP_CHANNEL_OPEN_TIMEOUT_MS)
@@ -2088,6 +2150,7 @@ export function useSfuChatRoom(
         )
           throw new Error("SFU Room App data channel became stale")
         channel.send("ack")
+        channelAttempt.ready = true
         remoteRoomAppChannelAttemptsRef.current.delete(key)
         remoteRoomAppChannelsRef.current.set(key, channel)
         if (lane === "reliable")
@@ -2097,18 +2160,17 @@ export function useSfuChatRoom(
           })
       } catch {
         cleanupRemoteRoomAppChannel(key, channelAttempt, "establishment_failed")
-        const delay = ROOM_APP_RETRY_DELAYS_MS[attempt - 1]
-        if (delay !== undefined && roomAppsEnabledRef.current) {
-          window.setTimeout(() => {
-            const current = participantMapRef.current.get(participant.id)
-            if (current)
-              void subscribeRoomAppChannel(current, lane, attempt + 1)
-          }, delay)
-        }
+        scheduleRemoteRoomAppChannelRetryRef.current?.(
+          key,
+          participant.id,
+          channelAttempt,
+          attempt + 1
+        )
       }
     },
     [
       apiRequest,
+      clearRemoteRoomAppChannelRetry,
       cleanupRemoteRoomAppChannel,
       handleRoomAppChannelMessage,
       roomAppChannelKey,
@@ -2129,6 +2191,7 @@ export function useSfuChatRoom(
         session?.participantId ?? ""
       )
       const key = roomAppChannelKey(agent.id, "reliable")
+      clearRemoteRoomAppChannelRetry(key)
       if (
         !roomAppsEnabledRef.current ||
         !pc ||
@@ -2152,6 +2215,7 @@ export function useSfuChatRoom(
         publisherSessionId,
         participantKind: "agent",
         lane: "reliable",
+        direct: true,
         attempt: attemptKey,
         channel: null,
         channelId: null,
@@ -2200,8 +2264,20 @@ export function useSfuChatRoom(
         channel.addEventListener("message", (event) =>
           handleRoomAppChannelMessage(agent.id, "reliable", event)
         )
-        const cleanup = () =>
-          cleanupRemoteRoomAppChannel(key, channelAttempt, "closed")
+        const cleanup = () => {
+          const removed = cleanupRemoteRoomAppChannel(
+            key,
+            channelAttempt,
+            "closed"
+          )
+          if (removed && channelAttempt.ready)
+            scheduleRemoteRoomAppChannelRetryRef.current?.(
+              key,
+              agent.id,
+              channelAttempt,
+              2
+            )
+        }
         channel.addEventListener("close", cleanup)
         channel.addEventListener("error", cleanup)
         await waitForDataChannelOpen(channel, ROOM_APP_CHANNEL_OPEN_TIMEOUT_MS)
@@ -2211,25 +2287,22 @@ export function useSfuChatRoom(
         )
           throw new Error("SFU participant pair channel became stale")
         channel.send("ack")
+        channelAttempt.ready = true
         remoteRoomAppChannelAttemptsRef.current.delete(key)
         remoteRoomAppChannelsRef.current.set(key, channel)
       } catch {
         cleanupRemoteRoomAppChannel(key, channelAttempt, "establishment_failed")
-        const delay = ROOM_APP_RETRY_DELAYS_MS[attempt - 1]
-        if (delay !== undefined && roomAppsEnabledRef.current) {
-          window.setTimeout(() => {
-            const current = participantMapRef.current.get(agent.id)
-            if (current)
-              void subscribeParticipantDirectReliableChannel(
-                current,
-                attempt + 1
-              )
-          }, delay)
-        }
+        scheduleRemoteRoomAppChannelRetryRef.current?.(
+          key,
+          agent.id,
+          channelAttempt,
+          attempt + 1
+        )
       }
     },
     [
       apiRequest,
+      clearRemoteRoomAppChannelRetry,
       cleanupRemoteRoomAppChannel,
       handleRoomAppChannelMessage,
       roomAppChannelKey,
@@ -2237,6 +2310,110 @@ export function useSfuChatRoom(
       waitForDataChannelOpen,
     ]
   )
+
+  const scheduleRemoteRoomAppChannelRetry = useCallback(
+    (
+      key: string,
+      participantId: string,
+      attempt: RemoteRoomAppChannelAttempt,
+      retryAttempt: number
+    ) => {
+      const delay = ROOM_APP_RETRY_DELAYS_MS[retryAttempt - 2]
+      const session = sessionRef.current
+      const participant = participantMapRef.current.get(participantId)
+      const publisherSessionId =
+        participant?.kind === "agent"
+          ? participant.participantDataTransport?.sessionId
+          : participant?.media?.sessionId
+      const publisherReady =
+        participant?.kind === "agent"
+          ? participant.participantDataTransport?.ready === true
+          : participant?.media?.appDataChannelReady === true
+      if (
+        delay === undefined ||
+        remoteRoomAppChannelRetriesRef.current.has(key) ||
+        closingRef.current ||
+        !roomAppsEnabledRef.current ||
+        mediaReconnectPromiseRef.current ||
+        peerConnectionRef.current !== attempt.peerConnection ||
+        attempt.peerConnection.connectionState !== "connected" ||
+        session?.sessionId !== attempt.subscriberSessionId ||
+        participant?.id !== participantId ||
+        participant.kind !== attempt.participantKind ||
+        participant.connected !== true ||
+        !publisherReady ||
+        publisherSessionId !== attempt.publisherSessionId ||
+        remoteRoomAppChannelsRef.current.has(key) ||
+        remoteRoomAppChannelAttemptsRef.current.has(key)
+      )
+        return
+
+      const retry = {
+        participantId,
+        peerConnection: attempt.peerConnection,
+        subscriberSessionId: attempt.subscriberSessionId,
+        publisherSessionId: attempt.publisherSessionId,
+        participantKind: attempt.participantKind,
+        lane: attempt.lane,
+        direct: attempt.direct,
+        retryAttempt,
+        timeout: null as unknown as ReturnType<typeof setTimeout>,
+      } satisfies RemoteRoomAppChannelRetry
+      retry.timeout = setTimeout(() => {
+        if (remoteRoomAppChannelRetriesRef.current.get(key) !== retry) return
+        remoteRoomAppChannelRetriesRef.current.delete(key)
+        const currentSession = sessionRef.current
+        const currentParticipant = participantMapRef.current.get(participantId)
+        const currentPublisherSessionId =
+          currentParticipant?.kind === "agent"
+            ? currentParticipant.participantDataTransport?.sessionId
+            : currentParticipant?.media?.sessionId
+        const currentPublisherReady =
+          currentParticipant?.kind === "agent"
+            ? currentParticipant.participantDataTransport?.ready === true
+            : currentParticipant?.media?.appDataChannelReady === true
+        if (
+          closingRef.current ||
+          !roomAppsEnabledRef.current ||
+          mediaReconnectPromiseRef.current ||
+          peerConnectionRef.current !== retry.peerConnection ||
+          retry.peerConnection.connectionState !== "connected" ||
+          currentSession?.sessionId !== retry.subscriberSessionId ||
+          currentParticipant?.id !== retry.participantId ||
+          currentParticipant.kind !== retry.participantKind ||
+          currentParticipant.connected !== true ||
+          !currentPublisherReady ||
+          currentPublisherSessionId !== retry.publisherSessionId ||
+          remoteRoomAppChannelsRef.current.has(key) ||
+          remoteRoomAppChannelAttemptsRef.current.has(key)
+        )
+          return
+        if (retry.direct)
+          void subscribeParticipantDirectReliableChannel(
+            currentParticipant,
+            retry.retryAttempt
+          )
+        else
+          void subscribeRoomAppChannel(
+            currentParticipant,
+            retry.lane,
+            retry.retryAttempt
+          )
+      }, delay)
+      remoteRoomAppChannelRetriesRef.current.set(key, retry)
+      if (attempt.lane === "reliable")
+        roomAppDiagnostic.record({
+          event: "remote_reliable_recovery_scheduled",
+        })
+    },
+    [
+      roomAppDiagnostic,
+      subscribeParticipantDirectReliableChannel,
+      subscribeRoomAppChannel,
+    ]
+  )
+  scheduleRemoteRoomAppChannelRetryRef.current =
+    scheduleRemoteRoomAppChannelRetry
 
   const establishDataChannelTransport = useCallback(async () => {
     const pc = peerConnectionRef.current
