@@ -2068,10 +2068,7 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
       agentActivities: [...this.transientAgentActivities.values()].filter(
         (activity) => room.participants[activity.agentParticipantId]?.connected
       ),
-      taskExecutions: [...this.transientTaskExecutions.values()].filter(
-        (execution) =>
-          room.participants[execution.agentParticipantId]?.connected
-      ),
+      taskExecutions: this.taskExecutionsForState(room),
     }
   }
 
@@ -8108,6 +8105,63 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
   }
 
   /**
+   * Browser state normally uses the full in-memory Task execution projection.
+   * After DO hibernation, a current resident socket can still prove its exact
+   * active turns through its hibernation attachment. Fill only missing
+   * (Agent, Task) lanes from that bounded authority; any in-memory entry,
+   * including a newer settled or queued projection, always wins.
+   */
+  private taskExecutionsForState(room: RoomRecord): TaskExecutionProjection[] {
+    const executions = new Map<string, TaskExecutionProjection>()
+    const inMemoryKeys = new Set<string>()
+    for (const [key, execution] of this.transientTaskExecutions) {
+      inMemoryKeys.add(key)
+      if (room.participants[execution.agentParticipantId]?.connected)
+        executions.set(key, execution)
+    }
+
+    for (const participant of Object.values(room.participants)) {
+      if (participant.kind !== "agent" || !participant.connected) continue
+      const attachment = this.currentAgentEventAttachment(room, participant.id)
+      for (const turn of attachment?.activeTaskTurns ?? []) {
+        const key = agentActivityKey(
+          participant.id,
+          `task:${turn.taskRequestId}`
+        )
+        if (inMemoryKeys.has(key) || executions.has(key)) continue
+        executions.set(key, {
+          agentParticipantId: participant.id,
+          taskRequestId: turn.taskRequestId,
+          currentTurnSequence: turn.turnSequence,
+          phase: "running",
+          queuedCount: 0,
+        })
+      }
+    }
+    return [...executions.values()]
+  }
+
+  private currentAgentEventAttachment(
+    room: RoomRecord,
+    agentParticipantId: string
+  ): AgentEventSocketAttachment | undefined {
+    const participant = room.participants[agentParticipantId]
+    if (!participant || participant.kind !== "agent" || !participant.connected)
+      return undefined
+    for (const socket of this.ctx.getWebSockets(
+      this.agentEventSocketTag(agentParticipantId)
+    )) {
+      const attachment = this.deserializeAgentEventAttachment(socket)
+      if (
+        attachment?.participantId === agentParticipantId &&
+        participant.connectionNonce === attachment.connectionNonce
+      )
+        return attachment
+    }
+    return undefined
+  }
+
+  /**
    * The durable fallback, read only from a socket bound to this exact
    * participant and its current connection nonce, so a replaced socket's
    * authority is dead. An absent turn is unknown, never inferred.
@@ -8117,32 +8171,18 @@ export class RoomSession extends DurableObject<RoomSessionEnv> {
     agentParticipantId: string,
     requestId: string
   ): TaskExecutionProjection | undefined {
-    const participant = room.participants[agentParticipantId]
-    if (!participant || participant.kind !== "agent" || !participant.connected)
-      return undefined
-    for (const socket of this.ctx.getWebSockets(
-      this.agentEventSocketTag(agentParticipantId)
-    )) {
-      const attachment = this.deserializeAgentEventAttachment(socket)
-      if (
-        !attachment ||
-        attachment.participantId !== agentParticipantId ||
-        participant.connectionNonce !== attachment.connectionNonce
-      )
-        continue
-      const turn = attachment.activeTaskTurns?.find(
-        (entry) => entry.taskRequestId === requestId
-      )
-      if (!turn) continue
-      return {
-        agentParticipantId,
-        taskRequestId: requestId,
-        currentTurnSequence: turn.turnSequence,
-        phase: "running",
-        queuedCount: 0,
-      }
+    const turn = this.currentAgentEventAttachment(
+      room,
+      agentParticipantId
+    )?.activeTaskTurns?.find((entry) => entry.taskRequestId === requestId)
+    if (!turn) return undefined
+    return {
+      agentParticipantId,
+      taskRequestId: requestId,
+      currentTurnSequence: turn.turnSequence,
+      phase: "running",
+      queuedCount: 0,
     }
-    return undefined
   }
 
   /**
