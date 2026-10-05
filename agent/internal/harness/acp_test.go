@@ -19,6 +19,26 @@ import (
 	"github.com/i365dev/free4chat/agent/internal/types"
 )
 
+func TestParseACPTerminalFailureUsesOnlyNegotiatedStructuredFields(t *testing.T) {
+	result := json.RawMessage(`{"stopReason":"end_turn","_meta":{"quota":{"secret":"ignored"},"jetbrains":{"air":{"version":1,"sessionFailure":{"category":"service","severity":"error","title":"PRIVATE PROVIDER TEXT","details":"PRIVATE DETAILS","actions":["retry"],"id":"private-id"}}}}}`)
+	failure := parseACPTerminalFailure(result)
+	if failure == nil || failure.Category != "service" || strings.Contains(failure.Error(), "PRIVATE") || strings.Contains(failure.Error(), "private-id") {
+		t.Fatalf("unexpected bounded terminal failure: %#v", failure)
+	}
+	for _, success := range []string{
+		`{"stopReason":"end_turn","_meta":{"jetbrains":{"air":{"version":1,"sessionFailure":{"category":"service","severity":"warning"}}}}}`,
+		`{"stopReason":"cancelled","_meta":{"jetbrains":{"air":{"version":1,"sessionFailure":{"category":"service","severity":"error"}}}}}`,
+	} {
+		if got := parseACPTerminalFailure(json.RawMessage(success)); got != nil {
+			t.Fatalf("non-terminal response was classified as failure: %s", success)
+		}
+	}
+	unknown := parseACPTerminalFailure(json.RawMessage(`{"stopReason":"end_turn","_meta":{"jetbrains":{"air":{"version":1,"sessionFailure":{"category":"future-category","severity":"error"}}}}}`))
+	if unknown == nil || unknown.Category != "unknown" {
+		t.Fatalf("future category was not bounded: %#v", unknown)
+	}
+}
+
 var fakeAgentPath string
 
 func TestMain(m *testing.M) {

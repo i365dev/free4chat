@@ -245,10 +245,13 @@ func (r *ResidentRuntime) humanTaskRequestForScope(scope string, events []types.
 // longer includes that original queue item. Human task content is never kept
 // here or replayed.
 func (r *ResidentRuntime) humanTaskRequestForScopeLocked(scope string, events []types.RoomEvent, participantID string) *types.WireCollabEvent {
+	state := r.scopedSessions[normalizeScope(scope)]
+	if state != nil && state.terminal {
+		return nil
+	}
 	if request := humanTaskRequestFor(events, participantID); request != nil {
 		return request
 	}
-	state := r.scopedSessions[normalizeScope(scope)]
 	if state == nil || state.taskRequest == nil ||
 		state.taskRequest.TargetParticipantID != participantID {
 		return nil

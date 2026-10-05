@@ -2285,6 +2285,20 @@ func (r *ResidentRuntime) runTurn(scope string, target int64) {
 		return
 	}
 	if err != nil {
+		var terminalFailure *types.HarnessTerminalFailureError
+		if errors.As(err, &terminalFailure) {
+			// A semantic ACP terminal failure is a settled provider turn even
+			// though the retained session can remain usable. Acknowledge this
+			// Human input so it is never replayed, publish one bounded failed
+			// Task result, and leave the session available for the next turn.
+			r.acknowledgeHarnessDeliveryFor(scope, target, maxSeq, generation)
+			r.clearTurnRetry(scope, target)
+			r.markTurnFailedInPass(scope, target)
+			r.recordDeliveredTurnFailure(scope, "harness", "semantic_terminal_failure", started, err)
+			r.settleHumanTask(scope, events, "failed", "Agent could not complete this turn.")
+			r.ackPendingFor(scope, target)
+			return
+		}
 		// A failed turn keeps its canonical trigger pending for the
 		// existing retry/recovery policy, so the settled projection may
 		// truthfully count that still-pending work as queued — it is real

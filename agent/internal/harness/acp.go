@@ -1360,7 +1360,7 @@ func (a *ACPAdapter) handshakeWithRetained(retained map[string]retainedACPSessio
 		// Deliberately advertise no filesystem, terminal, MCP, or other host
 		// capabilities. Without an explicitly installed local responder,
 		// permission requests remain fail-closed and are cancelled.
-		"clientCapabilities": map[string]any{},
+		"clientCapabilities": map[string]any{"_meta": map[string]any{"jetbrains": map[string]any{"air": map[string]any{"version": 1, "capabilities": []string{"sessionFailure"}}}}},
 	})
 	raw, err := a.request("initialize", initializeParams)
 	if err != nil {
@@ -2408,12 +2408,46 @@ func (a *ACPAdapter) RunTurnFor(scope string, input types.HarnessTurnInput, expe
 		a.emitDiagnostic("TURN_FAIL", map[string]string{"scope": turn.scope, "class": "turn_failed"})
 		return types.HarnessTurnResult{}, fmt.Errorf("ACP session/prompt failed: %s", response.Error.Message)
 	}
+	if failure := parseACPTerminalFailure(response.Result); failure != nil {
+		a.emitDiagnostic("TURN_FAIL", map[string]string{"scope": turn.scope, "class": "semantic_terminal_failure", "category": failure.Category})
+		return types.HarnessTurnResult{}, failure
+	}
 	a.emitDiagnostic("TURN_SETTLED", map[string]string{"scope": turn.scope})
 	// Strict Runtime-owned result semantics are extracted at the Harness
 	// boundary from the aggregated ACP message text. Task App publication is
 	// accepted only for the exact Task-scoped turn; existing targets/lifecycle
 	// semantics remain unchanged.
 	return ParseHarnessTurnResult(text, input.TaskRequestID), nil
+}
+
+// parseACPTerminalFailure recognizes the pinned ACP bridge's negotiated AIR
+// sessionFailure extension. It reads only the generic category/severity and
+// intentionally discards provider-authored title/details/actions/ids.
+func parseACPTerminalFailure(result json.RawMessage) *types.HarnessTerminalFailureError {
+	var wire struct {
+		StopReason string `json:"stopReason"`
+		Meta       struct {
+			JetBrains struct {
+				Air struct {
+					Version        int `json:"version"`
+					SessionFailure struct {
+						Category string `json:"category"`
+						Severity string `json:"severity"`
+					} `json:"sessionFailure"`
+				} `json:"air"`
+			} `json:"jetbrains"`
+		} `json:"_meta"`
+	}
+	if json.Unmarshal(result, &wire) != nil || wire.StopReason != "end_turn" || wire.Meta.JetBrains.Air.Version < 1 || wire.Meta.JetBrains.Air.SessionFailure.Severity != "error" {
+		return nil
+	}
+	category := wire.Meta.JetBrains.Air.SessionFailure.Category
+	switch category {
+	case "connection", "access", "limit", "request", "service", "unknown":
+		return &types.HarnessTerminalFailureError{Category: category}
+	default:
+		return &types.HarnessTerminalFailureError{Category: "unknown"}
+	}
 }
 
 // Turn expiry reasons. They are bounded diagnostic tokens only.
