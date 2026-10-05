@@ -380,7 +380,20 @@ func (r *ResidentRuntime) applySessionConfigFallbacks(scope string) error {
 	r.mu.Lock()
 	_, selections := r.taskSessionControlsLocked(scope)
 	r.mu.Unlock()
-	return adapter.ApplySessionConfigFallbacksFor(scope, selections)
+	applied, err := adapter.ApplySessionConfigFallbacksFor(scope, selections)
+	if len(applied) > 0 {
+		r.mu.Lock()
+		identity := r.taskIdentityLocked(scope)
+		if identity != nil {
+			for _, fallback := range applied {
+				if selectedValue, selected := identity.configOptions[fallback.ConfigID]; selected && selectedValue == fallback.PreviousValue {
+					identity.configOptions[fallback.ConfigID] = fallback.EffectiveValue
+				}
+			}
+		}
+		r.mu.Unlock()
+	}
+	return err
 }
 
 func (r *ResidentRuntime) applyTaskSessionControls(scope string) error {

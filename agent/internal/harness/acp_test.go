@@ -445,8 +445,12 @@ func TestACPProviderConfigFallbackRequiresExactCurrentAndAdvertisedReplacement(t
 
 	t.Run("advertised fallback is applied", func(t *testing.T) {
 		adapter := newAdapter(t, "gpt-b")
-		if err := adapter.ApplySessionConfigFallbacksFor("room", nil); err != nil {
+		applied, err := adapter.ApplySessionConfigFallbacksFor("room", nil)
+		if err != nil {
 			t.Fatalf("apply fallback: %v", err)
+		}
+		if !reflect.DeepEqual(applied, []types.AppliedSessionConfigFallback{{ConfigID: "model", PreviousValue: "gpt-a", EffectiveValue: "gpt-b"}}) {
+			t.Fatalf("applied fallback result = %+v", applied)
 		}
 		if got := findCurrentConfigValue(t, adapter.SessionControls(), "model"); got != "gpt-b" {
 			t.Fatalf("fallback model = %q, want gpt-b", got)
@@ -455,8 +459,12 @@ func TestACPProviderConfigFallbackRequiresExactCurrentAndAdvertisedReplacement(t
 
 	t.Run("explicit known-incompatible selection is replaced", func(t *testing.T) {
 		adapter := newAdapter(t, "gpt-b")
-		if err := adapter.ApplySessionConfigFallbacksFor("room", map[string]string{"model": "gpt-a"}); err != nil {
+		applied, err := adapter.ApplySessionConfigFallbacksFor("room", map[string]string{"model": "gpt-a"})
+		if err != nil {
 			t.Fatalf("apply fallback with known-incompatible Human selection: %v", err)
+		}
+		if !reflect.DeepEqual(applied, []types.AppliedSessionConfigFallback{{ConfigID: "model", PreviousValue: "gpt-a", EffectiveValue: "gpt-b"}}) {
+			t.Fatalf("applied fallback result = %+v", applied)
 		}
 		if got := findCurrentConfigValue(t, adapter.SessionControls(), "model"); got != "gpt-b" {
 			t.Fatalf("effective model = %q, want compatible gpt-b", got)
@@ -468,8 +476,12 @@ func TestACPProviderConfigFallbackRequiresExactCurrentAndAdvertisedReplacement(t
 		if err := adapter.SetConfigOption("model", "gpt-b"); err != nil {
 			t.Fatalf("apply compatible Human selection: %v", err)
 		}
-		if err := adapter.ApplySessionConfigFallbacksFor("room", map[string]string{"model": "gpt-b"}); err != nil {
+		applied, err := adapter.ApplySessionConfigFallbacksFor("room", map[string]string{"model": "gpt-b"})
+		if err != nil {
 			t.Fatalf("apply fallback with compatible Human selection: %v", err)
+		}
+		if len(applied) != 0 {
+			t.Fatalf("unexpected applied fallback result: %+v", applied)
 		}
 		if got := findCurrentConfigValue(t, adapter.SessionControls(), "model"); got != "gpt-b" {
 			t.Fatalf("human-selected model = %q, want gpt-b", got)
@@ -478,8 +490,12 @@ func TestACPProviderConfigFallbackRequiresExactCurrentAndAdvertisedReplacement(t
 
 	t.Run("unadvertised fallback fails closed", func(t *testing.T) {
 		adapter := newAdapter(t, "gpt-c")
-		if err := adapter.ApplySessionConfigFallbacksFor("room", nil); err == nil {
+		applied, err := adapter.ApplySessionConfigFallbacksFor("room", nil)
+		if err == nil {
 			t.Fatal("unadvertised fallback was accepted")
+		}
+		if len(applied) != 0 {
+			t.Fatalf("failed fallback reported an applied replacement: %+v", applied)
 		}
 		if got := findCurrentConfigValue(t, adapter.SessionControls(), "model"); got != "gpt-a" {
 			t.Fatalf("failed fallback changed current model to %q", got)

@@ -60,6 +60,8 @@ type adoptionAdapter struct {
 	setConfigErr               error
 	omitWorkspaceMode          bool
 	omitModelValue             string
+	modelValues                []string
+	allowedModelValues         []string
 	// loadHook runs INSIDE LoadSession, after the Runtime has committed the
 	// adopted ownership for the scope and before the load reports success. It
 	// is how a test deterministically places a Harness death in the load
@@ -71,13 +73,36 @@ type fallbackRecordingAdapter struct {
 	*adoptionAdapter
 	fallbackScopes     []string
 	fallbackSelections []map[string]string
+	fallbacks          []types.LauncherSessionConfigFallback
 }
 
-func (a *fallbackRecordingAdapter) ApplySessionConfigFallbacksFor(scope string, selections map[string]string) error {
+func (a *fallbackRecordingAdapter) ApplySessionConfigFallbacksFor(scope string, selections map[string]string) ([]types.AppliedSessionConfigFallback, error) {
 	a.fallbackScopes = append(a.fallbackScopes, scope)
 	a.fallbackSelections = append(a.fallbackSelections, cloneNativeControlSelections(selections))
 	a.record("fallback:" + scope)
-	return nil
+	var applied []types.AppliedSessionConfigFallback
+	for _, fallback := range a.fallbacks {
+		if selected, ok := selections[fallback.ConfigID]; ok && selected != fallback.CurrentValue {
+			continue
+		}
+		controls := a.SessionControlsFor(scope)
+		if controls == nil {
+			continue
+		}
+		for _, option := range controls.ConfigOptions {
+			if option.ID != fallback.ConfigID || option.CurrentValue != fallback.CurrentValue {
+				continue
+			}
+			if err := a.SetConfigOptionFor(scope, fallback.ConfigID, fallback.ReplacementValue); err != nil {
+				return applied, err
+			}
+			applied = append(applied, types.AppliedSessionConfigFallback{
+				ConfigID: fallback.ConfigID, PreviousValue: fallback.CurrentValue, EffectiveValue: fallback.ReplacementValue,
+			})
+			break
+		}
+	}
+	return applied, nil
 }
 
 func newAdoptionAdapter(name string) *adoptionAdapter {
@@ -278,6 +303,15 @@ func (a *adoptionAdapter) SessionControlsFor(scope string) *types.HarnessSession
 		modes = []types.HarnessSessionMode{{ID: "observe"}}
 	}
 	modelOptions := []types.HarnessSessionConfigValue{{Value: "gpt-a"}, {Value: "gpt-b"}}
+	if len(a.modelValues) > 0 {
+		modelOptions = make([]types.HarnessSessionConfigValue, 0, len(a.modelValues))
+		for _, value := range a.modelValues {
+			modelOptions = append(modelOptions, types.HarnessSessionConfigValue{Value: value})
+		}
+		if a.configs[scope]["model"] == "" {
+			modelValue = a.modelValues[0]
+		}
+	}
 	if a.omitModelValue != "" {
 		filtered := modelOptions[:0]
 		for _, option := range modelOptions {
@@ -524,12 +558,134 @@ func TestEnsureHarnessSessionAppliesProviderFallbackToUnconfiguredProjectTask(t 
 	}
 }
 
+func TestProviderFallbackUpdatesExplicitTaskIdentityAndAllowsFollowup(t *testing.T) {
+	const scope = "task:provider-fallback"
+	launcher, err := harness.GetLauncher("codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(launcher.SessionConfigFallbacks) != 1 {
+		t.Fatalf("Codex registry fallback metadata = %+v", launcher.SessionConfigFallbacks)
+	}
+	fallback := launcher.SessionConfigFallbacks[0]
+	base := newAdoptionAdapter("codex")
+	base.modelValues = []string{fallback.CurrentValue, fallback.ReplacementValue}
+	base.allowedModelValues = append([]string(nil), base.modelValues...)
+	adapter := &fallbackRecordingAdapter{adoptionAdapter: base, fallbacks: launcher.SessionConfigFallbacks}
+	rt := &ResidentRuntime{
+		options: Options{Adapter: adapter},
+		taskIdentities: map[string]*taskIdentity{
+			scope: {configOptions: map[string]string{fallback.ConfigID: fallback.CurrentValue}},
+		},
+	}
+
+	if err := rt.ensureHarnessSession(scope); err != nil {
+		t.Fatalf("first Task admission: %v", err)
+	}
+	if got := rt.taskIdentities[scope].configOptions[fallback.ConfigID]; got != fallback.ReplacementValue {
+		t.Fatalf("effective Task selection = %q, want %q", got, fallback.ReplacementValue)
+	}
+	if _, err := adapter.RunTurnFor(scope, types.HarnessTurnInput{}, adapter.SessionGenerationFor(scope)); err != nil {
+		t.Fatalf("first turn: %v", err)
+	}
+
+	// The native Harness may stop advertising the previous value after the
+	// compatibility change. A later Human instruction must use the effective
+	// selection and continue the same scoped conversation.
+	base.omitModelValue = fallback.CurrentValue
+	if err := rt.ensureHarnessSession(scope); err != nil {
+		t.Fatalf("follow-up Task admission: %v", err)
+	}
+	if _, err := adapter.RunTurnFor(scope, types.HarnessTurnInput{}, adapter.SessionGenerationFor(scope)); err != nil {
+		t.Fatalf("follow-up turn: %v", err)
+	}
+	if got := adapter.runCount(scope); got != 2 {
+		t.Fatalf("RunTurn count = %d, want exactly 2", got)
+	}
+	if got := adapter.count("new:" + scope); got != 1 {
+		t.Fatalf("same Task conversation was rematerialized %d times, want once", got)
+	}
+	if got := rt.taskIdentities[scope].configOptions[fallback.ConfigID]; got != fallback.ReplacementValue {
+		t.Fatalf("follow-up changed effective Task selection to %q", got)
+	}
+}
+
+func TestProviderFallbackPreservesKeepCurrentTaskIdentity(t *testing.T) {
+	const scope = "task:provider-fallback-keep-current"
+	launcher, err := harness.GetLauncher("codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fallback := launcher.SessionConfigFallbacks[0]
+	base := newAdoptionAdapter("codex")
+	base.modelValues = []string{fallback.CurrentValue, fallback.ReplacementValue}
+	base.allowedModelValues = append([]string(nil), base.modelValues...)
+	adapter := &fallbackRecordingAdapter{adoptionAdapter: base, fallbacks: launcher.SessionConfigFallbacks}
+	rt := &ResidentRuntime{
+		options:        Options{Adapter: adapter},
+		taskIdentities: map[string]*taskIdentity{scope: {}},
+	}
+
+	if err := rt.ensureHarnessSession(scope); err != nil {
+		t.Fatalf("Task admission with Keep current: %v", err)
+	}
+	if got := rt.taskIdentities[scope].configOptions; len(got) != 0 {
+		t.Fatalf("fallback invented explicit Task selection: %+v", got)
+	}
+	base.omitModelValue = fallback.CurrentValue
+	if err := rt.ensureHarnessSession(scope); err != nil {
+		t.Fatalf("follow-up with Keep current: %v", err)
+	}
+	if _, err := adapter.RunTurnFor(scope, types.HarnessTurnInput{}, adapter.SessionGenerationFor(scope)); err != nil {
+		t.Fatalf("follow-up turn with Keep current: %v", err)
+	}
+	if got := rt.taskIdentities[scope].configOptions; len(got) != 0 {
+		t.Fatalf("follow-up invented explicit Task selection: %+v", got)
+	}
+}
+
+func TestFailedProviderFallbackDoesNotRewriteTaskIdentity(t *testing.T) {
+	const scope = "task:provider-fallback-failure"
+	const previous, replacement = "gpt-a", "gpt-b"
+	base := newAdoptionAdapter("codex")
+	base.setConfigErr = errors.New("native setter failed")
+	adapter := &fallbackRecordingAdapter{
+		adoptionAdapter: base,
+		fallbacks: []types.LauncherSessionConfigFallback{{
+			ConfigID: "model", CurrentValue: previous, ReplacementValue: replacement,
+		}},
+	}
+	rt := &ResidentRuntime{
+		options: Options{Adapter: adapter},
+		taskIdentities: map[string]*taskIdentity{
+			scope: {configOptions: map[string]string{"model": previous}},
+		},
+	}
+	if err := rt.applySessionConfigFallbacks(scope); err == nil {
+		t.Fatal("failed fallback was accepted")
+	}
+	if got := rt.taskIdentities[scope].configOptions["model"]; got != previous {
+		t.Fatalf("failed fallback rewrote Task selection to %q, want %q (candidate %q)", got, previous, replacement)
+	}
+}
+
 func (a *adoptionAdapter) SetConfigOptionFor(scope, configID, value string) error {
 	a.record("config:" + scope + ":" + configID + ":" + value)
 	if a.setConfigErr != nil {
 		return a.setConfigErr
 	}
-	if configID != "model" || (value != "gpt-a" && value != "gpt-b") {
+	allowedValues := a.allowedModelValues
+	if len(allowedValues) == 0 {
+		allowedValues = []string{"gpt-a", "gpt-b"}
+	}
+	allowed := false
+	for _, allowedValue := range allowedValues {
+		if configID == "model" && value == allowedValue {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
 		return errors.New("unadvertised native config selection")
 	}
 	a.recordMu.Lock()

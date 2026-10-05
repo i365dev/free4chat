@@ -142,6 +142,14 @@ type LauncherSessionConfigFallback struct {
 	ReplacementValue string
 }
 
+// AppliedSessionConfigFallback reports one provider compatibility change that
+// the adapter successfully applied to the native session.
+type AppliedSessionConfigFallback struct {
+	ConfigID       string
+	PreviousValue  string
+	EffectiveValue string
+}
+
 // TaskExecutionConcurrency is the closed cross-session concurrency capability
 // of one Harness: may two DIFFERENT retained conversations of this Harness
 // execute a turn at the same time?
@@ -1213,9 +1221,12 @@ type ScopedHarnessSessionControls interface {
 }
 
 // ScopedHarnessSessionDefaults applies provider-owned compatibility defaults
-// before a Task starts. Human selections are passed through and take priority.
+// before a Task starts. Human selections take priority except when the provider
+// successfully normalizes that exact known-incompatible value; applied
+// replacements are returned so the Runtime can reconcile explicit Task
+// identity without inventing a selection for Keep current.
 type ScopedHarnessSessionDefaults interface {
-	ApplySessionConfigFallbacksFor(scope string, humanSelections map[string]string) error
+	ApplySessionConfigFallbacksFor(scope string, humanSelections map[string]string) ([]AppliedSessionConfigFallback, error)
 }
 
 // ScopedTurnCanceller is the small optional seam that keeps a remote interrupt
