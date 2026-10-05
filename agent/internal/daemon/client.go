@@ -56,6 +56,10 @@ func SendIPC(request *IpcRequest) (json.RawMessage, error) {
 func EnsureDaemon() error {
 	if _, err := SendIPC(&IpcRequest{Op: "status"}); err == nil {
 		return nil
+	} else if !daemonSocketUnavailable(err) {
+		// A response/protocol failure from a reachable socket is not evidence
+		// that the daemon failed to start. Preserve the downstream IPC cause.
+		return fmt.Errorf("daemon health check failed: %w", err)
 	}
 	if err := startDaemonProcess(); err != nil {
 		return err
@@ -84,6 +88,8 @@ func EnsureDaemonVersion(expected string) error {
 			"running daemon version could not be verified; refusing to join with runtime %s; stop/restart the daemon under host ownership",
 			expected,
 		)
+	} else if !daemonSocketUnavailable(err) {
+		return fmt.Errorf("daemon health check failed: %w", err)
 	}
 
 	if err := startDaemonProcess(); err != nil {
@@ -137,13 +143,32 @@ func startDaemonProcess() error {
 // waitForSocket polls the IPC status op until the daemon answers.
 func waitForSocket(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
+	var lastErr error
 	for time.Now().Before(deadline) {
 		if _, err := SendIPC(&IpcRequest{Op: "status"}); err == nil {
 			return nil
+		} else {
+			lastErr = err
+			if !daemonSocketUnavailable(err) {
+				return fmt.Errorf("daemon health check failed after start: %w", err)
+			}
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+	if lastErr != nil {
+		return fmt.Errorf("free4chat-agent daemon unavailable after start: %w", lastErr)
+	}
 	return errors.New("free4chat-agent daemon did not start")
+}
+
+// daemonSocketUnavailable distinguishes a missing/refused Unix socket from a
+// reachable daemon returning an IPC or operation error.
+func daemonSocketUnavailable(err error) bool {
+	var opErr *net.OpError
+	if !errors.As(err, &opErr) {
+		return false
+	}
+	return opErr.Op == "dial" || opErr.Op == "connect"
 }
 
 func waitForDaemonVersion(expected string, timeout time.Duration) error {

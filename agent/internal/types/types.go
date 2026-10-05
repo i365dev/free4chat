@@ -1069,6 +1069,19 @@ type HarnessTurnResult struct {
 	GeneratedApp         *GeneratedTaskAppOutput
 }
 
+// HarnessTerminalFailureError reports a provider-declared terminal turn
+// failure carried in structured ACP metadata. Category is deliberately a
+// bounded class token; provider text and session metadata never leave the
+// Harness boundary.
+type HarnessTerminalFailureError struct{ Category string }
+
+func (e *HarnessTerminalFailureError) Error() string {
+	if e == nil || e.Category == "" {
+		return "Harness turn failed"
+	}
+	return "Harness turn failed (" + e.Category + ")"
+}
+
 // GeneratedTaskAppOutput is one explicit bounded Task result. It is never
 // accepted from a Room-scoped turn and always publishes against the exact
 // TaskRequestID carried by that turn.

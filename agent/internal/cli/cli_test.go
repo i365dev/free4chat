@@ -324,6 +324,47 @@ func TestCapabilityAdapterRegistrationAndSemanticInvokeUseDaemonIPC(t *testing.T
 	}
 }
 
+func TestPromptStyleCLIExamplesRespectResidentAndCapabilityScopes(t *testing.T) {
+	fixture := newFakeDaemon(t, func(request daemon.IpcRequest) daemon.IpcResponse {
+		if request.Op == "status" {
+			return daemon.IpcResponse{OK: true, Result: []any{}}
+		}
+		return daemon.IpcResponse{OK: true, Result: map[string]any{"ok": true}}
+	})
+	_, code := runCliWithFakeDaemon(t, fixture, "collab", "respond", "--instance", "self-instance", "--request-id", "request-a", "--decision", "accepted")
+	if code != 0 {
+		t.Fatalf("resident-scoped prompt example failed parsing: %d", code)
+	}
+	if nextFakeRequest(t, fixture).Op != "status" {
+		t.Fatal("resident-scoped prompt example skipped daemon preflight")
+	}
+	request := nextFakeRequest(t, fixture)
+	if request.Op != "collab-response" || request.InstanceID != "self-instance" {
+		t.Fatalf("resident selector was not routed: %+v", request)
+	}
+
+	_, code = runCliWithFakeDaemon(t, fixture, "capability", "observe", "--id", "printer_status")
+	if code != 0 {
+		t.Fatalf("daemon-local capability example failed parsing: %d", code)
+	}
+	if nextFakeRequest(t, fixture).Op != "status" {
+		t.Fatal("capability example skipped daemon preflight")
+	}
+	if request := nextFakeRequest(t, fixture); request.Op != "capability-observe" || request.InstanceID != "" {
+		t.Fatalf("capability operation unexpectedly scoped to resident: %+v", request)
+	}
+
+	_, code = runCliWithFakeDaemon(t, fixture, "capability", "invoke", "--id", "printer_status", "--action", "print", "--instance", "self-instance")
+	if code != 2 {
+		t.Fatalf("capability --instance misuse should be a usage error, got %d", code)
+	}
+	select {
+	case request := <-fixture.requests:
+		t.Fatalf("invalid capability command reached daemon: %+v", request)
+	default:
+	}
+}
+
 func TestCapabilityListDiscoversCurrentBoundedDescriptorThroughDaemon(t *testing.T) {
 	const privateEndpoint = "http://127.0.0.1:43127"
 	descriptors := []map[string]any{{

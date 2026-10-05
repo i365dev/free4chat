@@ -2816,8 +2816,10 @@ The twenty tools are:
   chunks, revisioned application/shared state, and MessagePort bridge; the
   current Task's primary Agent is the only publisher. One Task has at most one
   publication: an identical retry is a duplicate, while a changed valid bundle
-  keeps the same `appInstanceId` and increments `bundleRevision` without
-  resetting shared state. Bundle size is at most 48 KiB, state is at most 16
+  in the same Task keeps the same `appInstanceId` and increments
+  `bundleRevision` without resetting shared state. The Task has one independent
+  App identity; it may publish later valid bundle revisions under that identity.
+  Bundle size is at most 48 KiB, state is at most 16
   KiB, and network origins are not supported in V0. Inspect the exact
   Runtime-owned authoring contract with
   `free4chat-agent generated-app describe --json`.
@@ -2854,8 +2856,11 @@ Task context, a Generated Task App may call
 `free4chat.capabilities.observe(id)` or
 `free4chat.capabilities.invoke(id, action, args)`. Each call requires one
 explicit trusted Human control click and authorizes one deterministic
-operation; it does not start another Harness turn. The result is bounded
-semantic data returned to the same App. The iframe never receives Adapter
+operation; it does not start another Harness turn. The result is a
+Promise-resolved bounded semantic object; failures may resolve as
+`{ok:false,error:"unavailable"}` instead of rejecting. Generated code must
+`await` the call and check `if (!result || !result.ok)` before showing success.
+The iframe never receives Adapter
 configuration, device endpoints/URIs, queue names, hostnames/IPs, credentials,
 or Runtime/session/routing identity. An unavailable or departed Runtime or
 Adapter fails closed. This local descriptor is separate from participant

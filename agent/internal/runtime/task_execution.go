@@ -296,6 +296,11 @@ func (r *ResidentRuntime) settleHumanTask(scope string, events []types.RoomEvent
 		r.log("collab_result_failed", map[string]string{"reason": "task_" + status})
 		return false
 	}
+	r.mu.Lock()
+	if state := r.scopedSessions[normalizeScope(scope)]; state != nil && state.taskRequest != nil && state.taskRequest.RequestID == request.RequestID {
+		state.terminal = true
+	}
+	r.mu.Unlock()
 	return true
 }
 

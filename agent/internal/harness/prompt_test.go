@@ -178,8 +178,12 @@ func TestTaskScopedTurnCarriesCompactGeneratedAppAffordance(t *testing.T) {
 		"one non-empty title, head, and body",
 		"zero or one classic inline script",
 		"Runtime normalizes and validates it for this exact Task",
-		"one bounded Generated Task App",
-		"do not return a second App for the same Task",
+		"one independent Generated Task App identity",
+		"one independent Generated Task App identity",
+		"increments bundleRevision",
+		"preserves existing shared state",
+		"failures are not guaranteed to reject",
+		"if (!result || !result.ok)",
 	} {
 		if !strings.Contains(prompt, marker) {
 			t.Fatalf("Task prompt missing generated App marker %q:\n%s", marker, prompt)
@@ -191,6 +195,30 @@ func TestTaskScopedTurnCarriesCompactGeneratedAppAffordance(t *testing.T) {
 	roomPrompt := RenderUntrustedRoomTurn(bootstrapPromptInput())
 	if strings.Contains(roomPrompt, "task-output generated-app") {
 		t.Fatalf("Room-scoped prompt must not carry the Task App affordance:\n%s", roomPrompt)
+	}
+}
+
+func TestPromptSeparatesResidentAndCapabilityCLISelectors(t *testing.T) {
+	input := bootstrapPromptInput()
+	input.Room.Self.InstanceID = "self-instance"
+	prompt := RenderUntrustedRoomTurn(input)
+	for _, expected := range []string{
+		"collab respond --instance self-instance",
+		"attach --instance self-instance",
+		"capability observe --id <capability-id>",
+		"capability invoke --id <capability-id>",
+		"capability commands never take --instance",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Errorf("prompt missing CLI selector contract %q:\n%s", expected, prompt)
+		}
+	}
+	for _, capabilityExample := range []string{
+		"capability observe --instance", "capability invoke --instance", "capability list --instance",
+	} {
+		if strings.Contains(prompt, capabilityExample) {
+			t.Errorf("prompt has invalid capability selector example %q", capabilityExample)
+		}
 	}
 }
 

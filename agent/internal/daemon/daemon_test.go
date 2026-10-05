@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -26,6 +27,33 @@ import (
 	"github.com/i365dev/free4chat/agent/internal/speech"
 	"github.com/i365dev/free4chat/agent/internal/types"
 )
+
+func TestEnsureDaemonPreservesReachableHealthCheckError(t *testing.T) {
+	dir, err := os.MkdirTemp("", "fc-daemon-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	t.Setenv("FREE4CHAT_AGENT_DIR", dir)
+	listener, err := net.Listen("unix", SocketPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer conn.Close()
+		_, _ = bufio.NewReader(conn).ReadString('\n')
+		_, _ = conn.Write([]byte(`{"ok":false,"error":"multiple resident instances; selector required"}` + "\n"))
+	}()
+	err = EnsureDaemon()
+	if err == nil || !strings.Contains(err.Error(), "selector required") || strings.Contains(err.Error(), "did not start") {
+		t.Fatalf("reachable daemon error was collapsed into startup failure: %v", err)
+	}
+}
 
 var fakeAgentBinary string
 var free4chatAgentBinary string
@@ -877,22 +905,22 @@ func TestResolveRuntimeAmbiguityContract(t *testing.T) {
 
 	_, err := SendIPC(&IpcRequest{Op: "update-capabilities"})
 	if err == nil || !strings.Contains(err.Error(),
-		"Multiple or no resident instances; pass --instance <id>") {
+		"multiple resident instances; pass --instance <id>") {
 		t.Fatalf("ambiguity contract broken: %v", err)
 	}
 	_, err = SendIPC(&IpcRequest{Op: "update-capabilities", InstanceID: "missing"})
 	if err == nil || !strings.Contains(err.Error(),
-		"No resident instance missing. Run `free4chat-agent status`") {
+		"resident instance not found; run `free4chat-agent status`") {
 		t.Fatalf("unknown-instance contract broken: %v", err)
 	}
 
 	// Clear both probe stubs; the same contract must also fire on an empty
-	// registry ("Multiple or no ...").
+	// registry.
 	d.unregister("inst-a")
 	d.unregister("inst-b")
 	if _, err := SendIPC(&IpcRequest{Op: "update-capabilities"}); err == nil ||
 		!strings.Contains(err.Error(),
-			"Multiple or no resident instances; pass --instance <id>") {
+			"no resident instances are available") {
 		t.Fatalf("empty-registry contract broken: %v", err)
 	}
 

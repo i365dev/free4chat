@@ -1099,15 +1099,16 @@ func (d *Daemon) resolveForSurfaces(instanceID string) (string, *runtime.Residen
 				return id, instance.runtime, nil
 			}
 		}
-		return "", nil, errors.New(
-			"Multiple or no resident instances; pass --instance <id> (see `free4chat-agent status`)")
+		if len(d.instances) == 0 {
+			return "", nil, errors.New("no resident instances are available")
+		}
+		return "", nil, errors.New("multiple resident instances; pass --instance <id> (see `free4chat-agent status`)")
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	instance, ok := d.instances[instanceID]
 	if !ok {
-		return "", nil, fmt.Errorf(
-			"No resident instance %s. Run `free4chat-agent status`.", instanceID)
+		return "", nil, errors.New("resident instance not found; run `free4chat-agent status`")
 	}
 	return instanceID, instance.runtime, nil
 }

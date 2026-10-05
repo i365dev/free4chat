@@ -25,7 +25,15 @@ type executionClient struct {
 	*fakeClient
 	mu          sync.Mutex
 	projections []types.TaskExecutionProjection
+	activities  []activityUpdate
 	updateErr   error
+}
+
+func (c *executionClient) UpdateAgentActivity(_ string, scope string, state types.AgentActivityState, sequence int64) error {
+	c.mu.Lock()
+	c.activities = append(c.activities, activityUpdate{scope: scope, state: state, sequence: sequence})
+	c.mu.Unlock()
+	return nil
 }
 
 func newExecutionClient() *executionClient {
@@ -966,6 +974,52 @@ func TestEmptySuccessfulHumanTaskPublishesCompletedLifecycle(t *testing.T) {
 	results := client.fakeClient.snapshotCollabResults()
 	if len(results) != 1 || results[0].RequestID != "req-empty" || results[0].Status != "completed" {
 		t.Fatalf("an empty but successful final turn must settle its Human Task: %+v", results)
+	}
+}
+
+func TestSemanticTerminalFailureFailsOneTaskAndRetainsSessionForNextTurn(t *testing.T) {
+	client := newExecutionClient()
+	adapter := &fakeAdapter{
+		name:             "codex",
+		scopedTurnErrors: map[int]error{1: &types.HarnessTerminalFailureError{Category: "service"}},
+	}
+	rt := NewResidentRuntime(Options{
+		InstanceID: "semantic-failure-task",
+		RoomID:     "room-semantic-failure-task",
+		Name:       "Agent",
+		Client:     client,
+		Adapter:    adapter,
+	})
+	rt.adoptJoin(types.JoinResult{
+		ParticipantID: "agent", ParticipantHandle: "private-handle", Cursor: 0,
+		ExpiresAt: time.Now().Add(time.Hour).UnixMilli(),
+	})
+	defer rt.Stop()
+
+	first := startTurn(rt, taskRequestEvent(1, "task:req-semantic", "req-semantic", "human-1"))
+	waitForDone(t, first, "semantic terminal failure to settle")
+	results := client.fakeClient.snapshotCollabResults()
+	if len(results) != 1 || results[0].Status != "failed" || results[0].RequestID != "req-semantic" {
+		t.Fatalf("semantic failure must publish one failed result and no completion: %+v", results)
+	}
+	if projection, ok := rt.snapshotTaskExecution("task:req-semantic"); !ok || projection.CurrentTurnSequence != 0 {
+		t.Fatalf("failed turn left stale activity in the Task projection: %+v ok=%v", projection, ok)
+	}
+	waitFor(t, time.Second, func() bool {
+		client.mu.Lock()
+		defer client.mu.Unlock()
+		return len(client.activities) >= 1 && client.activities[len(client.activities)-1] == (activityUpdate{scope: "task:req-semantic"})
+	}, "semantic failure activity clear")
+
+	second := startTurn(rt, scopedEvent(2, "task:req-semantic", "Human continuation"))
+	waitForDone(t, second, "retained session continuation")
+	runs, details := adapter.scopedRunSnapshot()
+	if len(runs) != 2 || len(details["task:req-semantic"]) != 2 {
+		t.Fatalf("retained Harness session should run the later Human turn once, runs=%v details=%v", runs, details)
+	}
+	results = client.fakeClient.snapshotCollabResults()
+	if len(results) != 1 || results[0].Status != "failed" {
+		t.Fatalf("later turn duplicated or changed the terminal result: %+v", results)
 	}
 }
 
