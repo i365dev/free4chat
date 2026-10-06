@@ -441,10 +441,6 @@ func TestDaemonStopThenImmediateRestart(t *testing.T) {
 	doneB := make(chan error, 1)
 	t.Cleanup(func() { daemonB.stopAll() })
 	go func() { doneB <- daemonB.Run() }()
-	waitForSocketUp(t, SocketPath(), 5*time.Second)
-	if _, err := SendIPC(&IpcRequest{Op: "status"}); err != nil {
-		t.Fatalf("replacement daemon did not own the canonical socket: %v", err)
-	}
 	select {
 	case err := <-doneA:
 		if err != nil {
@@ -452,6 +448,13 @@ func TestDaemonStopThenImmediateRestart(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("stopped daemon A did not finish")
+	}
+	// A's socket can still accept a connection briefly after the stop reply.
+	// Wait for its teardown before treating a successful dial as proof that B
+	// owns the canonical socket.
+	waitForSocketUp(t, SocketPath(), 5*time.Second)
+	if _, err := SendIPC(&IpcRequest{Op: "status"}); err != nil {
+		t.Fatalf("replacement daemon did not own the canonical socket: %v", err)
 	}
 	daemonB.stopAll()
 	select {
@@ -2296,4 +2299,178 @@ func mustStatus(t *testing.T) json.RawMessage {
 		t.Fatalf("status failed: %v", err)
 	}
 	return status
+}
+
+func TestEnsureDaemonProvenanceRejectsSameVersionDifferentBuild(t *testing.T) {
+	err := requireDaemonProvenance("0.5.56", "git:aaaaaaaaaaaaaaa", "root-v1:aaaaaaaaaaaaaaaaaaaaaaaa", DaemonInfo{
+		DaemonVersion: "0.5.56",
+		BuildIdentity: "git:bbbbbbbbbbbbbbb",
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not match CLI build") || !strings.Contains(err.Error(), "refusing to join") {
+		t.Fatalf("same-version different-build daemon must be refused: %v", err)
+	}
+}
+
+func TestDaemonInfoCarriesBoundedProvenance(t *testing.T) {
+	dir, err := os.MkdirTemp("/private/tmp", "fc-info-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	t.Setenv("FREE4CHAT_AGENT_DIR", dir)
+	daemon := New()
+	result, err := daemon.Dispatch(&IpcRequest{Op: "daemon-info"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, ok := result.(DaemonInfo)
+	if !ok {
+		t.Fatalf("daemon-info returned unexpected type %T", result)
+	}
+	seed, err := RuntimeHostSeed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.DaemonVersion != doctor.Version || info.BuildIdentity != doctor.BuildIdentity() || info.ResidentCount != 0 {
+		t.Fatalf("daemon provenance fields mismatch: %+v", info)
+	}
+	if info.RuntimeRootIdentity == "" || info.RuntimeRootIdentity == seed || strings.Contains(info.RuntimeRootIdentity, dir) || len(info.RuntimeRootIdentity) > 40 {
+		t.Fatalf("runtime root identity is missing, unbounded, or non-opaque: %+v", info)
+	}
+}
+
+func TestEnsureDaemonProvenanceAcceptsExactAndLegacyIdentity(t *testing.T) {
+	for _, daemonBuild := range []string{"git:aaaaaaaaaaaaaaa", ""} {
+		daemonRoot := "root-v1:aaaaaaaaaaaaaaaaaaaaaaaa"
+		if daemonBuild == "" {
+			daemonRoot = ""
+		}
+		err := requireDaemonProvenance("0.5.56", "git:aaaaaaaaaaaaaaa", "root-v1:aaaaaaaaaaaaaaaaaaaaaaaa", DaemonInfo{
+			DaemonVersion:       "0.5.56",
+			BuildIdentity:       daemonBuild,
+			RuntimeRootIdentity: daemonRoot,
+		})
+		if err != nil {
+			t.Fatalf("exact or legacy-compatible build should be accepted: build=%q err=%v", daemonBuild, err)
+		}
+	}
+	if err := requireDaemonProvenance("0.5.56", "git:aaaaaaaaaaaaaaa", "root-v1:aaaaaaaaaaaaaaaaaaaaaaaa", DaemonInfo{
+		DaemonVersion:       "0.5.56",
+		BuildIdentity:       "git:aaaaaaaaaaaaaaa",
+		RuntimeRootIdentity: "root-v1:bbbbbbbbbbbbbbbbbbbbbbbb",
+	}); err == nil || !strings.Contains(err.Error(), "different Runtime root") {
+		t.Fatalf("a daemon owned by another Runtime root must be refused: %v", err)
+	}
+}
+
+func TestEnsureDaemonProvenanceRefusesStaleDaemonBeforeJoin(t *testing.T) {
+	dir, err := os.MkdirTemp("/private/tmp", "fc-stale-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	t.Setenv("FREE4CHAT_AGENT_DIR", dir)
+	listener, err := net.Listen("unix", SocketPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	operations := make(chan string, 2)
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer conn.Close()
+		line, _ := bufio.NewReader(conn).ReadString('\n')
+		request, _ := DecodeRequest([]byte(strings.TrimSpace(line)))
+		if request == nil {
+			return
+		}
+		operations <- request.Op
+		info, _ := json.Marshal(IpcResponse{OK: true, Result: DaemonInfo{
+			DaemonVersion: "0.5.56",
+			BuildIdentity: "git:bbbbbbbbbbbbbbb",
+		}})
+		_, _ = conn.Write(append(info, '\n'))
+	}()
+
+	err = EnsureDaemonProvenance("0.5.56", "git:aaaaaaaaaaaaaaa")
+	if err == nil || !strings.Contains(err.Error(), "refusing to join") {
+		t.Fatalf("stale same-version daemon must fail preflight: %v", err)
+	}
+	if op := <-operations; op != "daemon-info" {
+		t.Fatalf("preflight should query daemon-info only, got %q", op)
+	}
+}
+
+func TestIsolatedRuntimeRootsRouteOnlyToTheirOwnDaemonSocket(t *testing.T) {
+	roots := []struct{ dir, label, identity string }{
+		{label: "A"},
+		{label: "B"},
+	}
+	for i := range roots {
+		dir, err := os.MkdirTemp("/private/tmp", "fc-root-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		roots[i].dir = dir
+		t.Cleanup(func() { _ = os.RemoveAll(dir) })
+		t.Setenv("FREE4CHAT_AGENT_DIR", roots[i].dir)
+		identity, err := RuntimeRootIdentity()
+		if err != nil {
+			t.Fatal(err)
+		}
+		roots[i].identity = identity
+	}
+
+	for _, root := range roots {
+		root := root
+		t.Setenv("FREE4CHAT_AGENT_DIR", root.dir)
+		listener, err := net.Listen("unix", SocketPath())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = listener.Close() })
+		go func() {
+			for {
+				conn, acceptErr := listener.Accept()
+				if acceptErr != nil {
+					return
+				}
+				go func() {
+					defer conn.Close()
+					line, _ := bufio.NewReader(conn).ReadString('\n')
+					request, _ := DecodeRequest([]byte(strings.TrimSpace(line)))
+					var result any = map[string]string{"owner": root.label, "rootIdentity": root.identity}
+					if request != nil && request.Op == "status" {
+						result = []any{map[string]string{"owner": root.label, "rootIdentity": root.identity}}
+					}
+					encoded, _ := json.Marshal(IpcResponse{OK: true, Result: result})
+					_, _ = conn.Write(append(encoded, '\n'))
+				}()
+			}
+		}()
+	}
+
+	for _, root := range roots {
+		t.Setenv("FREE4CHAT_AGENT_DIR", root.dir)
+		for _, op := range []string{"status", "capability-list", "join"} {
+			result, err := SendIPC(&IpcRequest{Op: op})
+			if err != nil {
+				t.Fatalf("root %s %s request failed: %v", root.label, op, err)
+			}
+			if op == "status" {
+				var response []map[string]string
+				if err := json.Unmarshal(result, &response); err != nil || len(response) != 1 || response[0]["owner"] != root.label || response[0]["rootIdentity"] != root.identity {
+					t.Fatalf("%s request crossed runtime roots: got %s, err=%v", op, result, err)
+				}
+				continue
+			}
+			var response map[string]string
+			if err := json.Unmarshal(result, &response); err != nil || response["owner"] != root.label || response["rootIdentity"] != root.identity {
+				t.Fatalf("%s request crossed runtime roots: got %s, err=%v", op, result, err)
+			}
+		}
+	}
 }

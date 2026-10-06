@@ -1,7 +1,9 @@
 package daemon
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -68,6 +70,19 @@ func RuntimeHostSeed() (string, error) {
 		return "", fmt.Errorf("runtime host seed publish failed: %w", err)
 	}
 	return seed, nil
+}
+
+// RuntimeRootIdentity is a stable, opaque local identifier for one Runtime
+// root. It is derived with domain separation from the private root seed and
+// never reveals that seed or the root's filesystem path.
+func RuntimeRootIdentity() (string, error) {
+	seed, err := RuntimeHostSeed()
+	if err != nil {
+		return "", err
+	}
+	mac := hmac.New(sha256.New, []byte(seed))
+	_, _ = mac.Write([]byte("free4chat-runtime-root-identity-v1"))
+	return "root-v1:" + hex.EncodeToString(mac.Sum(nil)[:12]), nil
 }
 
 // publishSeedFile atomically publishes a COMPLETE seed file without any

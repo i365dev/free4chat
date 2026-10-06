@@ -7,7 +7,9 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"runtime/debug"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/i365dev/free4chat/agent/internal/harness"
@@ -18,6 +20,43 @@ import (
 // It is a build-overridable var: release builds inject the agent-vX.Y.Z tag
 // version via -ldflags "-X github.com/i365dev/free4chat/agent/internal/doctor.Version=X.Y.Z".
 var Version = "0.5.56"
+
+// BuildIdentity returns the source revision stamped by the Go toolchain. A
+// missing revision is deliberately represented as empty: older/non-VCS builds
+// remain version-compatible, while known different revisions can be rejected.
+func BuildIdentity() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return ""
+	}
+	return BuildIdentityFromBuildInfo(info)
+}
+
+// BuildIdentityFromBuildInfo extracts the same deterministic identity from a
+// binary or build record, and is also useful to verify packaged artifacts.
+func BuildIdentityFromBuildInfo(info *debug.BuildInfo) string {
+	if info == nil {
+		return ""
+	}
+	settings := make(map[string]string, len(info.Settings))
+	for _, setting := range info.Settings {
+		settings[setting.Key] = setting.Value
+	}
+	revision := strings.TrimSpace(settings["vcs.revision"])
+	if len(revision) < 7 || len(revision) > 64 {
+		return ""
+	}
+	for _, char := range revision {
+		if !(char >= '0' && char <= '9' || char >= 'a' && char <= 'f' || char >= 'A' && char <= 'F') {
+			return ""
+		}
+	}
+	identity := "git:" + strings.ToLower(revision)
+	if settings["vcs.modified"] == "true" {
+		identity += ":dirty"
+	}
+	return identity
+}
 
 // PackageName mirrors the Node product identity in doctor output.
 const PackageName = "free4chat-agent"

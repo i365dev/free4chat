@@ -40,6 +40,8 @@ jobs:
         run: go vet ./...
       - name: go test
         run: go test ./... -count=1 -timeout 300s
+      - name: Runtime provenance contract
+        run: bash scripts/test-runtime-provenance-contract.sh
       # Targeted race gate: internal/voice drives TTS drain callbacks from a
       # separate goroutine, which a plain `go test` cannot observe. Scoped to
       # this package (about 2s) rather than the whole module.

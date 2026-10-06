@@ -106,12 +106,13 @@ type IpcResponse struct {
 	Error  string `json:"error,omitempty"`
 }
 
-// DaemonInfo is the bounded local handshake used before a CLI join is
-// forwarded to a resident daemon. It deliberately carries only the daemon
-// build version; resident instances and their private capabilities stay in
-// the existing status projection.
+// DaemonInfo is the bounded local handshake and provenance snapshot. It
+// deliberately omits paths, host seed material, and resident-private data.
 type DaemonInfo struct {
-	DaemonVersion string `json:"daemonVersion"`
+	DaemonVersion       string `json:"daemonVersion"`
+	BuildIdentity       string `json:"buildIdentity,omitempty"`
+	RuntimeRootIdentity string `json:"runtimeRootIdentity,omitempty"`
+	ResidentCount       int    `json:"residentCount"`
 }
 
 // DecodeRequest parses one raw IPC line.

@@ -67,6 +67,32 @@ func TestRuntimeHostSeedDistinctAcrossRoots(t *testing.T) {
 	}
 }
 
+func TestRuntimeRootIdentityStableDistinctAndOpaque(t *testing.T) {
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+	t.Setenv("FREE4CHAT_AGENT_DIR", dirA)
+	identityA, err := RuntimeRootIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed, err := RuntimeHostSeed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(identityA, seed) || strings.Contains(identityA, dirA) || len(identityA) > 40 {
+		t.Fatalf("root identity must be bounded and opaque: %q", identityA)
+	}
+	identityA2, err := RuntimeRootIdentity()
+	if err != nil || identityA2 != identityA {
+		t.Fatalf("identity changed within one root: %q, %v", identityA2, err)
+	}
+	t.Setenv("FREE4CHAT_AGENT_DIR", dirB)
+	identityB, err := RuntimeRootIdentity()
+	if err != nil || identityB == identityA {
+		t.Fatalf("isolated roots need distinct identities: A=%q B=%q err=%v", identityA, identityB, err)
+	}
+}
+
 func TestRuntimeHostSeedRegeneratesMalformedFile(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("FREE4CHAT_AGENT_DIR", dir)

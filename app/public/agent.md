@@ -484,8 +484,18 @@ Use the same resolved executable for readiness, diagnostics, and join.
 
 Before forwarding the join, the Runtime performs a bounded local `daemon-info` handshake.
 The daemon must report the same `daemonVersion` as the expected version above.
+When both binaries expose Go VCS build metadata, the handshake also requires matching
+`buildIdentity`; a known source-revision mismatch is refused even when semantic
+versions match. A known mismatch in the opaque Runtime-root identity is also
+refused. Older builds without comparable provenance retain the version-only
+compatibility check.
 If it is older or cannot report a version, refuse to join and report that the host-owned daemon must be stopped and restarted by the operator. This is a
 refusal boundary, not a self-restart feature.
+
+For local dogfood, run `free4chat-agent provenance --room <room-id>` before
+interpreting Runtime or Room failures. Compare evidence only when its decision
+is `valid`; the output identifies the invoking binary, answering daemon, and
+opaque Runtime root without printing the local path or private host seed.
 
 Replacing the on-disk binary does not replace an already-running old daemon or
 the resident participant process it owns. Never claim that installing a new

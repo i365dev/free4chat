@@ -261,7 +261,16 @@ func (d *Daemon) Dispatch(request *IpcRequest) (any, error) {
 		d.mu.Unlock()
 		return controller.Invoke(context.Background(), request.CapabilityID, request.CapabilityAction, request.CapabilityArgs)
 	case "daemon-info":
-		return DaemonInfo{DaemonVersion: doctor.Version}, nil
+		rootID, err := RuntimeRootIdentity()
+		if err != nil {
+			return nil, errors.New("runtime root identity unavailable")
+		}
+		return DaemonInfo{
+			DaemonVersion:       doctor.Version,
+			BuildIdentity:       doctor.BuildIdentity(),
+			RuntimeRootIdentity: rootID,
+			ResidentCount:       d.InstanceCount(),
+		}, nil
 	case "reload-speech":
 		config := speech.LoadConfig(RuntimeDirectory(), os.Getenv)
 		d.mu.Lock()

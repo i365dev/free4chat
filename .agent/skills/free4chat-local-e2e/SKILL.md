@@ -43,6 +43,25 @@ the acceptance case exercises Live Transcript, Meeting Notes compatibility,
 or Voice Reply; provision the corresponding credentials at that point and keep
 them out of command output and test evidence.
 
+## Runtime provenance preflight
+
+Before interpreting any Runtime, capability, media, or participant-transport
+failure, run the provenance check with the same binary and
+`FREE4CHAT_AGENT_DIR` that the experiment will use:
+
+```bash
+free4chat-agent provenance --room <room-id>
+```
+
+Proceed only when `decision` is `valid`, the CLI and daemon build identities
+match, and the selected resident reports the expected opaque Runtime root and
+`runtimeHostId`. `mismatch` or `ambiguous` means the evidence is not yet
+comparable: restart/reselect the host-owned daemon or correct the selected
+Runtime root, then rerun the preflight. Do not compare direct Runtime evidence
+with Room evidence until the preflight proves they belong to the intended
+daemon/root. The command omits the raw root path, host seed, participant
+handles, and Room selector from its output.
+
 ## Turnstile switches (local bypass)
 
 | Layer               | Mechanism                                                                                                                         |

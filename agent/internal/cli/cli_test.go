@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"debug/buildinfo"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -1449,5 +1450,93 @@ func TestAgentEnvWorksWithCustomLauncher(t *testing.T) {
 	request := nextFakeRequestOp(t, fixture, "join")
 	if request.AgentEnv == nil || request.AgentEnv["CUSTOM_LAUNCHER_VAR"] != "custom-value" {
 		t.Fatalf("AgentEnv not passed with custom launcher: %v", request.AgentEnv)
+	}
+}
+
+func TestProvenancePreflightIsRootScopedAndSanitizesResidentOutput(t *testing.T) {
+	runtimeRoot, err := os.MkdirTemp("/private/tmp", "fc-prov-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(runtimeRoot) })
+	roomSecret := "room-secret-selector"
+	participantSecret := "participant-handle-secret"
+	capabilitySecret := "capability-payload-secret"
+	sfuSecret := "sfu-session-secret"
+	t.Setenv("FREE4CHAT_AGENT_DIR", runtimeRoot)
+	rootIdentity, err := daemon.RuntimeRootIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	buildInfo, err := buildinfo.ReadFile(binaryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cliBuildIdentity := doctor.BuildIdentityFromBuildInfo(buildInfo)
+	listener, err := net.Listen("unix", daemon.SocketPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		for i := 0; i < 2; i++ {
+			conn, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			line, _ := bufio.NewReader(conn).ReadString('\n')
+			var request daemon.IpcRequest
+			_ = json.Unmarshal([]byte(line), &request)
+			var result any
+			switch request.Op {
+			case "daemon-info":
+				result = daemon.DaemonInfo{
+					DaemonVersion:       doctor.Version,
+					BuildIdentity:       cliBuildIdentity,
+					RuntimeRootIdentity: rootIdentity,
+					ResidentCount:       1,
+				}
+			case "status":
+				result = []any{map[string]any{
+					"instanceId":        participantSecret,
+					"roomId":            roomSecret,
+					"participantId":     participantSecret,
+					"participantHandle": participantSecret,
+					"capabilityPayload": capabilitySecret,
+					"sfuSessionId":      sfuSecret,
+					"runtimeHostId":     "runtime-host-public-id",
+				}}
+			}
+			encoded, _ := json.Marshal(daemon.IpcResponse{OK: true, Result: result})
+			_, _ = conn.Write(append(encoded, '\n'))
+			_ = conn.Close()
+		}
+	}()
+
+	command := exec.Command(binaryPath, "provenance", "--room", roomSecret)
+	command.Env = append(os.Environ(), "FREE4CHAT_AGENT_DIR="+runtimeRoot)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("provenance preflight failed: %v: %s", err, output)
+	}
+	var report map[string]any
+	if err := json.Unmarshal(output, &report); err != nil {
+		t.Fatalf("preflight must produce machine-readable JSON: %s (%v)", output, err)
+	}
+	if report["decision"] != "valid" {
+		t.Fatalf("exact local provenance should validate: %s", output)
+	}
+	homeDir, _ := os.UserHomeDir()
+	for _, secret := range []string{runtimeRoot, homeDir, roomSecret, participantSecret, capabilitySecret, sfuSecret} {
+		if strings.Contains(string(output), secret) {
+			t.Fatalf("preflight output leaked private value %q: %s", secret, output)
+		}
+	}
+	seed, err := os.ReadFile(filepath.Join(runtimeRoot, "host-seed"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(output), strings.TrimSpace(string(seed))) {
+		t.Fatalf("preflight output leaked private host seed: %s", output)
 	}
 }

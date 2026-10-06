@@ -91,6 +91,23 @@ Wrangler config.
 
 ## Real acceptance flow
 
+Before interpreting any Runtime, capability, media, or participant-transport
+failure, run the local Runtime provenance preflight using the exact CLI binary
+and `FREE4CHAT_AGENT_DIR` selected for the dogfood run:
+
+```bash
+free4chat-agent provenance --room <room-id>
+```
+
+Continue only when `decision` is `valid`, the CLI and daemon build identities
+match, and the selected resident's opaque Runtime root and `runtimeHostId`
+belong to the intended experiment. Resolve `mismatch` or `ambiguous` by
+reselecting the correct root/host-owned daemon and rerun the preflight. Do not
+compare direct Runtime evidence with Room evidence until provenance proves
+they belong to the intended daemon/root. The output is allow-listed and does
+not contain local paths, host seed material, participant handles, or Room
+selectors.
+
 - Use two independent browser contexts, not two tabs sharing cookies/storage.
 - Create or join one real Room and use a real Agent participant through the
   supported MCP/Runtime path. Do not fake Task events or call Durable Object
