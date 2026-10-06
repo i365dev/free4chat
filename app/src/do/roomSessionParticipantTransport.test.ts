@@ -87,6 +87,30 @@ function makeRoom() {
 }
 
 describe("RoomSession Runtime participant transport association", () => {
+  it("keeps the Runtime transport projection unchanged when only App stateRevision changes", () => {
+    const session = new RoomSession(
+      {} as never,
+      { ROOM_APPS_ENABLED: "true" } as never
+    ) as any
+    const room: any = makeRoom()
+
+    const before = session.projectRuntimeParticipantTransportState(
+      room,
+      "resident"
+    )
+    room.generatedApps[appInstanceId].stateRevision += 1
+    const after = session.projectRuntimeParticipantTransportState(
+      room,
+      "resident"
+    )
+
+    expect(after).toEqual(before)
+    expect(room.generatedApps[appInstanceId].bundleRevision).toBe(2)
+    expect(after.sources).toEqual([
+      { participantId: "owner", sessionId: "owner-session" },
+    ])
+  })
+
   const readyRequest = (sessionId: string, ready: boolean) =>
     new Request("https://room/control", {
       method: "POST",

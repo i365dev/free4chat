@@ -236,6 +236,39 @@ func TestParticipantTransportProjectionUpdatesExistingTransportInPlace(t *testin
 	}
 }
 
+func TestUnchangedParticipantTransportProjectionDoesNotUpdateOrReplaceTransport(t *testing.T) {
+	rt, _ := newResidentFenceRuntime(t)
+	configureParticipantTransportRuntime(t, rt, 10*time.Millisecond)
+	defer rt.Stop()
+	transport := newScriptedUpdatableParticipantTransport(nil)
+	factoryCalls := 0
+	rt.participantTransportFactory = func(media.DecodedHandle) participantDataTransport {
+		factoryCalls++
+		return transport
+	}
+	projection := participantTransportTestProjection("human-a", "session-a")
+	rt.observeRuntimeParticipantTransport(projection)
+	if got := awaitParticipantTransportStart(t, transport); got.err != nil {
+		t.Fatalf("initial participant transport Start failed: %v", got.err)
+	}
+
+	// The Room projection contract has no Generated App stateRevision field;
+	// when Room recomputes the same projection after an App state write, the
+	// Runtime JSON signature remains identical and no media update is needed.
+	rt.observeRuntimeParticipantTransport(projection)
+	select {
+	case got := <-transport.updates:
+		t.Fatalf("unchanged participant transport projection triggered Update: %+v", got)
+	case <-time.After(40 * time.Millisecond):
+	}
+	rt.mu.Lock()
+	current := rt.participantTransport
+	rt.mu.Unlock()
+	if current != transport || factoryCalls != 1 {
+		t.Fatalf("unchanged projection replaced transport: current=%T factoryCalls=%d", current, factoryCalls)
+	}
+}
+
 func TestParticipantTransportUpdateRetriesAutonomouslyWithoutRoomEnvelope(t *testing.T) {
 	rt, _ := newResidentFenceRuntime(t)
 	configureParticipantTransportRuntime(t, rt, 10*time.Millisecond)
