@@ -19,7 +19,7 @@ import (
 // Version identifies the Go Agent Runtime build line (post-freeze rewrite).
 // It is a build-overridable var: release builds inject the agent-vX.Y.Z tag
 // version via -ldflags "-X github.com/i365dev/free4chat/agent/internal/doctor.Version=X.Y.Z".
-var Version = "0.5.58"
+var Version = "0.5.59"
 
 // BuildIdentity returns the source revision stamped by the Go toolchain. A
 // missing revision is deliberately represented as empty so provenance callers
