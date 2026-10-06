@@ -21,6 +21,38 @@ const (
 	capabilitySeenLimit    = 64
 )
 
+// ParticipantTransportFailureClass is the small allowlisted diagnostic class
+// associated with errors whose source is known locally. It intentionally does
+// not carry provider error text or identifiers.
+type ParticipantTransportFailureClass string
+
+const (
+	ParticipantTransportFailureAllocationFailed    ParticipantTransportFailureClass = "allocation_failed"
+	ParticipantTransportFailureChannelReadyTimeout ParticipantTransportFailureClass = "channel_ready_timeout"
+)
+
+// ParticipantTransportFailure marks only failures with an explicit local
+// lifecycle source. The underlying error remains available to callers for
+// ordinary control flow, but must not be copied into diagnostics.
+type ParticipantTransportFailure struct {
+	Class ParticipantTransportFailureClass
+	err   error
+}
+
+func (e *ParticipantTransportFailure) Error() string {
+	return "participant_transport_failure"
+}
+
+func (e *ParticipantTransportFailure) Unwrap() error { return e.err }
+
+func (e *ParticipantTransportFailure) ParticipantTransportFailureClass() ParticipantTransportFailureClass {
+	return e.Class
+}
+
+func participantTransportFailure(class ParticipantTransportFailureClass, err error) error {
+	return &ParticipantTransportFailure{Class: class, err: err}
+}
+
 func participantDirectReliableChannelName(agentParticipantID, humanParticipantID string) string {
 	if !participantIDForDirectChannel(agentParticipantID) || !participantIDForDirectChannel(humanParticipantID) || agentParticipantID == humanParticipantID {
 		return ""
@@ -88,23 +120,25 @@ type RuntimeParticipantTransport struct {
 	handler    types.ResidentCapabilityController
 	log        func(string, map[string]string)
 
-	mu            sync.Mutex
-	updateMu      sync.Mutex
-	closed        bool
-	starting      bool
-	generation    uint64
-	ctx           context.Context
-	cancel        context.CancelFunc
-	session       string
-	engine        *Engine
-	outbound      map[string]reliableParticipantDataChannel // Human participant id -> private pair lane
-	routes        map[participantRouteKey]types.RuntimeParticipantTransportRoute
-	sources       map[string]string // local pairwise publisher label -> Human participant id
-	peerSessions  map[string]string // Human participant id -> Room-projected SFU session
-	channelTokens map[string]any    // Human participant id -> exact current Engine channel object
-	inflight      chan struct{}
-	seen          map[string]time.Time
-	readyUpdate   func(session string, ready bool) error
+	mu                       sync.Mutex
+	updateMu                 sync.Mutex
+	closed                   bool
+	starting                 bool
+	generation               uint64
+	ctx                      context.Context
+	cancel                   context.CancelFunc
+	session                  string
+	engine                   *Engine
+	outbound                 map[string]reliableParticipantDataChannel // Human participant id -> private pair lane
+	routes                   map[participantRouteKey]types.RuntimeParticipantTransportRoute
+	sources                  map[string]string // local pairwise publisher label -> Human participant id
+	peerSessions             map[string]string // Human participant id -> Room-projected SFU session
+	channelTokens            map[string]any    // Human participant id -> exact current Engine channel object
+	inflight                 chan struct{}
+	seen                     map[string]time.Time
+	readyUpdate              func(session string, ready bool) error
+	waitChannelsReady        func(context.Context, context.Context, []reliableParticipantDataChannel, time.Duration) error
+	createParticipantChannel func(string, uint16) (reliableParticipantDataChannel, error)
 }
 
 func NewRuntimeParticipantTransport(siteOrigin string, handle DecodedHandle, handler types.ResidentCapabilityController, log func(string, map[string]string)) *RuntimeParticipantTransport {
@@ -231,7 +265,7 @@ func (t *RuntimeParticipantTransport) Start(ctx context.Context, projection type
 	}
 	ids, err := rest.CreateParticipantDataChannels(session, channels)
 	if err != nil {
-		return fail(err)
+		return fail(participantTransportFailure(ParticipantTransportFailureAllocationFailed, err))
 	}
 	outbound := make(map[string]reliableParticipantDataChannel, len(projection.Sources))
 	sources := make(map[string]string, len(projection.Sources))
@@ -242,7 +276,7 @@ func (t *RuntimeParticipantTransport) Start(ctx context.Context, projection type
 		label := participantDirectReliableChannelName(t.handle.ParticipantID, source.ParticipantID)
 		channel, err := engine.CreateParticipantDataChannel(label, ids[i])
 		if err != nil {
-			return fail(err)
+			return fail(participantTransportFailure(ParticipantTransportFailureAllocationFailed, err))
 		}
 		channelsReady = append(channelsReady, channel)
 		sources[label] = channelHumans[i]
@@ -267,7 +301,7 @@ func (t *RuntimeParticipantTransport) Start(ctx context.Context, projection type
 		}
 	}
 	if !allReady() {
-		return fail(errors.New("capability_datachannel_timeout"))
+		return fail(participantTransportFailure(ParticipantTransportFailureChannelReadyTimeout, errors.New("capability_datachannel_timeout")))
 	}
 	routes := make(map[participantRouteKey]types.RuntimeParticipantTransportRoute, len(projection.Routes))
 	for _, route := range projection.Routes {
@@ -402,39 +436,27 @@ func (t *RuntimeParticipantTransport) Update(ctx context.Context, projection typ
 		}
 		ids, err := rest.CreateParticipantDataChannels(session, channels)
 		if err != nil {
-			return err
+			return participantTransportFailure(ParticipantTransportFailureAllocationFailed, err)
 		}
 		allocatedIDs = ids
-		channelsReady := make([]*ParticipantDataChannel, 0, len(newSources))
+		channelsReady := make([]reliableParticipantDataChannel, 0, len(newSources))
 		for i, source := range newSources {
 			label := participantDirectReliableChannelName(t.handle.ParticipantID, source.ParticipantID)
-			channel, err := engine.CreateParticipantDataChannel(label, ids[i])
+			var channel reliableParticipantDataChannel
+			var err error
+			if t.createParticipantChannel != nil {
+				channel, err = t.createParticipantChannel(label, ids[i])
+			} else {
+				channel, err = engine.CreateParticipantDataChannel(label, ids[i])
+			}
 			if err != nil {
-				return err
+				return participantTransportFailure(ParticipantTransportFailureAllocationFailed, err)
 			}
 			channelsReady = append(channelsReady, channel)
 			newOutbound[source.ParticipantID] = channel
 		}
-		deadline := time.Now().Add(10 * time.Second)
-		allReady := func() bool {
-			for _, channel := range channelsReady {
-				if !channel.Ready() {
-					return false
-				}
-			}
-			return true
-		}
-		for time.Now().Before(deadline) && !allReady() {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-transportCtx.Done():
-				return transportCtx.Err()
-			case <-time.After(50 * time.Millisecond):
-			}
-		}
-		if !allReady() {
-			return errors.New("capability_datachannel_timeout")
+		if err := t.waitForParticipantChannelsReady(ctx, transportCtx, channelsReady, 10*time.Second); err != nil {
+			return err
 		}
 	}
 
@@ -470,6 +492,39 @@ func (t *RuntimeParticipantTransport) Update(ctx context.Context, projection typ
 	}
 	t.routes, t.sources, t.outbound, t.peerSessions, t.channelTokens = routes, activeSources, outbound, peerSessions, channelTokens
 	committed = true
+	return nil
+}
+
+func (t *RuntimeParticipantTransport) waitForParticipantChannelsReady(
+	ctx context.Context,
+	transportCtx context.Context,
+	channels []reliableParticipantDataChannel,
+	timeout time.Duration,
+) error {
+	if t.waitChannelsReady != nil {
+		return t.waitChannelsReady(ctx, transportCtx, channels, timeout)
+	}
+	deadline := time.Now().Add(timeout)
+	allReady := func() bool {
+		for _, channel := range channels {
+			if !channel.Ready() {
+				return false
+			}
+		}
+		return true
+	}
+	for time.Now().Before(deadline) && !allReady() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-transportCtx.Done():
+			return transportCtx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	if !allReady() {
+		return participantTransportFailure(ParticipantTransportFailureChannelReadyTimeout, errors.New("capability_datachannel_timeout"))
+	}
 	return nil
 }
 
