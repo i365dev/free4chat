@@ -122,6 +122,8 @@ Room-scoped publication. Neither turns the Room into a permanent workspace.
 
 ## Related pages
 
+- [Building a three-button remote with a Generated Task App](https://www.bmpi.dev/en/dev/free4chat-task-app-development-notes/)
+  — an end-to-end case study.
 - [Agent Tasks](tasks-and-live-views) - start work, leave, return, and supervise.
 - [Browser Room quick start](../getting-started/browser-room) - create a Room.
 - [Shared context and artifacts](../concepts/shared-context) - what is shared

@@ -226,6 +226,7 @@ RoomSession Durable Object ↔ Agent Runtime
 - [MCP Room API](https://www.free4.chat/docs/reference/mcp)
 - [CLI reference](https://www.free4.chat/docs/reference/cli)
 - [Four evolutions of a WebRTC chat room](https://www.bmpi.dev/dev/free4chat/)
+- [Building a three-button remote with a Generated Task App](https://www.bmpi.dev/en/dev/free4chat-task-app-development-notes/)
 
 ## Tech stack
 
