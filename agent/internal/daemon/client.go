@@ -72,21 +72,34 @@ func EnsureDaemon() error {
 // version handshake is treated as untrusted rather than silently reused.
 // This is a guard before join, not a self-update or restart mechanism.
 func EnsureDaemonVersion(expected string) error {
-	expected = strings.TrimSpace(expected)
-	if expected == "" {
+	return EnsureDaemonProvenance(expected, "")
+}
+
+// EnsureDaemonProvenance verifies semantic version and, when both builds
+// expose a source identity, exact source revision before a join/create can be
+// forwarded. Unknown identities preserve compatibility with older/release
+// binaries; a known mismatch is never silently reused.
+func EnsureDaemonProvenance(expectedVersion, expectedBuild string) error {
+	expectedVersion = strings.TrimSpace(expectedVersion)
+	expectedBuild = strings.TrimSpace(expectedBuild)
+	if expectedVersion == "" {
 		return errors.New("expected daemon version is empty")
 	}
+	expectedRoot, err := RuntimeRootIdentity()
+	if err != nil {
+		return errors.New("local runtime root identity unavailable; refusing to join")
+	}
 
-	if version, err := daemonVersion(); err == nil {
-		return requireDaemonVersion(expected, version)
+	if info, infoErr := daemonInfo(); infoErr == nil {
+		return requireDaemonProvenance(expectedVersion, expectedBuild, expectedRoot, info)
 	}
 	// An older resident daemon may answer status while rejecting the new
 	// daemon-info operation. Do not start a second daemon or forward join to
 	// one whose build cannot be verified.
 	if _, err := SendIPC(&IpcRequest{Op: "status"}); err == nil {
 		return fmt.Errorf(
-			"running daemon version could not be verified; refusing to join with runtime %s; stop/restart the daemon under host ownership",
-			expected,
+			"running daemon provenance could not be verified; refusing to join with runtime %s; stop/restart or reselect the host-owned daemon",
+			expectedVersion,
 		)
 	} else if !daemonSocketUnavailable(err) {
 		return fmt.Errorf("daemon health check failed: %w", err)
@@ -95,23 +108,31 @@ func EnsureDaemonVersion(expected string) error {
 	if err := startDaemonProcess(); err != nil {
 		return err
 	}
-	return waitForDaemonVersion(expected, 5*time.Second)
+	return waitForDaemonProvenance(expectedVersion, expectedBuild, expectedRoot, 5*time.Second)
 }
 
 func daemonVersion() (string, error) {
-	result, err := SendIPC(&IpcRequest{Op: "daemon-info"})
+	info, err := daemonInfo()
 	if err != nil {
 		return "", err
 	}
+	return info.DaemonVersion, nil
+}
+
+func daemonInfo() (DaemonInfo, error) {
+	result, err := SendIPC(&IpcRequest{Op: "daemon-info"})
+	if err != nil {
+		return DaemonInfo{}, err
+	}
 	var info DaemonInfo
 	if err := json.Unmarshal(result, &info); err != nil {
-		return "", fmt.Errorf("daemon info response failed: %w", err)
+		return DaemonInfo{}, fmt.Errorf("daemon info response failed: %w", err)
 	}
 	info.DaemonVersion = strings.TrimSpace(info.DaemonVersion)
 	if info.DaemonVersion == "" {
-		return "", errors.New("daemon info response omitted daemonVersion")
+		return DaemonInfo{}, errors.New("daemon info response omitted daemonVersion")
 	}
-	return info.DaemonVersion, nil
+	return info, nil
 }
 
 func requireDaemonVersion(expected, actual string) error {
@@ -123,6 +144,31 @@ func requireDaemonVersion(expected, actual string) error {
 		actual,
 		expected,
 	)
+}
+
+func requireDaemonProvenance(expectedVersion, expectedBuild, expectedRoot string, actual DaemonInfo) error {
+	if err := requireDaemonVersion(expectedVersion, actual.DaemonVersion); err != nil {
+		return err
+	}
+	actualBuild := strings.TrimSpace(actual.BuildIdentity)
+	if expectedBuild != "" {
+		if actualBuild == "" {
+			return errors.New("running daemon cannot prove its build identity; refusing to join; stop/restart or reselect the host-owned daemon")
+		}
+		if expectedBuild != actualBuild {
+			return fmt.Errorf("running daemon build %s does not match CLI build %s; refusing to join; stop/restart or reselect the host-owned daemon", actualBuild, expectedBuild)
+		}
+	}
+	actualRoot := strings.TrimSpace(actual.RuntimeRootIdentity)
+	if expectedRoot != "" {
+		if actualRoot == "" {
+			return errors.New("running daemon cannot prove its Runtime root identity; refusing to join; stop/restart or reselect the host-owned daemon")
+		}
+		if expectedRoot != actualRoot {
+			return errors.New("running daemon belongs to a different Runtime root; refusing to join; reselect the intended Runtime root")
+		}
+	}
+	return nil
 }
 
 func startDaemonProcess() error {
@@ -172,12 +218,16 @@ func daemonSocketUnavailable(err error) bool {
 }
 
 func waitForDaemonVersion(expected string, timeout time.Duration) error {
+	return waitForDaemonProvenance(expected, "", "", timeout)
+}
+
+func waitForDaemonProvenance(expectedVersion, expectedBuild, expectedRoot string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	for time.Now().Before(deadline) {
-		version, err := daemonVersion()
+		info, err := daemonInfo()
 		if err == nil {
-			return requireDaemonVersion(expected, version)
+			return requireDaemonProvenance(expectedVersion, expectedBuild, expectedRoot, info)
 		}
 		lastErr = err
 		time.Sleep(50 * time.Millisecond)

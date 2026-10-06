@@ -79,6 +79,7 @@ func usageText() string {
   free4chat-agent version [--json]
   free4chat-agent doctor [--json]
   free4chat-agent readiness [--room <room-id>] [--agent <harness>] [--json]
+  free4chat-agent provenance [--instance <id> | --room <room-id>]
   free4chat-agent credential status
   free4chat-agent credential provision --provider doubao [--purpose speech.stt|speech.tts]
   free4chat-agent credential delete --provider doubao
@@ -716,6 +717,9 @@ func run(args []string) error {
 	case "version":
 		return runVersion(rest)
 
+	case "provenance":
+		return runProvenance(rest)
+
 	case "status":
 		return runStatusCommand()
 
@@ -1007,7 +1011,7 @@ func runViaDaemon(request *daemon.IpcRequest) error {
 // automation commands and the human-friendly room namespace.
 func executeDaemonRequest(request *daemon.IpcRequest) (json.RawMessage, error) {
 	if request.Op == "join" || request.Op == "connect" {
-		if err := daemon.EnsureDaemonVersion(doctor.Version); err != nil {
+		if err := daemon.EnsureDaemonProvenance(doctor.Version, doctor.BuildIdentity()); err != nil {
 			return nil, err
 		}
 	} else if err := daemon.EnsureDaemon(); err != nil {

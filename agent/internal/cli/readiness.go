@@ -65,7 +65,7 @@ func runReadiness(args []string) error {
 
 	if roomID := option(args, "--room"); roomID != "" {
 		var instances []map[string]any
-		if err := daemon.EnsureDaemonVersion(doctor.Version); err == nil {
+		if err := daemon.EnsureDaemonProvenance(doctor.Version, doctor.BuildIdentity()); err == nil {
 			report.Runtime["daemonReady"] = true
 			report.Runtime["daemonVersion"] = doctor.Version
 			if result, ipcErr := daemon.SendIPC(&daemon.IpcRequest{Op: "status"}); ipcErr == nil {
