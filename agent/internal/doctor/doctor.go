@@ -22,8 +22,8 @@ import (
 var Version = "0.5.56"
 
 // BuildIdentity returns the source revision stamped by the Go toolchain. A
-// missing revision is deliberately represented as empty: older/non-VCS builds
-// remain version-compatible, while known different revisions can be rejected.
+// missing revision is deliberately represented as empty so provenance callers
+// can treat that build as unverifiable instead of silently equating revisions.
 func BuildIdentity() string {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
