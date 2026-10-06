@@ -682,6 +682,8 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
     )
     await waitFor(() => expect(lastFakeWebSocket).not.toBeNull())
     act(() => lastFakeWebSocket?.onopen?.())
+    const diagnostics = window.__free4chatRoomAppTransportDiagnostics!
+    diagnostics.enable()
     const sendAgentState = (
       ready: boolean,
       publisherSessionId = "agent-data-session",
@@ -753,12 +755,50 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
         })
       )
     sendAgentState(false)
+    await expect(
+      result.current.requestGeneratedAppCapability({
+        appInstanceId,
+        bundleRevision: 3,
+        taskRequestId: "task-a",
+        agentParticipantId: "agent-a",
+        requestId: "request-not-ready",
+        capabilityId: "printer_status",
+        operation: "observe",
+      })
+    ).resolves.toMatchObject({ ok: false, error: "unavailable" })
+    expect(
+      diagnostics
+        .read()
+        .filter(
+          ({ transition, reason }) =>
+            transition === "rejected" && reason === "agent_transport_not_ready"
+        )
+    ).toHaveLength(1)
     expect(
       dataChannelCalls.some(
         (call) => call.publisherSessionId === "agent-data-session"
       )
     ).toBe(false)
     sendAgentState(true)
+    await expect(
+      result.current.requestGeneratedAppCapability({
+        appInstanceId,
+        bundleRevision: 3,
+        taskRequestId: "task-a",
+        agentParticipantId: "agent-a",
+        requestId: "request-no-direct-lane",
+        capabilityId: "printer_status",
+        operation: "observe",
+      })
+    ).resolves.toMatchObject({ ok: false, error: "unavailable" })
+    expect(
+      diagnostics
+        .read()
+        .some(
+          ({ transition, reason }) =>
+            transition === "rejected" && reason === "direct_lane_absent"
+        )
+    ).toBe(true)
 
     const directChannelName = participantDirectReliableChannelName(
       "agent-a",
@@ -830,6 +870,17 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
         String(wire).includes("runtime-capability-request")
       )
     ).toBe(false)
+    expect(
+      diagnostics.read().some(({ transition }) => transition === "sent")
+    ).toBe(true)
+    expect(
+      diagnostics
+        .read()
+        .some(
+          ({ transition, lane }) =>
+            transition === "ready" && lane === "participant_direct_reliable"
+        )
+    ).toBe(true)
 
     act(() =>
       agentSubscriber?.emit("message", {
@@ -877,6 +928,23 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
       (call) => call.transport === "participant-direct-reliable"
     ).length
     expect(directCallsAfterRecovery).toBe(initialDirectCalls + 1)
+    expect(
+      diagnostics
+        .read()
+        .some(
+          ({ transition, lane }) =>
+            transition === "closed" && lane === "participant_direct_reliable"
+        )
+    ).toBe(true)
+    expect(
+      diagnostics
+        .read()
+        .some(
+          ({ transition, lane }) =>
+            transition === "recovery_scheduled" &&
+            lane === "participant_direct_reliable"
+        )
+    ).toBe(true)
     const replacementDirectChannel = FakePeerConnection.dataChannels.find(
       (channel) =>
         channel.label === `${directChannelName}-subscriber` &&
@@ -954,6 +1022,15 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
       (call) => call.transport === "participant-direct-reliable"
     ).length
     expect(directCallsAfterExhaustion).toBe(initialDirectCalls + 4)
+    expect(
+      diagnostics
+        .read()
+        .some(
+          ({ transition, reason }) =>
+            transition === "recovery_exhausted" &&
+            reason === "direct_lane_retry_exhausted"
+        )
+    ).toBe(true)
     await act(async () => {
       await vi.advanceTimersByTimeAsync(10_000)
     })
@@ -964,9 +1041,21 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
     ).toHaveLength(directCallsAfterExhaustion)
     failDirectSubscriptions = false
 
+    // Restore a Ready channel, then rotate the publisher projection so the
+    // dropped old-generation lane transition is observable.
+    sendAgentState(true)
+    for (let index = 0; index < 40; index += 1) await Promise.resolve()
+    const readyForRotation = FakePeerConnection.dataChannels
+      .filter((channel) => channel.label === `${directChannelName}-subscriber`)
+      .at(-1)
+    expect(readyForRotation?.readyState).toBe("open")
+    const directCallsBeforeRotation = dataChannelCalls.filter(
+      (call) => call.transport === "participant-direct-reliable"
+    ).length
+
     // A publisher session rotation owns its own subscription and cancels the
     // delayed retry captured from the old Agent transport generation.
-    act(() => replacementDirectChannel?.emit("close", {}))
+    act(() => readyForRotation?.emit("close", {}))
     sendAgentState(true, "agent-data-session-rotated")
     for (let index = 0; index < 20; index += 1) await Promise.resolve()
     await act(async () => {
@@ -975,7 +1064,16 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
     const directCallsAfterRotation = dataChannelCalls.filter(
       (call) => call.transport === "participant-direct-reliable"
     ).length
-    expect(directCallsAfterRotation).toBe(directCallsAfterExhaustion + 1)
+    expect(directCallsAfterRotation).toBe(directCallsBeforeRotation + 1)
+    expect(
+      diagnostics
+        .read()
+        .some(
+          ({ transition, reason }) =>
+            transition === "stale_transition_dropped" &&
+            reason === "stale_publisher_generation"
+        )
+    ).toBe(true)
 
     // Leaving removes the participant and invalidates a scheduled recovery.
     const rotatedChannel = FakePeerConnection.dataChannels
@@ -1009,6 +1107,15 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
     for (let index = 0; index < 40; index += 1) await Promise.resolve()
     expect(FakePeerConnection.instances).toHaveLength(2)
     expect(subscriberSessionNumber).toBe(2)
+    expect(
+      diagnostics
+        .read()
+        .some(
+          ({ transition, reason }) =>
+            transition === "stale_transition_dropped" &&
+            reason === "stale_subscriber_generation"
+        )
+    ).toBe(true)
     await act(async () => {
       await vi.advanceTimersByTimeAsync(100)
     })

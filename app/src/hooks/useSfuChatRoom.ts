@@ -28,8 +28,10 @@ import {
 import {
   installRoomAppTransportDiagnostics,
   RoomAppTransportDiagnosticTrace,
+  roomAppCapabilityRouteReason,
   roomAppRequestTag,
   whiteboardProtocolType,
+  type RoomAppDiagnosticInput,
 } from "@common/roomAppTransportDiagnostics"
 import { validateRoomAttachmentRead } from "@common/roomAttachments"
 import type {
@@ -855,6 +857,10 @@ export function useSfuChatRoom(
   if (!roomAppDiagnosticRef.current)
     roomAppDiagnosticRef.current = new RoomAppTransportDiagnosticTrace()
   const roomAppDiagnostic = roomAppDiagnosticRef.current
+  const recordRoomAppTransportDiagnostic = useCallback(
+    (fields: RoomAppDiagnosticInput) => roomAppDiagnostic.record(fields),
+    [roomAppDiagnostic]
+  )
   roomAppDiagnostic.setSnapshotProvider(() => ({
     localReliableState:
       localRoomAppChannelsRef.current.get("reliable")?.readyState ?? "absent",
@@ -1124,6 +1130,12 @@ export function useSfuChatRoom(
         const agentChannel = remoteRoomAppChannelsRef.current.get(
           roomAppChannelKey(request.agentParticipantId, "reliable")
         )
+        const pc = peerConnectionRef.current
+        const subscriberSession = sessionRef.current
+        const publisherSessionId =
+          agent?.kind === "agent"
+            ? agent.participantDataTransport?.sessionId
+            : undefined
         const encoded = encodeRoomAppEnvelope({
           appInstanceId: request.appInstanceId,
           lane: "reliable",
@@ -1140,14 +1152,67 @@ export function useSfuChatRoom(
             ...(request.args ? { args: request.args } : {}),
           },
         })
-        if (
-          !agent ||
-          agent.kind !== "agent" ||
-          !agent.participantDataTransport?.ready ||
-          !encoded ||
-          !agentChannel ||
-          agentChannel.readyState !== "open"
-        ) {
+        const laneState = agentChannel?.readyState ?? "absent"
+        const directLaneKey = roomAppChannelKey(
+          request.agentParticipantId,
+          "reliable"
+        )
+        const routeReason = roomAppCapabilityRouteReason({
+          agentFound: agent?.kind === "agent",
+          publisherReady:
+            agent?.kind === "agent" &&
+            agent.participantDataTransport?.ready === true,
+          peerConnectionState: pc?.connectionState ?? null,
+          subscriberSessionPresent: Boolean(subscriberSession?.sessionId),
+          publisherSessionPresent: Boolean(publisherSessionId),
+          laneState,
+          encoded: Boolean(encoded),
+          retryExhausted:
+            (remoteRoomAppChannelAttemptCountsRef.current.get(directLaneKey) ??
+              0) > ROOM_APP_RETRY_DELAYS_MS.length,
+        })
+        const diagnosticFields = {
+          lane: "participant_direct_reliable" as const,
+          subscriberEpoch: roomAppDiagnostic.laneEpoch(
+            "subscriber",
+            subscriberSession?.participantId ?? "current"
+          ),
+          publisherEpoch: roomAppDiagnostic.laneEpoch(
+            "publisher",
+            request.agentParticipantId
+          ),
+          peerConnectionEpoch: roomAppDiagnostic.laneEpoch(
+            "peer_connection",
+            "current"
+          ),
+        }
+        roomAppDiagnostic.record({
+          event: "lane_transition",
+          ...diagnosticFields,
+          transition: "capability_request",
+          recoveryOwner: "none",
+        })
+        roomAppDiagnostic.record({
+          event: "lane_transition",
+          ...diagnosticFields,
+          transition: "route_check",
+          ...(routeReason ? { reason: routeReason } : {}),
+        })
+        if (routeReason) {
+          roomAppDiagnostic.record({
+            event: "lane_transition",
+            ...diagnosticFields,
+            transition: "rejected",
+            reason: routeReason,
+            recoveryOwner:
+              routeReason === "agent_transport_not_ready"
+                ? "room_projection"
+                : routeReason === "peer_connection_not_connected"
+                ? "media_reconnect"
+                : routeReason.startsWith("direct_lane_")
+                ? "browser"
+                : "none",
+          })
           clearTimeout(timeout)
           pendingRuntimeCapabilityRequestsRef.current.delete(request.requestId)
           settle({
@@ -1158,8 +1223,21 @@ export function useSfuChatRoom(
           })
         } else {
           try {
-            agentChannel.send(encoded)
+            agentChannel!.send(encoded!)
+            roomAppDiagnostic.record({
+              event: "lane_transition",
+              ...diagnosticFields,
+              transition: "sent",
+              recoveryOwner: "none",
+            })
           } catch {
+            roomAppDiagnostic.record({
+              event: "lane_transition",
+              ...diagnosticFields,
+              transition: "rejected",
+              reason: "send_failed",
+              recoveryOwner: "browser",
+            })
             clearTimeout(timeout)
             pendingRuntimeCapabilityRequestsRef.current.delete(
               request.requestId
@@ -1174,7 +1252,7 @@ export function useSfuChatRoom(
         }
       })
     },
-    [roomAppChannelKey]
+    [roomAppChannelKey, roomAppDiagnostic]
   )
 
   const isCurrentAgentAudioPublication = useCallback(
@@ -1915,19 +1993,93 @@ export function useSfuChatRoom(
     [roomName, roomAppDiagnostic]
   )
 
-  const clearRemoteRoomAppChannelRetry = useCallback((key: string) => {
-    const retry = remoteRoomAppChannelRetriesRef.current.get(key)
-    if (!retry) return false
-    clearTimeout(retry.timeout)
-    remoteRoomAppChannelRetriesRef.current.delete(key)
-    return true
-  }, [])
-
-  const clearAllRemoteRoomAppChannelRetries = useCallback(() => {
-    for (const retry of remoteRoomAppChannelRetriesRef.current.values())
+  const clearRemoteRoomAppChannelRetry = useCallback(
+    (key: string, reason?: string) => {
+      const retry = remoteRoomAppChannelRetriesRef.current.get(key)
+      if (!retry) return false
       clearTimeout(retry.timeout)
-    remoteRoomAppChannelRetriesRef.current.clear()
-  }, [])
+      remoteRoomAppChannelRetriesRef.current.delete(key)
+      const staleReason =
+        reason === "participant_data_transport_changed"
+          ? "stale_publisher_generation"
+          : reason === "session_changed" ||
+            reason === "media_reconnect" ||
+            reason === "peer_connection_replaced"
+          ? "stale_subscriber_generation"
+          : null
+      if (staleReason)
+        roomAppDiagnostic.record({
+          event: "lane_transition",
+          lane: retry.direct
+            ? "participant_direct_reliable"
+            : retry.lane === "reliable"
+            ? "room_app_reliable"
+            : "room_app_realtime",
+          transition: "stale_transition_dropped",
+          reason: staleReason,
+          subscriberEpoch: roomAppDiagnostic.laneEpoch(
+            "subscriber",
+            sessionRef.current?.participantId ?? "current"
+          ),
+          publisherEpoch: roomAppDiagnostic.laneEpoch(
+            "publisher",
+            retry.participantId
+          ),
+          peerConnectionEpoch: roomAppDiagnostic.laneEpoch(
+            "peer_connection",
+            "current"
+          ),
+          retryAttempt: retry.retryAttempt - 1,
+          retryBudget: ROOM_APP_RETRY_DELAYS_MS.length,
+          recoveryOwner: "none",
+        })
+      return true
+    },
+    [roomAppDiagnostic]
+  )
+
+  const clearAllRemoteRoomAppChannelRetries = useCallback(
+    (reason?: string) => {
+      for (const retry of remoteRoomAppChannelRetriesRef.current.values()) {
+        clearTimeout(retry.timeout)
+        const staleReason =
+          reason === "participant_data_transport_changed"
+            ? "stale_publisher_generation"
+            : reason === "media_reconnect" ||
+              reason === "peer_connection_replaced"
+            ? "stale_subscriber_generation"
+            : null
+        if (staleReason)
+          roomAppDiagnostic.record({
+            event: "lane_transition",
+            lane: retry.direct
+              ? "participant_direct_reliable"
+              : retry.lane === "reliable"
+              ? "room_app_reliable"
+              : "room_app_realtime",
+            transition: "stale_transition_dropped",
+            reason: staleReason,
+            subscriberEpoch: roomAppDiagnostic.laneEpoch(
+              "subscriber",
+              sessionRef.current?.participantId ?? "current"
+            ),
+            publisherEpoch: roomAppDiagnostic.laneEpoch(
+              "publisher",
+              retry.participantId
+            ),
+            peerConnectionEpoch: roomAppDiagnostic.laneEpoch(
+              "peer_connection",
+              "current"
+            ),
+            retryAttempt: retry.retryAttempt - 1,
+            retryBudget: ROOM_APP_RETRY_DELAYS_MS.length,
+            recoveryOwner: "none",
+          })
+      }
+      remoteRoomAppChannelRetriesRef.current.clear()
+    },
+    [roomAppDiagnostic]
+  )
 
   const cleanupRemoteRoomAppChannel = useCallback(
     (key: string, attempt: RemoteRoomAppChannelAttempt, reason: string) => {
@@ -1959,6 +2111,68 @@ export function useSfuChatRoom(
               ? "establishment_failed"
               : "closed",
         })
+      roomAppDiagnostic.record({
+        event: "lane_transition",
+        lane: attempt.direct
+          ? "participant_direct_reliable"
+          : attempt.lane === "reliable"
+          ? "room_app_reliable"
+          : "room_app_realtime",
+        transition: "closed",
+        reason: attempt.direct
+          ? reason === "media_reconnect"
+            ? "peer_connection_not_connected"
+            : "direct_lane_closed"
+          : reason === "media_reconnect"
+          ? "peer_connection_not_connected"
+          : "closed",
+        subscriberEpoch: roomAppDiagnostic.laneEpoch(
+          "subscriber",
+          sessionRef.current?.participantId ?? "current"
+        ),
+        publisherEpoch: roomAppDiagnostic.laneEpoch(
+          "publisher",
+          key.slice(0, key.lastIndexOf(":"))
+        ),
+        peerConnectionEpoch: roomAppDiagnostic.laneEpoch(
+          "peer_connection",
+          "current"
+        ),
+        recoveryOwner:
+          reason === "media_reconnect" ? "media_reconnect" : "browser",
+      })
+      const staleReason =
+        reason === "participant_data_transport_changed"
+          ? "stale_publisher_generation"
+          : reason === "media_reconnect" ||
+            reason === "session_changed" ||
+            reason === "peer_connection_replaced"
+          ? "stale_subscriber_generation"
+          : null
+      if (staleReason)
+        roomAppDiagnostic.record({
+          event: "lane_transition",
+          lane: attempt.direct
+            ? "participant_direct_reliable"
+            : attempt.lane === "reliable"
+            ? "room_app_reliable"
+            : "room_app_realtime",
+          transition: "stale_transition_dropped",
+          reason: staleReason,
+          subscriberEpoch: roomAppDiagnostic.laneEpoch(
+            "subscriber",
+            sessionRef.current?.participantId ?? "current"
+          ),
+          publisherEpoch: roomAppDiagnostic.laneEpoch(
+            "publisher",
+            key.slice(0, key.lastIndexOf(":"))
+          ),
+          peerConnectionEpoch: roomAppDiagnostic.laneEpoch(
+            "peer_connection",
+            "current"
+          ),
+          recoveryOwner: "none",
+        })
       return true
     },
     [roomAppDiagnostic]
@@ -1966,7 +2180,7 @@ export function useSfuChatRoom(
 
   const clearAllRemoteRoomAppChannels = useCallback(
     (reason: string) => {
-      clearAllRemoteRoomAppChannelRetries()
+      clearAllRemoteRoomAppChannelRetries(reason)
       const keys = new Set([
         ...remoteRoomAppChannelAttemptsRef.current.keys(),
         ...remoteRoomAppChannelsRef.current.keys(),
@@ -2001,7 +2215,7 @@ export function useSfuChatRoom(
     (participantId: string, reason: string) => {
       for (const lane of ["reliable", "realtime"] as const) {
         const key = roomAppChannelKey(participantId, lane)
-        clearRemoteRoomAppChannelRetry(key)
+        clearRemoteRoomAppChannelRetry(key, reason)
         const attempt =
           remoteRoomAppChannelAttemptsRef.current.get(key) ??
           (() => {
@@ -2045,6 +2259,54 @@ export function useSfuChatRoom(
           : media?.appDataChannelReady === true
       const key = roomAppChannelKey(participant.id, lane)
       clearRemoteRoomAppChannelRetry(key)
+      const ownedLane = remoteRoomAppChannelsRef.current.get(key)
+      const ownedAttempt = remoteRoomAppChannelAttemptsRef.current.get(key)
+      const gateReason = !roomAppsEnabledRef.current
+        ? "capability_not_routable"
+        : !pc || pc.connectionState !== "connected"
+        ? "peer_connection_not_connected"
+        : !session
+        ? "subscriber_session_missing"
+        : participant.id === session.participantId
+        ? "capability_not_routable"
+        : participant.kind !== "human" && participant.kind !== "agent"
+        ? "capability_not_routable"
+        : !publisherReady
+        ? participant.kind === "agent"
+          ? "agent_transport_not_ready"
+          : "publisher_transport_not_ready"
+        : !publisherSessionId
+        ? "publisher_session_missing"
+        : ownedLane || ownedAttempt
+        ? "lane_already_owned"
+        : null
+      roomAppDiagnostic.record({
+        event: "lane_transition",
+        lane: lane === "reliable" ? "room_app_reliable" : "room_app_realtime",
+        transition: gateReason ? "route_check" : "subscribe_attempt",
+        ...(gateReason ? { reason: gateReason } : {}),
+        subscriberEpoch: roomAppDiagnostic.laneEpoch(
+          "subscriber",
+          session?.participantId ?? "current"
+        ),
+        publisherEpoch: roomAppDiagnostic.laneEpoch(
+          "publisher",
+          participant.id
+        ),
+        peerConnectionEpoch: roomAppDiagnostic.laneEpoch(
+          "peer_connection",
+          "current"
+        ),
+        ...(gateReason === "agent_transport_not_ready"
+          ? { recoveryOwner: "room_projection" as const }
+          : gateReason === "publisher_transport_not_ready"
+          ? { recoveryOwner: "room_projection" as const }
+          : gateReason === "peer_connection_not_connected"
+          ? { recoveryOwner: "media_reconnect" as const }
+          : gateReason === "lane_already_owned"
+          ? { recoveryOwner: "none" as const }
+          : {}),
+      })
       if (
         !roomAppsEnabledRef.current ||
         !pc ||
@@ -2078,6 +2340,26 @@ export function useSfuChatRoom(
           event: "remote_reliable_subscribe",
           peerParticipantId: participant.id,
         })
+      roomAppDiagnostic.record({
+        event: "lane_transition",
+        lane: lane === "reliable" ? "room_app_reliable" : "room_app_realtime",
+        transition: "subscribe_attempt",
+        subscriberEpoch: roomAppDiagnostic.laneEpoch(
+          "subscriber",
+          session.participantId
+        ),
+        publisherEpoch: roomAppDiagnostic.laneEpoch(
+          "publisher",
+          participant.id
+        ),
+        peerConnectionEpoch: roomAppDiagnostic.laneEpoch(
+          "peer_connection",
+          "current"
+        ),
+        retryAttempt: attempt,
+        retryBudget: ROOM_APP_RETRY_DELAYS_MS.length,
+        recoveryOwner: "browser",
+      })
       try {
         const response = await apiRequest("datachannels/new", {
           room: roomName,
@@ -2158,7 +2440,61 @@ export function useSfuChatRoom(
             event: "remote_reliable_ready",
             peerParticipantId: participant.id,
           })
+        roomAppDiagnostic.record({
+          event: "lane_transition",
+          lane: lane === "reliable" ? "room_app_reliable" : "room_app_realtime",
+          transition: "ready",
+          subscriberEpoch: roomAppDiagnostic.laneEpoch(
+            "subscriber",
+            session.participantId
+          ),
+          publisherEpoch: roomAppDiagnostic.laneEpoch(
+            "publisher",
+            participant.id
+          ),
+          peerConnectionEpoch: roomAppDiagnostic.laneEpoch(
+            "peer_connection",
+            "current"
+          ),
+          retryAttempt: attempt,
+          retryBudget: ROOM_APP_RETRY_DELAYS_MS.length,
+          recoveryOwner: "none",
+        })
       } catch {
+        const currentSession = sessionRef.current
+        const currentParticipant = participantMapRef.current.get(participant.id)
+        const currentPublisherSessionId =
+          currentParticipant?.kind === "agent"
+            ? currentParticipant.participantDataTransport?.sessionId
+            : currentParticipant?.media?.sessionId
+        const staleReason =
+          peerConnectionRef.current !== pc ||
+          currentSession?.sessionId !== session.sessionId
+            ? "stale_subscriber_generation"
+            : currentPublisherSessionId !== publisherSessionId
+            ? "stale_publisher_generation"
+            : null
+        if (staleReason)
+          roomAppDiagnostic.record({
+            event: "lane_transition",
+            lane:
+              lane === "reliable" ? "room_app_reliable" : "room_app_realtime",
+            transition: "stale_transition_dropped",
+            reason: staleReason,
+            subscriberEpoch: roomAppDiagnostic.laneEpoch(
+              "subscriber",
+              session.participantId
+            ),
+            publisherEpoch: roomAppDiagnostic.laneEpoch(
+              "publisher",
+              participant.id
+            ),
+            peerConnectionEpoch: roomAppDiagnostic.laneEpoch(
+              "peer_connection",
+              "current"
+            ),
+            recoveryOwner: "none",
+          })
         cleanupRemoteRoomAppChannel(key, channelAttempt, "establishment_failed")
         scheduleRemoteRoomAppChannelRetryRef.current?.(
           key,
@@ -2192,6 +2528,45 @@ export function useSfuChatRoom(
       )
       const key = roomAppChannelKey(agent.id, "reliable")
       clearRemoteRoomAppChannelRetry(key)
+      const ownedLane = remoteRoomAppChannelsRef.current.get(key)
+      const ownedAttempt = remoteRoomAppChannelAttemptsRef.current.get(key)
+      const gateReason = !roomAppsEnabledRef.current
+        ? "capability_not_routable"
+        : !pc || pc.connectionState !== "connected"
+        ? "peer_connection_not_connected"
+        : !session
+        ? "subscriber_session_missing"
+        : agent.kind !== "agent"
+        ? "originating_agent_missing"
+        : agent.participantDataTransport?.ready !== true
+        ? "agent_transport_not_ready"
+        : !publisherSessionId
+        ? "publisher_session_missing"
+        : ownedLane || ownedAttempt
+        ? "lane_already_owned"
+        : null
+      roomAppDiagnostic.record({
+        event: "lane_transition",
+        lane: "participant_direct_reliable",
+        transition: gateReason ? "route_check" : "subscribe_attempt",
+        ...(gateReason ? { reason: gateReason } : {}),
+        subscriberEpoch: roomAppDiagnostic.laneEpoch(
+          "subscriber",
+          session?.participantId ?? "current"
+        ),
+        publisherEpoch: roomAppDiagnostic.laneEpoch("publisher", agent.id),
+        peerConnectionEpoch: roomAppDiagnostic.laneEpoch(
+          "peer_connection",
+          "current"
+        ),
+        ...(gateReason === "agent_transport_not_ready"
+          ? { recoveryOwner: "room_projection" as const }
+          : gateReason === "peer_connection_not_connected"
+          ? { recoveryOwner: "media_reconnect" as const }
+          : gateReason === "lane_already_owned"
+          ? { recoveryOwner: "none" as const }
+          : {}),
+      })
       if (
         !roomAppsEnabledRef.current ||
         !pc ||
@@ -2290,7 +2665,52 @@ export function useSfuChatRoom(
         channelAttempt.ready = true
         remoteRoomAppChannelAttemptsRef.current.delete(key)
         remoteRoomAppChannelsRef.current.set(key, channel)
+        roomAppDiagnostic.record({
+          event: "lane_transition",
+          lane: "participant_direct_reliable",
+          transition: "ready",
+          subscriberEpoch: roomAppDiagnostic.laneEpoch(
+            "subscriber",
+            session.participantId
+          ),
+          publisherEpoch: roomAppDiagnostic.laneEpoch("publisher", agent.id),
+          peerConnectionEpoch: roomAppDiagnostic.laneEpoch(
+            "peer_connection",
+            "current"
+          ),
+          retryAttempt: attempt,
+          retryBudget: ROOM_APP_RETRY_DELAYS_MS.length,
+          recoveryOwner: "none",
+        })
       } catch {
+        const currentSession = sessionRef.current
+        const currentPublisher = participantMapRef.current.get(agent.id)
+        const staleReason =
+          peerConnectionRef.current !== pc ||
+          currentSession?.sessionId !== session.sessionId
+            ? "stale_subscriber_generation"
+            : currentPublisher?.kind !== "agent" ||
+              currentPublisher.participantDataTransport?.sessionId !==
+                publisherSessionId
+            ? "stale_publisher_generation"
+            : null
+        if (staleReason)
+          roomAppDiagnostic.record({
+            event: "lane_transition",
+            lane: "participant_direct_reliable",
+            transition: "stale_transition_dropped",
+            reason: staleReason,
+            subscriberEpoch: roomAppDiagnostic.laneEpoch(
+              "subscriber",
+              session.participantId
+            ),
+            publisherEpoch: roomAppDiagnostic.laneEpoch("publisher", agent.id),
+            peerConnectionEpoch: roomAppDiagnostic.laneEpoch(
+              "peer_connection",
+              "current"
+            ),
+            recoveryOwner: "none",
+          })
         cleanupRemoteRoomAppChannel(key, channelAttempt, "establishment_failed")
         scheduleRemoteRoomAppChannelRetryRef.current?.(
           key,
@@ -2307,6 +2727,7 @@ export function useSfuChatRoom(
       handleRoomAppChannelMessage,
       roomAppChannelKey,
       roomName,
+      roomAppDiagnostic,
       waitForDataChannelOpen,
     ]
   )
@@ -2329,8 +2750,35 @@ export function useSfuChatRoom(
         participant?.kind === "agent"
           ? participant.participantDataTransport?.ready === true
           : participant?.media?.appDataChannelReady === true
+      if (delay === undefined) {
+        roomAppDiagnostic.record({
+          event: "lane_transition",
+          lane: attempt.direct
+            ? "participant_direct_reliable"
+            : attempt.lane === "reliable"
+            ? "room_app_reliable"
+            : "room_app_realtime",
+          transition: "recovery_exhausted",
+          reason: attempt.direct ? "direct_lane_retry_exhausted" : "closed",
+          subscriberEpoch: roomAppDiagnostic.laneEpoch(
+            "subscriber",
+            session?.participantId ?? "current"
+          ),
+          publisherEpoch: roomAppDiagnostic.laneEpoch(
+            "publisher",
+            participantId
+          ),
+          peerConnectionEpoch: roomAppDiagnostic.laneEpoch(
+            "peer_connection",
+            "current"
+          ),
+          retryAttempt: retryAttempt - 1,
+          retryBudget: ROOM_APP_RETRY_DELAYS_MS.length,
+          recoveryOwner: "none",
+        })
+        return
+      }
       if (
-        delay === undefined ||
         remoteRoomAppChannelRetriesRef.current.has(key) ||
         closingRef.current ||
         !roomAppsEnabledRef.current ||
@@ -2405,6 +2853,27 @@ export function useSfuChatRoom(
         roomAppDiagnostic.record({
           event: "remote_reliable_recovery_scheduled",
         })
+      roomAppDiagnostic.record({
+        event: "lane_transition",
+        lane: attempt.direct
+          ? "participant_direct_reliable"
+          : attempt.lane === "reliable"
+          ? "room_app_reliable"
+          : "room_app_realtime",
+        transition: "recovery_scheduled",
+        subscriberEpoch: roomAppDiagnostic.laneEpoch(
+          "subscriber",
+          session?.participantId ?? "current"
+        ),
+        publisherEpoch: roomAppDiagnostic.laneEpoch("publisher", participantId),
+        peerConnectionEpoch: roomAppDiagnostic.laneEpoch(
+          "peer_connection",
+          "current"
+        ),
+        retryAttempt: retryAttempt - 1,
+        retryBudget: ROOM_APP_RETRY_DELAYS_MS.length,
+        recoveryOwner: "browser",
+      })
     },
     [
       roomAppDiagnostic,
@@ -3469,6 +3938,13 @@ export function useSfuChatRoom(
             participant.participantDataTransport?.sessionId ||
             previous?.participantDataTransport?.ready !==
               participant.participantDataTransport?.ready)
+        const humanAppProjectionChanged =
+          participant.kind === "human" &&
+          (previous?.media?.sessionId !== participant.media?.sessionId ||
+            previous?.media?.appDataChannelReady !==
+              participant.media?.appDataChannelReady)
+        if (participantDataTransportChanged || humanAppProjectionChanged)
+          roomAppDiagnostic.nextLaneEpoch("publisher", participant.id)
         if (mediaSessionChanged || agentAudioTrackRemoved) {
           resetRemoteParticipant(participant.id)
           resetRemoteRoomAppParticipant(participant.id, "session_changed")
@@ -3521,6 +3997,7 @@ export function useSfuChatRoom(
       resetRemoteRoomAppParticipant,
       replaceRoomMessages,
       resubscribeRemoteMedia,
+      roomAppDiagnostic,
     ]
   )
 
@@ -3532,6 +4009,7 @@ export function useSfuChatRoom(
     const pc = new RTCPeerConnection({
       iceServers: [{ urls: "stun:stun.cloudflare.com:3478" }],
     })
+    roomAppDiagnostic.nextLaneEpoch("peer_connection", "current")
     peerConnectionRef.current = pc
     pc.ontrack = (event) => {
       const mid =
@@ -3631,6 +4109,7 @@ export function useSfuChatRoom(
     removeRemoteTrackBinding,
     resubscribeRemoteMedia,
     sampleSfuEgress,
+    roomAppDiagnostic,
   ])
 
   const connectWebSocket = useCallback(() => {
@@ -4192,6 +4671,7 @@ export function useSfuChatRoom(
       const session = (await response.json()) as SfuSessionResponse
       sessionRef.current = { ...session, room: roomName }
       roomAppDiagnostic.setParticipant(session.participantId)
+      roomAppDiagnostic.nextLaneEpoch("subscriber", session.participantId)
       roomAppsServerEnabledRef.current = session.roomAppsEnabled === true
       roomAppsEnabledRef.current = false
       setRoomAppsEnabled(false)
@@ -5571,6 +6051,7 @@ export function useSfuChatRoom(
     liveTranscriptSegments,
     runtimeHosts,
     requestGeneratedAppCapability,
+    recordRoomAppTransportDiagnostic,
     liveTranscriptMediaAvailable,
     startLiveTranscript,
     stopLiveTranscript,
