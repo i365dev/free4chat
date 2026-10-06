@@ -271,6 +271,27 @@ func runCliWithFakeDaemon(t *testing.T, fixture *fakeDaemon, args ...string) (st
 	return output, -1
 }
 
+func fakeDaemonProvenance(t *testing.T, dir string) daemon.DaemonInfo {
+	t.Helper()
+	buildInfo, err := buildinfo.ReadFile(binaryPath)
+	if err != nil {
+		t.Fatalf("read test binary build info: %v", err)
+	}
+	buildIdentity := doctor.BuildIdentityFromBuildInfo(buildInfo)
+	var rootIdentity string
+	withAgentDir(dir, func() {
+		rootIdentity, err = daemon.RuntimeRootIdentity()
+	})
+	if err != nil {
+		t.Fatalf("derive fake daemon root identity: %v", err)
+	}
+	return daemon.DaemonInfo{
+		DaemonVersion:       doctor.Version,
+		BuildIdentity:       buildIdentity,
+		RuntimeRootIdentity: rootIdentity,
+	}
+}
+
 func nextFakeRequest(t *testing.T, fixture *fakeDaemon) daemon.IpcRequest {
 	t.Helper()
 	select {
@@ -450,12 +471,13 @@ func TestContextReadPreservesExplicitZeroCursorPresenceOverIPC(t *testing.T) {
 
 func roomFixture(t *testing.T, createResult, joinResult json.RawMessage) *fakeDaemon {
 	t.Helper()
-	return newFakeDaemon(t, func(request daemon.IpcRequest) daemon.IpcResponse {
+	var fixture *fakeDaemon
+	fixture = newFakeDaemon(t, func(request daemon.IpcRequest) daemon.IpcResponse {
 		switch request.Op {
 		case "status":
 			return daemon.IpcResponse{OK: true, Result: []any{}}
 		case "daemon-info":
-			return daemon.IpcResponse{OK: true, Result: daemon.DaemonInfo{DaemonVersion: doctor.Version}}
+			return daemon.IpcResponse{OK: true, Result: fakeDaemonProvenance(t, fixture.dir)}
 		case "create":
 			return daemon.IpcResponse{OK: true, Result: createResult}
 		case "join":
@@ -464,6 +486,7 @@ func roomFixture(t *testing.T, createResult, joinResult json.RawMessage) *fakeDa
 			return daemon.IpcResponse{OK: false, Error: "unexpected fake daemon operation"}
 		}
 	})
+	return fixture
 }
 
 // TestTestDaemonStopIsScopedAndDeterministic pins the reclaim contract the
@@ -1143,12 +1166,13 @@ func (e errString) Error() string { return string(e) }
 // preflight handshakes and the join/create operation itself.
 func agentEnvFixture(t *testing.T, result map[string]any) *fakeDaemon {
 	t.Helper()
-	return newFakeDaemon(t, func(request daemon.IpcRequest) daemon.IpcResponse {
+	var fixture *fakeDaemon
+	fixture = newFakeDaemon(t, func(request daemon.IpcRequest) daemon.IpcResponse {
 		switch request.Op {
 		case "status":
 			return daemon.IpcResponse{OK: true, Result: []any{}}
 		case "daemon-info":
-			return daemon.IpcResponse{OK: true, Result: daemon.DaemonInfo{DaemonVersion: doctor.Version}}
+			return daemon.IpcResponse{OK: true, Result: fakeDaemonProvenance(t, fixture.dir)}
 		case "join":
 			return daemon.IpcResponse{OK: true, Result: result}
 		case "create":
@@ -1166,6 +1190,7 @@ func agentEnvFixture(t *testing.T, result map[string]any) *fakeDaemon {
 			return daemon.IpcResponse{OK: false, Error: "unexpected fake daemon operation " + request.Op}
 		}
 	})
+	return fixture
 }
 
 // nextFakeRequestOp drains preflight handshakes until the requested operation
