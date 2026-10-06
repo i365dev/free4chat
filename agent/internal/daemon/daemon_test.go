@@ -2312,7 +2312,7 @@ func TestEnsureDaemonProvenanceRejectsSameVersionDifferentBuild(t *testing.T) {
 }
 
 func TestDaemonInfoCarriesBoundedProvenance(t *testing.T) {
-	dir, err := os.MkdirTemp("/private/tmp", "fc-info-")
+	dir, err := os.MkdirTemp("", "fc-info-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2339,32 +2339,40 @@ func TestDaemonInfoCarriesBoundedProvenance(t *testing.T) {
 	}
 }
 
-func TestEnsureDaemonProvenanceAcceptsExactAndLegacyIdentity(t *testing.T) {
-	for _, daemonBuild := range []string{"git:aaaaaaaaaaaaaaa", ""} {
-		daemonRoot := "root-v1:aaaaaaaaaaaaaaaaaaaaaaaa"
-		if daemonBuild == "" {
-			daemonRoot = ""
-		}
-		err := requireDaemonProvenance("0.5.56", "git:aaaaaaaaaaaaaaa", "root-v1:aaaaaaaaaaaaaaaaaaaaaaaa", DaemonInfo{
+func TestEnsureDaemonProvenanceAcceptsExactAndRejectsMissingIdentity(t *testing.T) {
+	expectedBuild := "git:aaaaaaaaaaaaaaa"
+	expectedRoot := "root-v1:aaaaaaaaaaaaaaaaaaaaaaaa"
+	if err := requireDaemonProvenance("0.5.56", expectedBuild, expectedRoot, DaemonInfo{
+		DaemonVersion:       "0.5.56",
+		BuildIdentity:       expectedBuild,
+		RuntimeRootIdentity: expectedRoot,
+	}); err != nil {
+		t.Fatalf("exact provenance should be accepted: %v", err)
+	}
+	for name, info := range map[string]DaemonInfo{
+		"missing build": {
 			DaemonVersion:       "0.5.56",
-			BuildIdentity:       daemonBuild,
-			RuntimeRootIdentity: daemonRoot,
-		})
-		if err != nil {
-			t.Fatalf("exact or legacy-compatible build should be accepted: build=%q err=%v", daemonBuild, err)
+			RuntimeRootIdentity: expectedRoot,
+		},
+		"missing root": {
+			DaemonVersion: "0.5.56",
+			BuildIdentity: expectedBuild,
+		},
+	} {
+		if err := requireDaemonProvenance("0.5.56", expectedBuild, expectedRoot, info); err == nil || !strings.Contains(err.Error(), "refusing to join") {
+			t.Fatalf("%s daemon must be refused as unverifiable: %v", name, err)
 		}
 	}
-	if err := requireDaemonProvenance("0.5.56", "git:aaaaaaaaaaaaaaa", "root-v1:aaaaaaaaaaaaaaaaaaaaaaaa", DaemonInfo{
+	if err := requireDaemonProvenance("0.5.56", expectedBuild, expectedRoot, DaemonInfo{
 		DaemonVersion:       "0.5.56",
-		BuildIdentity:       "git:aaaaaaaaaaaaaaa",
+		BuildIdentity:       expectedBuild,
 		RuntimeRootIdentity: "root-v1:bbbbbbbbbbbbbbbbbbbbbbbb",
 	}); err == nil || !strings.Contains(err.Error(), "different Runtime root") {
 		t.Fatalf("a daemon owned by another Runtime root must be refused: %v", err)
 	}
 }
-
 func TestEnsureDaemonProvenanceRefusesStaleDaemonBeforeJoin(t *testing.T) {
-	dir, err := os.MkdirTemp("/private/tmp", "fc-stale-")
+	dir, err := os.MkdirTemp("", "fc-stale-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2410,7 +2418,7 @@ func TestIsolatedRuntimeRootsRouteOnlyToTheirOwnDaemonSocket(t *testing.T) {
 		{label: "B"},
 	}
 	for i := range roots {
-		dir, err := os.MkdirTemp("/private/tmp", "fc-root-")
+		dir, err := os.MkdirTemp("", "fc-root-")
 		if err != nil {
 			t.Fatal(err)
 		}
