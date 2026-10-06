@@ -1454,7 +1454,7 @@ func TestAgentEnvWorksWithCustomLauncher(t *testing.T) {
 }
 
 func TestProvenancePreflightIsRootScopedAndSanitizesResidentOutput(t *testing.T) {
-	runtimeRoot, err := os.MkdirTemp("/private/tmp", "fc-prov-")
+	runtimeRoot, err := os.MkdirTemp("", "fc-prov-")
 	if err != nil {
 		t.Fatal(err)
 	}
