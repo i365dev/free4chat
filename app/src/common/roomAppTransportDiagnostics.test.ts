@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import {
   ROOM_APP_DIAGNOSTIC_CAPACITY,
   RoomAppTransportDiagnosticTrace,
+  roomAppCapabilityRouteReason,
   whiteboardProtocolType,
 } from "./roomAppTransportDiagnostics"
 
@@ -65,5 +66,43 @@ describe("local Room App transport diagnostics", () => {
     expect(JSON.stringify(trace.read())).not.toContain(payload.text)
     expect(JSON.stringify(trace.read())).not.toContain(payload.participantToken)
     expect(whiteboardProtocolType({ type: "wb_join" })).toBe("wb_join")
+  })
+
+  it("reports the first failed capability route precondition", () => {
+    const readyRoute = {
+      agentFound: true,
+      publisherReady: true,
+      peerConnectionState: "connected",
+      subscriberSessionPresent: true,
+      publisherSessionPresent: true,
+      laneState: "open" as const,
+      encoded: true,
+    }
+    expect(
+      roomAppCapabilityRouteReason({
+        ...readyRoute,
+        publisherReady: false,
+        laneState: "absent",
+      })
+    ).toBe("agent_transport_not_ready")
+    expect(
+      roomAppCapabilityRouteReason({ ...readyRoute, laneState: "absent" })
+    ).toBe("direct_lane_absent")
+    expect(roomAppCapabilityRouteReason(readyRoute)).toBeNull()
+  })
+
+  it("keeps local epochs monotonic without returning the private identity", () => {
+    const trace = new RoomAppTransportDiagnosticTrace(() => "browser-one")
+    expect(trace.nextLaneEpoch("publisher", "private-agent-id")).toBe(1)
+    expect(trace.nextLaneEpoch("publisher", "private-agent-id")).toBe(2)
+    trace.enable()
+    trace.record({
+      event: "lane_transition",
+      lane: "participant_direct_reliable",
+      transition: "ready",
+      publisherEpoch: trace.laneEpoch("publisher", "private-agent-id"),
+    })
+    expect(JSON.stringify(trace.read())).not.toContain("private-agent-id")
+    expect(trace.read().at(-1)?.publisherEpoch).toBe(2)
   })
 })

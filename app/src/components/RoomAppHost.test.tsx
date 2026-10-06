@@ -17,6 +17,7 @@ import type {
   RoomAppUnicastResult,
   RoomAppTransportEnvelope,
 } from "../common/roomApp"
+import { RoomAppTransportDiagnosticTrace } from "../common/roomAppTransportDiagnostics"
 
 class TestPort {
   onmessage: ((event: MessageEvent) => void) | null = null
@@ -66,6 +67,68 @@ afterEach(() => {
 
 describe("RoomAppHost", () => {
   beforeEach(() => setProductionRoomAppCatalog([app]))
+
+  it("records a missing originating Agent while keeping the App error bounded", () => {
+    vi.stubGlobal("MessageChannel", TestMessageChannel)
+    const appInstanceId = "generated:123e4567-e89b-12d3-a456-426614174000"
+    const trace = new RoomAppTransportDiagnosticTrace(() => "browser-one")
+    trace.enable()
+    const rendered = render(
+      <RoomAppHost
+        app={{
+          ...app,
+          source: "generated",
+          srcDoc: "<main>generated app</main>",
+        }}
+        appInstanceId={appInstanceId}
+        generatedAppBundleRevision={3}
+        generatedAppTaskRequestId="task-a"
+        self={self}
+        participants={participants}
+        subscribe={() => () => undefined}
+        send={() => true}
+        subscribeUnicast={() => () => undefined}
+        subscribeUnicastResults={() => () => undefined}
+        sendUnicast={() => "sent"}
+        recordTransportDiagnostic={(fields) => trace.record(fields)}
+        onClose={() => undefined}
+      />
+    )
+    const iframe = screen.getByTestId("room-app-iframe") as HTMLIFrameElement
+    const frameWindow = { postMessage: vi.fn() }
+    Object.defineProperty(iframe, "contentWindow", { value: frameWindow })
+    fireEvent.load(iframe)
+    const bootstrap = frameWindow.postMessage.mock.calls[0][0]
+    const port = lastChannel!.port1
+    act(() => {
+      port.emit({
+        type: "ready",
+        appInstanceId,
+        handshakeToken: bootstrap.handshakeToken,
+      })
+      port.emit({
+        type: "capabilityRequest",
+        appInstanceId,
+        bundleRevision: 3,
+        requestId: "request-1",
+        capabilityId: "printer_status",
+        operation: "observe",
+      })
+    })
+
+    expect(port.postMessage).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        type: "capability_result",
+        result: expect.objectContaining({ ok: false, error: "unavailable" }),
+      })
+    )
+    expect(trace.read().at(-1)).toMatchObject({
+      component: "room_app_host",
+      transition: "rejected",
+      reason: "originating_agent_missing",
+    })
+    rendered.unmount()
+  })
 
   it("reports the first ready App engagement once without sending into the Room", () => {
     vi.stubGlobal("MessageChannel", TestMessageChannel)

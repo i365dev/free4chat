@@ -519,6 +519,7 @@ export default function RoomContent({
     liveTranscriptSegments,
     runtimeHosts,
     requestGeneratedAppCapability,
+    recordRoomAppTransportDiagnostic,
     liveTranscriptMediaAvailable,
     startLiveTranscript,
     stopLiveTranscript,
@@ -3018,6 +3019,9 @@ export default function RoomContent({
                         requestGeneratedCapability={
                           requestGeneratedAppCapability
                         }
+                        recordTransportDiagnostic={
+                          recordRoomAppTransportDiagnostic
+                        }
                         self={roomAppSelf}
                         participants={roomAppParticipants}
                         subscribe={subscribeRoomAppMessages}
@@ -3080,6 +3084,9 @@ export default function RoomContent({
                         subscribeUnicast={subscribeRoomAppUnicast}
                         subscribeUnicastResults={subscribeRoomAppUnicastResults}
                         sendUnicast={sendRoomAppUnicast}
+                        recordTransportDiagnostic={
+                          recordRoomAppTransportDiagnostic
+                        }
                         subscribeAgentRequests={subscribeRoomAppAgentRequests}
                         setAgentHostReady={setRoomAppHostReady}
                         respondAgentRequest={respondRoomAppAgentRequest}

@@ -1,4 +1,4 @@
-/** Local, opt-in topology evidence for Lab #221. No payloads, session IDs or tokens. */
+/** Local, opt-in Room App transport evidence for Core #591. */
 export const ROOM_APP_DIAGNOSTIC_CAPACITY = 200
 
 export type RoomAppDiagnosticName =
@@ -21,10 +21,82 @@ export type RoomAppDiagnosticName =
   | "reliable_sent"
   | "reliable_received"
   | "reliable_receive_dropped"
+  | "lane_transition"
+
+export type RoomAppDiagnosticLane =
+  | "participant_direct_reliable"
+  | "room_app_reliable"
+  | "room_app_realtime"
+
+export type RoomAppDiagnosticTransition =
+  | "capability_request"
+  | "route_check"
+  | "rejected"
+  | "subscribe_attempt"
+  | "ready"
+  | "closed"
+  | "recovery_scheduled"
+  | "recovery_exhausted"
+  | "stale_transition_dropped"
+  | "sent"
+
+export type RoomAppDiagnosticReason =
+  | "originating_agent_missing"
+  | "agent_transport_not_ready"
+  | "publisher_transport_not_ready"
+  | "peer_connection_not_connected"
+  | "subscriber_session_missing"
+  | "publisher_session_missing"
+  | "direct_lane_absent"
+  | "direct_lane_connecting"
+  | "direct_lane_closed"
+  | "direct_lane_retry_exhausted"
+  | "stale_subscriber_generation"
+  | "stale_publisher_generation"
+  | "encode_failed"
+  | "send_failed"
+  | "capability_not_routable"
+  | "lane_already_owned"
+
+export type RoomAppDiagnosticRecoveryOwner =
+  | "browser"
+  | "media_reconnect"
+  | "room_projection"
+  | "none"
+
+export type RoomAppDiagnosticComponent = "browser" | "room_app_host"
+
+export function roomAppCapabilityRouteReason(input: {
+  agentFound: boolean
+  publisherReady: boolean
+  peerConnectionState: string | null
+  subscriberSessionPresent: boolean
+  publisherSessionPresent: boolean
+  laneState: RTCDataChannelState | "absent"
+  encoded: boolean
+  retryExhausted?: boolean
+}): RoomAppDiagnosticReason | null {
+  if (!input.agentFound) return "originating_agent_missing"
+  if (!input.publisherReady) return "agent_transport_not_ready"
+  if (input.peerConnectionState !== "connected")
+    return "peer_connection_not_connected"
+  if (!input.subscriberSessionPresent) return "subscriber_session_missing"
+  if (!input.publisherSessionPresent) return "publisher_session_missing"
+  if (!input.encoded) return "encode_failed"
+  if (input.laneState === "absent")
+    return input.retryExhausted
+      ? "direct_lane_retry_exhausted"
+      : "direct_lane_absent"
+  if (input.laneState === "connecting") return "direct_lane_connecting"
+  if (input.laneState === "closed" || input.laneState === "closing")
+    return "direct_lane_closed"
+  return null
+}
 
 export interface RoomAppDiagnosticEvent {
   at: number
   event: RoomAppDiagnosticName
+  component?: RoomAppDiagnosticComponent
   browserId: string
   participantId?: string
   peerParticipantId?: string
@@ -44,10 +116,19 @@ export interface RoomAppDiagnosticEvent {
     | "closed"
     | "establishment_failed"
     | "media_reconnect"
+    | RoomAppDiagnosticReason
   protocolType?: "wb_join" | "wb_summary" | "wb_repair_request" | "other"
+  lane?: RoomAppDiagnosticLane
+  transition?: RoomAppDiagnosticTransition
+  subscriberEpoch?: number
+  publisherEpoch?: number
+  peerConnectionEpoch?: number
+  retryAttempt?: number
+  retryBudget?: number
+  recoveryOwner?: RoomAppDiagnosticRecoveryOwner
 }
 
-type DiagnosticFields = Omit<
+export type RoomAppDiagnosticInput = Omit<
   RoomAppDiagnosticEvent,
   "at" | "browserId" | "participantId" | "sessionEpoch" | "roomSocketEpoch"
 > & { roomSocketEpoch?: number; participantId?: string }
@@ -58,6 +139,7 @@ export class RoomAppTransportDiagnosticTrace {
   private participantId: string | undefined
   private sessionEpoch = 0
   private roomSocketEpoch = 0
+  private readonly laneEpochs = new Map<string, number>()
   private readonly events: RoomAppDiagnosticEvent[] = []
   private snapshotProvider:
     | (() => Pick<
@@ -93,8 +175,26 @@ export class RoomAppTransportDiagnosticTrace {
     return this.roomSocketEpoch
   }
 
+  /** Local per-lane generation only; the identity is retained privately. */
+  nextLaneEpoch(
+    kind: "subscriber" | "publisher" | "peer_connection",
+    identity: string
+  ): number {
+    const key = `${kind}:${identity}`
+    const next = (this.laneEpochs.get(key) ?? 0) + 1
+    this.laneEpochs.set(key, next)
+    return next
+  }
+
+  laneEpoch(
+    kind: "subscriber" | "publisher" | "peer_connection",
+    identity: string
+  ): number {
+    return this.laneEpochs.get(`${kind}:${identity}`) ?? 0
+  }
+
   recordForRoomSocket(
-    fields: DiagnosticFields,
+    fields: RoomAppDiagnosticInput,
     roomSocketEpoch: number,
     participantId: string
   ): void {
@@ -138,11 +238,14 @@ export class RoomAppTransportDiagnosticTrace {
     }))
   }
 
-  record(fields: DiagnosticFields): void {
+  record(fields: RoomAppDiagnosticInput): void {
     if (!this.enabledValue) return
     this.events.push({
       at: Date.now(),
       browserId: this.browserId,
+      ...(fields.event === "lane_transition"
+        ? { component: fields.component ?? "browser" }
+        : {}),
       participantId: this.participantId,
       sessionEpoch: this.sessionEpoch,
       roomSocketEpoch: this.roomSocketEpoch,

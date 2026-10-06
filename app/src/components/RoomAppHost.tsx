@@ -15,6 +15,7 @@ import {
   type RoomAppTransportEnvelope,
   type RoomAppAgentRequestEnvelope,
 } from "../common/roomApp"
+import type { RoomAppDiagnosticInput } from "../common/roomAppTransportDiagnostics"
 import type {
   RuntimeCapabilityOperation,
   RuntimeCapabilityResult,
@@ -71,6 +72,7 @@ interface RoomAppHostProps {
     action?: string
     args?: Record<string, unknown>
   }) => Promise<RuntimeCapabilityResult>
+  recordTransportDiagnostic?: (fields: RoomAppDiagnosticInput) => void
   sendGeneratedState?: (
     appInstanceId: string,
     expectedRevision: number,
@@ -153,6 +155,7 @@ export default function RoomAppHost({
   generatedAppTaskRequestId,
   generatedAppAgentParticipantId,
   requestGeneratedCapability,
+  recordTransportDiagnostic,
   sendGeneratedState,
   subscribeGeneratedState,
   onClose,
@@ -348,6 +351,34 @@ export default function RoomAppHost({
           !generatedAppAgentParticipantId ||
           !requestGeneratedCapability
         ) {
+          const reason = !generatedAppAgentParticipantId
+            ? "originating_agent_missing"
+            : "capability_not_routable"
+          recordTransportDiagnostic?.({
+            event: "lane_transition",
+            component: "room_app_host",
+            lane: "participant_direct_reliable",
+            transition: "capability_request",
+            recoveryOwner: "none",
+          })
+          recordTransportDiagnostic?.({
+            event: "lane_transition",
+            component: "room_app_host",
+            lane: "participant_direct_reliable",
+            transition: "route_check",
+            reason,
+          })
+          recordTransportDiagnostic?.({
+            event: "lane_transition",
+            component: "room_app_host",
+            lane: "participant_direct_reliable",
+            transition: "rejected",
+            reason,
+            recoveryOwner:
+              reason === "originating_agent_missing"
+                ? "none"
+                : "room_projection",
+          })
           post({
             type: "capability_result",
             appInstanceId,
@@ -474,6 +505,7 @@ export default function RoomAppHost({
     onReady,
     participants,
     post,
+    recordTransportDiagnostic,
     requestGeneratedCapability,
     generatedAppTaskRequestId,
     generatedAppAgentParticipantId,
