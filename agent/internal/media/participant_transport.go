@@ -417,9 +417,6 @@ func (t *RuntimeParticipantTransport) Update(ctx context.Context, projection typ
 		retireParticipantDataChannel(lane.channel)
 	}
 	rest := NewSfuRestClient(t.siteOrigin, t.handle)
-	if err := t.closePendingParticipantDataChannels(session, rest); err != nil {
-		return participantTransportFailureAt(ParticipantTransportFailureAllocationFailed, ParticipantTransportFailureStageCleanupRetiredAllocation, err)
-	}
 	t.mu.Lock()
 	if t.closed || t.session != session || t.engine != engine || t.ctx != transportCtx {
 		t.mu.Unlock()
@@ -447,6 +444,15 @@ func (t *RuntimeParticipantTransport) Update(ctx context.Context, projection typ
 		channel := currentOutbound[source.ParticipantID]
 		if currentPeerSessions[source.ParticipantID] != source.SessionID || channel == nil || !channel.Ready() {
 			newSources = append(newSources, source)
+		}
+	}
+	// An unresolved retired allocation must gate new SFU allocation, where
+	// stale upstream resources could conflict. Route-only updates can commit
+	// first on healthy unchanged lanes, then retry cleanup without delaying
+	// their authorization metadata.
+	if len(newSources) > 0 {
+		if err := t.closePendingParticipantDataChannels(session, rest); err != nil {
+			return participantTransportFailureAt(ParticipantTransportFailureAllocationFailed, ParticipantTransportFailureStageCleanupRetiredAllocation, err)
 		}
 	}
 	newOutbound := make(map[string]reliableParticipantDataChannel, len(newSources))
@@ -543,12 +549,16 @@ func (t *RuntimeParticipantTransport) Update(ctx context.Context, projection typ
 		routes[participantRouteKey{appInstanceID: route.AppInstanceID, humanParticipantID: route.HumanParticipantID}] = route
 	}
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	if t.closed || t.session != session || t.engine != engine || t.ctx != transportCtx || transportCtx.Err() != nil {
+		t.mu.Unlock()
 		return errors.New("participant_data_transport_closed")
 	}
 	t.routes, t.sources, t.outbound, t.peerSessions, t.channelTokens, t.channelAllocations = routes, activeSources, outbound, peerSessions, channelTokens, channelAllocations
 	committed = true
+	t.mu.Unlock()
+	if len(newSources) == 0 {
+		_ = t.closePendingParticipantDataChannels(session, rest)
+	}
 	return nil
 }
 
