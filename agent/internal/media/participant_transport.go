@@ -110,6 +110,10 @@ type participantRouteKey struct {
 	humanParticipantID string
 }
 
+type retiredParticipantDataLane struct {
+	channel reliableParticipantDataChannel
+}
+
 // RuntimeParticipantTransport owns a media-free Pion connection for the
 // currently authorized participant-pair projection. Its first consumer is
 // Generated App capability RPC. It has no queue: messages are admitted only
@@ -134,6 +138,8 @@ type RuntimeParticipantTransport struct {
 	sources                  map[string]string // local pairwise publisher label -> Human participant id
 	peerSessions             map[string]string // Human participant id -> Room-projected SFU session
 	channelTokens            map[string]any    // Human participant id -> exact current Engine channel object
+	channelAllocations       map[string]uint16 // Human participant id -> committed allocation on session
+	pendingCloseIDs          []uint16          // Retired allocations awaiting confirmed SFU close
 	inflight                 chan struct{}
 	seen                     map[string]time.Time
 	readyUpdate              func(session string, ready bool) error
@@ -271,6 +277,7 @@ func (t *RuntimeParticipantTransport) Start(ctx context.Context, projection type
 	sources := make(map[string]string, len(projection.Sources))
 	peerSessions := make(map[string]string, len(projection.Sources))
 	channelTokens := make(map[string]any, len(projection.Sources))
+	channelAllocations := make(map[string]uint16, len(projection.Sources))
 	channelsReady := make([]*ParticipantDataChannel, 0, len(projection.Sources))
 	for i, source := range projection.Sources {
 		label := participantDirectReliableChannelName(t.handle.ParticipantID, source.ParticipantID)
@@ -282,6 +289,7 @@ func (t *RuntimeParticipantTransport) Start(ctx context.Context, projection type
 		sources[label] = channelHumans[i]
 		peerSessions[source.ParticipantID] = source.SessionID
 		channelTokens[source.ParticipantID] = channel
+		channelAllocations[source.ParticipantID] = ids[i]
 		outbound[source.ParticipantID] = channel
 	}
 	allReady := func() bool {
@@ -312,7 +320,7 @@ func (t *RuntimeParticipantTransport) Start(ctx context.Context, projection type
 		t.mu.Unlock()
 		return fail(errors.New("participant_data_transport_closed"))
 	}
-	t.session, t.engine, t.outbound, t.routes, t.sources, t.peerSessions, t.channelTokens = session, engine, outbound, routes, sources, peerSessions, channelTokens
+	t.session, t.engine, t.outbound, t.routes, t.sources, t.peerSessions, t.channelTokens, t.channelAllocations = session, engine, outbound, routes, sources, peerSessions, channelTokens, channelAllocations
 	t.mu.Unlock()
 	if err := t.publishReadyAndCheckCurrent(session, engine, generation); err != nil {
 		return fail(err)
@@ -380,8 +388,12 @@ func (t *RuntimeParticipantTransport) Update(ctx context.Context, projection typ
 	}
 	t.mu.Unlock()
 	retired := t.deauthorizeParticipantProjection(desiredSources, desiredRoutes)
-	for _, channel := range retired {
-		retireParticipantDataChannel(channel)
+	for _, lane := range retired {
+		retireParticipantDataChannel(lane.channel)
+	}
+	rest := NewSfuRestClient(t.siteOrigin, t.handle)
+	if err := t.closePendingParticipantDataChannels(session, rest); err != nil {
+		return participantTransportFailure(ParticipantTransportFailureAllocationFailed, err)
 	}
 	t.mu.Lock()
 	if t.closed || t.session != session || t.engine != engine || t.ctx != transportCtx {
@@ -390,11 +402,15 @@ func (t *RuntimeParticipantTransport) Update(ctx context.Context, projection typ
 	}
 	currentOutbound := make(map[string]reliableParticipantDataChannel, len(t.outbound))
 	currentPeerSessions := make(map[string]string, len(t.peerSessions))
+	currentAllocations := make(map[string]uint16, len(t.channelAllocations))
 	for id, channel := range t.outbound {
 		currentOutbound[id] = channel
 	}
 	for id, peerSession := range t.peerSessions {
 		currentPeerSessions[id] = peerSession
+	}
+	for id, allocation := range t.channelAllocations {
+		currentAllocations[id] = allocation
 	}
 	t.mu.Unlock()
 	if err := ctx.Err(); err != nil {
@@ -409,7 +425,6 @@ func (t *RuntimeParticipantTransport) Update(ctx context.Context, projection typ
 		}
 	}
 	newOutbound := make(map[string]reliableParticipantDataChannel, len(newSources))
-	rest := NewSfuRestClient(t.siteOrigin, t.handle)
 	var allocatedIDs []uint16
 	committed := false
 	defer func() {
@@ -464,19 +479,31 @@ func (t *RuntimeParticipantTransport) Update(ctx context.Context, projection typ
 	activeSources := make(map[string]string, len(projection.Sources))
 	peerSessions := make(map[string]string, len(projection.Sources))
 	channelTokens := make(map[string]any, len(projection.Sources))
+	channelAllocations := make(map[string]uint16, len(projection.Sources))
 	outbound := make(map[string]reliableParticipantDataChannel, len(projection.Sources))
 	for _, source := range projection.Sources {
 		channel := newOutbound[source.ParticipantID]
+		allocationID, hasAllocation := uint16(0), false
+		if channel != nil && len(newSources) > 0 {
+			for i, newSource := range newSources {
+				if newSource.ParticipantID == source.ParticipantID {
+					allocationID, hasAllocation = allocatedIDs[i], true
+					break
+				}
+			}
+		}
 		if channel == nil && currentPeerSessions[source.ParticipantID] == source.SessionID {
 			channel = currentOutbound[source.ParticipantID]
+			allocationID, hasAllocation = currentAllocations[source.ParticipantID]
 		}
-		if channel == nil {
+		if channel == nil || !hasAllocation {
 			return errors.New("participant_data_transport_unavailable")
 		}
 		label := participantDirectReliableChannelName(t.handle.ParticipantID, source.ParticipantID)
 		activeSources[label] = source.ParticipantID
 		peerSessions[source.ParticipantID] = source.SessionID
 		channelTokens[source.ParticipantID] = channel
+		channelAllocations[source.ParticipantID] = allocationID
 		outbound[source.ParticipantID] = channel
 	}
 	for _, route := range filteredRoutes {
@@ -490,7 +517,7 @@ func (t *RuntimeParticipantTransport) Update(ctx context.Context, projection typ
 	if t.closed || t.session != session || t.engine != engine || t.ctx != transportCtx || transportCtx.Err() != nil {
 		return errors.New("participant_data_transport_closed")
 	}
-	t.routes, t.sources, t.outbound, t.peerSessions, t.channelTokens = routes, activeSources, outbound, peerSessions, channelTokens
+	t.routes, t.sources, t.outbound, t.peerSessions, t.channelTokens, t.channelAllocations = routes, activeSources, outbound, peerSessions, channelTokens, channelAllocations
 	committed = true
 	return nil
 }
@@ -534,7 +561,7 @@ func (t *RuntimeParticipantTransport) waitForParticipantChannelsReady(
 func (t *RuntimeParticipantTransport) deauthorizeParticipantProjection(
 	desiredSources map[string]string,
 	desiredRoutes map[participantRouteKey]types.RuntimeParticipantTransportRoute,
-) []reliableParticipantDataChannel {
+) []retiredParticipantDataLane {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for key, current := range t.routes {
@@ -543,7 +570,7 @@ func (t *RuntimeParticipantTransport) deauthorizeParticipantProjection(
 			delete(t.routes, key)
 		}
 	}
-	retired := make([]reliableParticipantDataChannel, 0)
+	retired := make([]retiredParticipantDataLane, 0)
 	for humanID, oldSession := range t.peerSessions {
 		desiredSession, remains := desiredSources[humanID]
 		oldChannel := t.outbound[humanID]
@@ -557,14 +584,51 @@ func (t *RuntimeParticipantTransport) deauthorizeParticipantProjection(
 		}
 		label := participantDirectReliableChannelName(t.handle.ParticipantID, humanID)
 		delete(t.sources, label)
-		if oldChannel != nil {
-			retired = append(retired, oldChannel)
+		allocationID, hasAllocation := t.channelAllocations[humanID]
+		if hasAllocation {
+			t.pendingCloseIDs = append(t.pendingCloseIDs, allocationID)
+			delete(t.channelAllocations, humanID)
+		}
+		if oldChannel != nil || hasAllocation {
+			retired = append(retired, retiredParticipantDataLane{channel: oldChannel})
 		}
 		delete(t.outbound, humanID)
 		delete(t.peerSessions, humanID)
 		delete(t.channelTokens, humanID)
 	}
 	return retired
+}
+
+// closePendingParticipantDataChannels confirms cleanup of exact allocations
+// retired from current lanes before any replacement is requested. Failed
+// closes remain owned and are retried by the next bounded projection update.
+func (t *RuntimeParticipantTransport) closePendingParticipantDataChannels(session string, rest *SfuRestClient) error {
+	t.mu.Lock()
+	ids := append([]uint16(nil), t.pendingCloseIDs...)
+	t.mu.Unlock()
+	if len(ids) == 0 {
+		return nil
+	}
+	if err := rest.CloseParticipantDataChannels(session, ids); err != nil {
+		return err
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.session != session {
+		return errors.New("participant_data_transport_closed")
+	}
+	closed := make(map[uint16]struct{}, len(ids))
+	for _, id := range ids {
+		closed[id] = struct{}{}
+	}
+	remaining := t.pendingCloseIDs[:0]
+	for _, id := range t.pendingCloseIDs {
+		if _, ok := closed[id]; !ok {
+			remaining = append(remaining, id)
+		}
+	}
+	t.pendingCloseIDs = remaining
+	return nil
 }
 
 func sameParticipantRoute(a, b types.RuntimeParticipantTransportRoute) bool {
@@ -859,6 +923,8 @@ func (t *RuntimeParticipantTransport) Close() {
 	t.sources = nil
 	t.peerSessions = nil
 	t.channelTokens = nil
+	t.channelAllocations = nil
+	t.pendingCloseIDs = nil
 	t.mu.Unlock()
 	if cancel != nil {
 		cancel()

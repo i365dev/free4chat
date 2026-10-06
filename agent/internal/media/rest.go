@@ -262,9 +262,9 @@ func (c *SfuRestClient) CreateParticipantDataChannels(sessionID string, channels
 	return ids, nil
 }
 
-// CloseParticipantDataChannels retires channels allocated on the exact
-// participant transport session. It is used to clean up partial in-place
-// projection updates that cannot make every negotiated channel authoritative.
+// CloseParticipantDataChannels retires exact allocations on the participant
+// transport session. It cleans both committed Human lanes being retired and
+// partial in-place updates that cannot make every new lane authoritative.
 func (c *SfuRestClient) CloseParticipantDataChannels(sessionID string, channelIDs []uint16) error {
 	if sessionID == "" || len(channelIDs) == 0 || len(channelIDs) > 32 {
 		return errors.New("invalid_datachannel_count")
@@ -282,8 +282,41 @@ func (c *SfuRestClient) CloseParticipantDataChannels(sessionID string, channelID
 	body["sessionId"] = sessionID
 	body["purpose"] = string(PurposeParticipantReliable)
 	body["dataChannels"] = channels
-	_, err := c.request("datachannels/close", http.MethodPut, body)
-	return err
+	data, err := c.request("datachannels/close", http.MethodPut, body)
+	if err != nil {
+		return err
+	}
+	results, ok := data["dataChannels"].([]any)
+	if !ok {
+		return errors.New("datachannel_close_results_missing")
+	}
+	requested := make(map[uint16]struct{}, len(channels))
+	for _, id := range channelIDs {
+		requested[id] = struct{}{}
+	}
+	closed := make(map[uint16]struct{}, len(results))
+	for _, result := range results {
+		record, ok := result.(map[string]any)
+		if !ok {
+			continue
+		}
+		idValue, ok := record["id"].(float64)
+		if !ok || idValue < 0 || idValue > 65534 || idValue != float64(uint16(idValue)) {
+			continue
+		}
+		id := uint16(idValue)
+		if _, wasRequested := requested[id]; !wasRequested {
+			continue
+		}
+		errorCode, _ := record["errorCode"].(string)
+		if errorCode == "" || errorCode == "close_track_error" {
+			closed[id] = struct{}{}
+		}
+	}
+	if len(closed) != len(requested) {
+		return errors.New("datachannel_close_unresolved")
+	}
+	return nil
 }
 
 // EstablishDataChannelTransport establishes the initial WebRTC transport

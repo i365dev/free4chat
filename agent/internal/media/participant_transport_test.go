@@ -56,6 +56,17 @@ func validCapabilityTestDescriptor(capabilityID string, observe bool) types.Runt
 	return descriptor
 }
 
+func writeParticipantDataChannelCloseResult(t *testing.T, w http.ResponseWriter, ids []uint16) {
+	t.Helper()
+	results := make([]map[string]any, 0, len(ids))
+	for _, id := range ids {
+		results = append(results, map[string]any{"id": id})
+	}
+	if err := json.NewEncoder(w).Encode(map[string]any{"dataChannels": results}); err != nil {
+		t.Errorf("encode DataChannel close result: %v", err)
+	}
+}
+
 func TestParticipantDataTransportRetiresRotatedHumanLaneAndFencesOldChannel(t *testing.T) {
 	appID := "generated:123e4567-e89b-12d3-a456-426614174000"
 	route := func(humanID string) types.RuntimeParticipantTransportRoute {
@@ -76,6 +87,7 @@ func TestParticipantDataTransportRetiresRotatedHumanLaneAndFencesOldChannel(t *t
 	transport.sources = map[string]string{labelA: "human-a", labelB: "human-b"}
 	transport.peerSessions = map[string]string{"human-a": "session-a", "human-b": "session-b-1"}
 	transport.channelTokens = map[string]any{"human-a": humanA, "human-b": humanB1}
+	transport.channelAllocations = map[string]uint16{"human-a": 42, "human-b": 43}
 	transport.routes = map[participantRouteKey]types.RuntimeParticipantTransportRoute{
 		{appInstanceID: appID, humanParticipantID: "human-a"}: route("human-a"),
 		{appInstanceID: appID, humanParticipantID: "human-b"}: route("human-b"),
@@ -86,8 +98,8 @@ func TestParticipantDataTransportRetiresRotatedHumanLaneAndFencesOldChannel(t *t
 		{appInstanceID: appID, humanParticipantID: "human-a"}: route("human-a"),
 		{appInstanceID: appID, humanParticipantID: "human-b"}: route("human-b"),
 	}
-	for _, channel := range transport.deauthorizeParticipantProjection(desiredSources, desiredRoutes) {
-		retireParticipantDataChannel(channel)
+	for _, lane := range transport.deauthorizeParticipantProjection(desiredSources, desiredRoutes) {
+		retireParticipantDataChannel(lane.channel)
 	}
 	if !humanB1.closed || humanA.closed {
 		t.Fatalf("rotation close state: old B closed=%v, unchanged A closed=%v", humanB1.closed, humanA.closed)
@@ -150,9 +162,9 @@ func TestParticipantDataTransportRetiresRotatedHumanLaneAndFencesOldChannel(t *t
 		desiredSources["human-b"] = sessionID
 		retired := transport.deauthorizeParticipantProjection(desiredSources, desiredRoutes)
 		if len(retired) == 1 {
-			retireParticipantDataChannel(retired[0])
+			retireParticipantDataChannel(retired[0].channel)
 		}
-		if len(retired) != 1 || retired[0] != current || !current.closed {
+		if len(retired) != 1 || retired[0].channel != current || !current.closed {
 			t.Fatalf("rotation %d failed to retire exactly the old B lane: retired=%d closed=%v", rotation, len(retired), current.closed)
 		}
 		current = &capabilityTestChannel{payloads: make(chan []byte, 8), id: uint16(44 + rotation)}
@@ -184,7 +196,7 @@ func TestParticipantDataTransportPartialUpdateClosesAllocatedChannels(t *testing
 			for _, channel := range body.DataChannels {
 				closedIDs = append(closedIDs, channel.ID)
 			}
-			_, _ = io.WriteString(w, `{}`)
+			writeParticipantDataChannelCloseResult(t, w, closedIDs)
 		default:
 			t.Errorf("unexpected cleanup request path %q", r.URL.Path)
 			http.NotFound(w, r)
@@ -231,6 +243,392 @@ func TestParticipantDataTransportPartialUpdateClosesAllocatedChannels(t *testing
 	}
 }
 
+func TestCloseParticipantDataChannelsRequiresResolvedPerIDResult(t *testing.T) {
+	tests := []struct {
+		name    string
+		result  string
+		wantErr bool
+	}{
+		{name: "closed", result: `{"dataChannels":[{"id":7}]}`},
+		{name: "already absent", result: `{"dataChannels":[{"id":7,"errorCode":"close_track_error"}]}`},
+		{name: "provider failure", result: `{"dataChannels":[{"id":7,"errorCode":"internal_error"}]}`, wantErr: true},
+		{name: "unreported", result: `{"dataChannels":[]}`, wantErr: true},
+		{name: "missing result array", result: `{}`, wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, test.result)
+			}))
+			defer server.Close()
+			client := NewSfuRestClient(server.URL, DecodedHandle{Room: "room", ParticipantID: "agent-a", ParticipantToken: "token"})
+			err := client.CloseParticipantDataChannels("agent-session", []uint16{7})
+			if (err != nil) != test.wantErr {
+				t.Fatalf("close result error = %v, wantErr=%v", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestParticipantDataTransportSessionRotationClosesCommittedAllocation(t *testing.T) {
+	type operation struct {
+		kind string
+		id   uint16
+	}
+	var operations []operation
+	nextAllocationID := uint16(42)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/sfu/datachannels/new":
+			var body struct {
+				DataChannels []map[string]any `json:"dataChannels"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.DataChannels) != 1 {
+				t.Errorf("decode DataChannel allocation: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			id := nextAllocationID
+			nextAllocationID++
+			operations = append(operations, operation{kind: "new", id: id})
+			_, _ = io.WriteString(w, `{"dataChannels":[{"id":`+strconv.Itoa(int(id))+`}]}`)
+		case "/api/sfu/datachannels/close":
+			var body struct {
+				DataChannels []struct {
+					ID uint16 `json:"id"`
+				} `json:"dataChannels"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode DataChannel close: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			for _, channel := range body.DataChannels {
+				operations = append(operations, operation{kind: "close", id: channel.ID})
+			}
+			ids := make([]uint16, 0, len(body.DataChannels))
+			for _, channel := range body.DataChannels {
+				ids = append(ids, channel.ID)
+			}
+			writeParticipantDataChannelCloseResult(t, w, ids)
+		default:
+			t.Errorf("unexpected participant transport request %q", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	engine := NewEngine(EngineEvents{}, nil)
+	if err := engine.Create(); err != nil {
+		t.Skipf("Pion unavailable: %v", err)
+	}
+	defer engine.Close()
+	transport := NewRuntimeParticipantTransport(server.URL, DecodedHandle{ParticipantID: "agent-a"},
+		&capabilityTestHandler{descriptors: []types.RuntimeCapabilityProjection{validCapabilityTestDescriptor("printer_status", true)}}, nil)
+	transport.session = "agent-session"
+	transport.engine = engine
+	transport.ctx = context.Background()
+	transport.waitChannelsReady = func(context.Context, context.Context, []reliableParticipantDataChannel, time.Duration) error {
+		return nil
+	}
+	transport.createParticipantChannel = func(_ string, id uint16) (reliableParticipantDataChannel, error) {
+		return &capabilityTestChannel{payloads: make(chan []byte, 1), id: id}, nil
+	}
+	appID := "generated:123e4567-e89b-12d3-a456-426614174000"
+	projection := func(sessionID string) types.RuntimeParticipantTransportProjection {
+		return types.RuntimeParticipantTransportProjection{
+			Routes: []types.RuntimeParticipantTransportRoute{{
+				AppInstanceID: appID, BundleRevision: 1, TaskRequestID: "task-a",
+				AgentParticipantID: "agent-a", HumanParticipantID: "human-a",
+				RuntimeHostID: "11111111-2222-3333-4444-555555555555", CapabilityIDs: []string{"printer_status"},
+			}},
+			Sources: []types.RuntimeParticipantTransportSource{{ParticipantID: "human-a", SessionID: sessionID}},
+		}
+	}
+
+	if err := transport.Update(context.Background(), projection("human-session-H1")); err != nil {
+		t.Fatalf("commit H1 lane: %v", err)
+	}
+	oldLane := transport.outbound["human-a"].(*capabilityTestChannel)
+	if !oldLane.Ready() || oldLane.ID() != 42 {
+		t.Fatalf("H1 lane was not ready on expected committed id: ready=%v id=%d", oldLane.Ready(), oldLane.ID())
+	}
+	if err := transport.Update(context.Background(), projection("human-session-H2")); err != nil {
+		t.Fatalf("replace H1 with H2: %v", err)
+	}
+	if !oldLane.closed {
+		t.Fatal("H1 local Pion DataChannel was not retired before H2 became current")
+	}
+	want := []operation{{kind: "new", id: 42}, {kind: "close", id: 42}, {kind: "new", id: 43}}
+	if !reflect.DeepEqual(operations, want) {
+		t.Fatalf("SFU lifecycle operations = %v, want close committed H1 id X before allocating H2: %v", operations, want)
+	}
+	newLane := transport.outbound["human-a"].(*capabilityTestChannel)
+	if got := newLane.ID(); got != 43 || !newLane.Ready() {
+		t.Fatalf("H2 lane = id %d ready %v, want committed replacement Y ready", got, newLane.Ready())
+	}
+}
+
+func TestParticipantDataTransportRepeatedRotationRemovalAndRouteOnlyUpdate(t *testing.T) {
+	type operation struct {
+		kind string
+		id   uint16
+	}
+	var operations []operation
+	active := map[uint16]bool{}
+	nextID := uint16(42)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/sfu/datachannels/new":
+			var body struct {
+				DataChannels []map[string]any `json:"dataChannels"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode DataChannel allocation: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			channels := make([]map[string]any, 0, len(body.DataChannels))
+			for range body.DataChannels {
+				id := nextID
+				nextID++
+				active[id] = true
+				operations = append(operations, operation{kind: "new", id: id})
+				channels = append(channels, map[string]any{"id": id})
+			}
+			payload, _ := json.Marshal(map[string]any{"dataChannels": channels})
+			_, _ = w.Write(payload)
+		case "/api/sfu/datachannels/close":
+			var body struct {
+				DataChannels []struct {
+					ID uint16 `json:"id"`
+				} `json:"dataChannels"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode DataChannel close: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			for _, channel := range body.DataChannels {
+				if !active[channel.ID] {
+					t.Errorf("Runtime closed unknown or already retired allocation %d", channel.ID)
+				}
+				delete(active, channel.ID)
+				operations = append(operations, operation{kind: "close", id: channel.ID})
+			}
+			ids := make([]uint16, 0, len(body.DataChannels))
+			for _, channel := range body.DataChannels {
+				ids = append(ids, channel.ID)
+			}
+			writeParticipantDataChannelCloseResult(t, w, ids)
+		default:
+			t.Errorf("unexpected participant transport request %q", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	engine := NewEngine(EngineEvents{}, nil)
+	if err := engine.Create(); err != nil {
+		t.Skipf("Pion unavailable: %v", err)
+	}
+	defer engine.Close()
+	transport := NewRuntimeParticipantTransport(server.URL, DecodedHandle{ParticipantID: "agent-a"},
+		&capabilityTestHandler{descriptors: []types.RuntimeCapabilityProjection{validCapabilityTestDescriptor("printer_status", true)}}, nil)
+	transport.session = "agent-session"
+	transport.engine = engine
+	transport.ctx = context.Background()
+	transport.waitChannelsReady = func(context.Context, context.Context, []reliableParticipantDataChannel, time.Duration) error {
+		return nil
+	}
+	transport.createParticipantChannel = func(_ string, id uint16) (reliableParticipantDataChannel, error) {
+		return &capabilityTestChannel{payloads: make(chan []byte, 1), id: id}, nil
+	}
+	appID := "generated:123e4567-e89b-12d3-a456-426614174000"
+	makeProjection := func(aSession, bSession string, revision int64, includeA bool) types.RuntimeParticipantTransportProjection {
+		routes := make([]types.RuntimeParticipantTransportRoute, 0, 2)
+		sources := make([]types.RuntimeParticipantTransportSource, 0, 2)
+		addHuman := func(human, session string) {
+			routes = append(routes, types.RuntimeParticipantTransportRoute{
+				AppInstanceID: appID, BundleRevision: revision, TaskRequestID: "task-a",
+				AgentParticipantID: "agent-a", HumanParticipantID: human,
+				RuntimeHostID: "11111111-2222-3333-4444-555555555555", CapabilityIDs: []string{"printer_status"},
+			})
+			sources = append(sources, types.RuntimeParticipantTransportSource{ParticipantID: human, SessionID: session})
+		}
+		if includeA {
+			addHuman("human-a", aSession)
+		}
+		addHuman("human-b", bSession)
+		return types.RuntimeParticipantTransportProjection{Routes: routes, Sources: sources}
+	}
+	update := func(projection types.RuntimeParticipantTransportProjection) {
+		t.Helper()
+		if err := transport.Update(context.Background(), projection); err != nil {
+			t.Fatalf("participant transport update failed: %v", err)
+		}
+	}
+
+	update(makeProjection("H1", "HB", 1, true))
+	var priorA *capabilityTestChannel
+	for _, nextSession := range []string{"H2", "H3", "H4"} {
+		priorA = transport.outbound["human-a"].(*capabilityTestChannel)
+		update(makeProjection(nextSession, "HB", 1, true))
+		if !priorA.closed {
+			t.Fatalf("Human A lane was not locally retired for session %s", nextSession)
+		}
+	}
+	beforeRouteOnly := append([]operation(nil), operations...)
+	update(makeProjection("H4", "HB", 2, true))
+	if !reflect.DeepEqual(operations, beforeRouteOnly) {
+		t.Fatalf("route-only revision churned healthy DataChannels: before=%v after=%v", beforeRouteOnly, operations)
+	}
+	finalALane := transport.outbound["human-a"].(*capabilityTestChannel)
+	update(makeProjection("", "HB", 2, false))
+	if !finalALane.closed {
+		t.Fatal("removed Human route did not retire its local lane")
+	}
+	if len(transport.outbound) != 1 || transport.outbound["human-b"] == nil || transport.outbound["human-a"] != nil {
+		t.Fatalf("Human removal retained or disrupted the wrong lane: %v", transport.outbound)
+	}
+	want := []operation{
+		{kind: "new", id: 42}, {kind: "new", id: 43},
+		{kind: "close", id: 42}, {kind: "new", id: 44},
+		{kind: "close", id: 44}, {kind: "new", id: 45},
+		{kind: "close", id: 45}, {kind: "new", id: 46},
+		{kind: "close", id: 46},
+	}
+	if !reflect.DeepEqual(operations, want) {
+		t.Fatalf("rotation/removal SFU operations = %v, want %v", operations, want)
+	}
+	if len(active) != 1 || !active[43] {
+		t.Fatalf("stale SFU allocations accumulated after rotation/removal: %v", active)
+	}
+}
+
+func TestParticipantDataTransportNewerProjectionFencesAllocationCleanup(t *testing.T) {
+	type operation struct {
+		kind string
+		id   uint16
+	}
+	var operations []operation
+	active := map[uint16]bool{}
+	nextID := uint16(42)
+	closeEntered := make(chan struct{})
+	releaseClose := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/sfu/datachannels/new":
+			id := nextID
+			nextID++
+			active[id] = true
+			operations = append(operations, operation{kind: "new", id: id})
+			_, _ = io.WriteString(w, `{"dataChannels":[{"id":`+strconv.Itoa(int(id))+`}]}`)
+		case "/api/sfu/datachannels/close":
+			var body struct {
+				DataChannels []struct {
+					ID uint16 `json:"id"`
+				} `json:"dataChannels"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode DataChannel close: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			if len(body.DataChannels) != 1 {
+				t.Errorf("close request has %d channels, want one", len(body.DataChannels))
+			}
+			select {
+			case closeEntered <- struct{}{}:
+			default:
+			}
+			<-releaseClose
+			for _, channel := range body.DataChannels {
+				if !active[channel.ID] {
+					t.Errorf("Runtime closed unknown or already retired allocation %d", channel.ID)
+				}
+				delete(active, channel.ID)
+				operations = append(operations, operation{kind: "close", id: channel.ID})
+			}
+			ids := make([]uint16, 0, len(body.DataChannels))
+			for _, channel := range body.DataChannels {
+				ids = append(ids, channel.ID)
+			}
+			writeParticipantDataChannelCloseResult(t, w, ids)
+		default:
+			t.Errorf("unexpected participant transport request %q", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	engine := NewEngine(EngineEvents{}, nil)
+	if err := engine.Create(); err != nil {
+		t.Skipf("Pion unavailable: %v", err)
+	}
+	defer engine.Close()
+	transport := NewRuntimeParticipantTransport(server.URL, DecodedHandle{ParticipantID: "agent-a"},
+		&capabilityTestHandler{descriptors: []types.RuntimeCapabilityProjection{validCapabilityTestDescriptor("printer_status", true)}}, nil)
+	transport.session = "agent-session"
+	transport.engine = engine
+	transport.ctx = context.Background()
+	transport.waitChannelsReady = func(context.Context, context.Context, []reliableParticipantDataChannel, time.Duration) error {
+		return nil
+	}
+	transport.createParticipantChannel = func(_ string, id uint16) (reliableParticipantDataChannel, error) {
+		return &capabilityTestChannel{payloads: make(chan []byte, 1), id: id}, nil
+	}
+	appID := "generated:123e4567-e89b-12d3-a456-426614174000"
+	projection := func(sessionID string) types.RuntimeParticipantTransportProjection {
+		return types.RuntimeParticipantTransportProjection{
+			Routes: []types.RuntimeParticipantTransportRoute{{
+				AppInstanceID: appID, BundleRevision: 1, TaskRequestID: "task-a",
+				AgentParticipantID: "agent-a", HumanParticipantID: "human-a",
+				RuntimeHostID: "11111111-2222-3333-4444-555555555555", CapabilityIDs: []string{"printer_status"},
+			}},
+			Sources: []types.RuntimeParticipantTransportSource{{ParticipantID: "human-a", SessionID: sessionID}},
+		}
+	}
+	if err := transport.Update(context.Background(), projection("H1")); err != nil {
+		t.Fatalf("commit H1 lane: %v", err)
+	}
+	h2Done := make(chan error, 1)
+	go func() { h2Done <- transport.Update(context.Background(), projection("H2")) }()
+	select {
+	case <-closeEntered:
+	case <-time.After(time.Second):
+		t.Fatal("H2 update did not begin closing the committed H1 allocation")
+	}
+	h3Done := make(chan error, 1)
+	h3Started := make(chan struct{})
+	go func() {
+		close(h3Started)
+		h3Done <- transport.Update(context.Background(), projection("H3"))
+	}()
+	<-h3Started
+	close(releaseClose)
+	if err := <-h2Done; err != nil {
+		t.Fatalf("H2 update failed: %v", err)
+	}
+	if err := <-h3Done; err != nil {
+		t.Fatalf("newer H3 update failed: %v", err)
+	}
+	final := transport.outbound["human-a"].(*capabilityTestChannel)
+	if final.ID() != 44 || transport.peerSessions["human-a"] != "H3" {
+		t.Fatalf("newest projection not committed: id=%d session=%s", final.ID(), transport.peerSessions["human-a"])
+	}
+	want := []operation{{kind: "new", id: 42}, {kind: "close", id: 42}, {kind: "new", id: 43}, {kind: "close", id: 43}, {kind: "new", id: 44}}
+	if !reflect.DeepEqual(operations, want) {
+		t.Fatalf("fenced SFU operations = %v, want %v", operations, want)
+	}
+	if len(active) != 1 || !active[44] {
+		t.Fatalf("stale update closed or leaked the newer allocation: %v", active)
+	}
+}
+
 func TestParticipantDataTransportH1ToH2FailureThenReplayRecoversRoute(t *testing.T) {
 	var mu sync.Mutex
 	var allocated []uint16
@@ -253,7 +651,21 @@ func TestParticipantDataTransportH1ToH2FailureThenReplayRecoversRoute(t *testing
 			mu.Unlock()
 			_, _ = io.WriteString(w, `{"dataChannels":[{"id":`+strconv.Itoa(int(id))+`}]}`)
 		case "/api/sfu/datachannels/close":
-			_, _ = io.WriteString(w, `{}`)
+			var body struct {
+				DataChannels []struct {
+					ID uint16 `json:"id"`
+				} `json:"dataChannels"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode DataChannel close: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			ids := make([]uint16, 0, len(body.DataChannels))
+			for _, channel := range body.DataChannels {
+				ids = append(ids, channel.ID)
+			}
+			writeParticipantDataChannelCloseResult(t, w, ids)
 		default:
 			t.Errorf("unexpected participant transport request %q", r.URL.Path)
 			http.NotFound(w, r)
@@ -288,6 +700,7 @@ func TestParticipantDataTransportH1ToH2FailureThenReplayRecoversRoute(t *testing
 	transport.sources = map[string]string{oldLabel: "human-a"}
 	transport.peerSessions = map[string]string{"human-a": "session-H1"}
 	transport.channelTokens = map[string]any{"human-a": oldLane}
+	transport.channelAllocations = map[string]uint16{"human-a": 41}
 
 	var waits int
 	transport.waitChannelsReady = func(context.Context, context.Context, []reliableParticipantDataChannel, time.Duration) error {
