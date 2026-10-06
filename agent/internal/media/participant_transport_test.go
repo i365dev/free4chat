@@ -271,6 +271,177 @@ func TestCloseParticipantDataChannelsRequiresResolvedPerIDResult(t *testing.T) {
 	}
 }
 
+func TestCreateParticipantDataChannelsPreservesPartialResultsAndSanitizesErrors(t *testing.T) {
+	tests := []struct {
+		name      string
+		status    int
+		body      string
+		wantIDs   []uint16
+		wantClass string
+		wantErr   bool
+	}{
+		{
+			name:    "partial item failure",
+			body:    `{"dataChannels":[{"id":42},{"errorCode":"repeated_local_track_error","errorDescription":"private description"}]}`,
+			wantIDs: []uint16{42}, wantClass: "repeated_local_track_error", wantErr: true,
+		},
+		{
+			name:      "request level session error",
+			status:    http.StatusConflict,
+			body:      `{"error":"private request detail","errorCode":"session_error","errorDescription":"private description"}`,
+			wantClass: "session_error", wantErr: true,
+		},
+		{
+			name:    "malformed and unreported item",
+			body:    `{"dataChannels":[{"id":43},{}]}`,
+			wantIDs: []uint16{43}, wantClass: "unknown", wantErr: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if test.status != 0 {
+					w.WriteHeader(test.status)
+				}
+				_, _ = io.WriteString(w, test.body)
+			}))
+			defer server.Close()
+			client := NewSfuRestClient(server.URL, DecodedHandle{ParticipantID: "agent-a"})
+			ids, err := client.CreateParticipantDataChannels("session", []map[string]any{{}, {}})
+			if !reflect.DeepEqual(ids, test.wantIDs) {
+				t.Fatalf("allocation ids = %v, want %v", ids, test.wantIDs)
+			}
+			if (err != nil) != test.wantErr {
+				t.Fatalf("allocation error = %v, wantErr=%v", err, test.wantErr)
+			}
+			if err != nil {
+				var providerError *SfuProviderError
+				if !errors.As(err, &providerError) || providerError.Class != test.wantClass {
+					t.Fatalf("provider error = %#v, want sanitized class %q", err, test.wantClass)
+				}
+				if strings.Contains(err.Error(), "private") || strings.Contains(err.Error(), "description") {
+					t.Fatalf("provider details leaked through error: %q", err)
+				}
+			}
+		})
+	}
+}
+
+func TestParticipantDataTransportFailureStagesAndPartialAllocationOwnership(t *testing.T) {
+	appID := "generated:123e4567-e89b-12d3-a456-426614174000"
+	projection := func(session string) types.RuntimeParticipantTransportProjection {
+		return types.RuntimeParticipantTransportProjection{
+			Routes: []types.RuntimeParticipantTransportRoute{{
+				AppInstanceID: appID, BundleRevision: 1, TaskRequestID: "task",
+				AgentParticipantID: "agent-a", HumanParticipantID: "human-a",
+				RuntimeHostID: "11111111-2222-3333-4444-555555555555", CapabilityIDs: []string{"printer_status"},
+			}},
+			Sources: []types.RuntimeParticipantTransportSource{{ParticipantID: "human-a", SessionID: session}},
+		}
+	}
+	handler := &capabilityTestHandler{descriptors: []types.RuntimeCapabilityProjection{validCapabilityTestDescriptor("printer_status", true)}}
+
+	for _, closeResult := range []struct {
+		name      string
+		body      string
+		wantError bool
+		wantClass string
+	}{
+		{name: "closed", body: `{"dataChannels":[{"id":7}]}`},
+		{name: "already closed", body: `{"dataChannels":[{"id":7,"errorCode":"close_track_error"}]}`},
+		{name: "unresolved close", body: `{"dataChannels":[{"id":7,"errorCode":"internal_error"}]}`, wantError: true, wantClass: "internal_error"},
+		{name: "unreported close", body: `{"dataChannels":[]}`, wantError: true, wantClass: "unknown"},
+	} {
+		t.Run("cleanup_"+closeResult.name, func(t *testing.T) {
+			var operations []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case "/api/sfu/datachannels/close":
+					operations = append(operations, "close")
+					_, _ = io.WriteString(w, closeResult.body)
+				case "/api/sfu/datachannels/new":
+					operations = append(operations, "new")
+					_, _ = io.WriteString(w, `{"dataChannels":[{"id":8}]}`)
+				default:
+					t.Errorf("unexpected request path %q", r.URL.Path)
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			transport := NewRuntimeParticipantTransport(server.URL, DecodedHandle{ParticipantID: "agent-a"}, handler, nil)
+			transport.session, transport.ctx = "agent-session", context.Background()
+			transport.engine = NewEngine(EngineEvents{}, nil)
+			transport.waitChannelsReady = func(context.Context, context.Context, []reliableParticipantDataChannel, time.Duration) error {
+				return nil
+			}
+			transport.createParticipantChannel = func(_ string, id uint16) (reliableParticipantDataChannel, error) {
+				return &capabilityTestChannel{payloads: make(chan []byte, 1), id: id}, nil
+			}
+			old := &capabilityTestChannel{payloads: make(chan []byte, 1), id: 7}
+			transport.outbound = map[string]reliableParticipantDataChannel{"human-a": old}
+			transport.peerSessions = map[string]string{"human-a": "H1"}
+			transport.channelAllocations = map[string]uint16{"human-a": 7}
+			label := participantDirectReliableChannelName("agent-a", "human-a")
+			transport.sources = map[string]string{label: "human-a"}
+			key := participantRouteKey{appInstanceID: appID, humanParticipantID: "human-a"}
+			transport.routes = map[participantRouteKey]types.RuntimeParticipantTransportRoute{key: projection("H1").Routes[0]}
+
+			err := transport.Update(context.Background(), projection("H2"))
+			var failure *ParticipantTransportFailure
+			if closeResult.wantError {
+				if !errors.As(err, &failure) || failure.Stage != ParticipantTransportFailureStageCleanupRetiredAllocation || failure.ProviderErrorClass != closeResult.wantClass {
+					t.Fatalf("cleanup failure = %#v, want cleanup stage/provider class %q", err, closeResult.wantClass)
+				}
+				if !reflect.DeepEqual(operations, []string{"close"}) || !reflect.DeepEqual(transport.pendingCloseIDs, []uint16{7}) {
+					t.Fatalf("unresolved cleanup started replacement or lost ownership: operations=%v pending=%v", operations, transport.pendingCloseIDs)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("replacement after satisfied cleanup failed: %v", err)
+			}
+			if !reflect.DeepEqual(operations, []string{"close", "new"}) {
+				t.Fatalf("operations = %v, want close before new", operations)
+			}
+		})
+	}
+
+	t.Run("partial replacement remains owned after cleanup failure", func(t *testing.T) {
+		closeCalls := 0
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.URL.Path {
+			case "/api/sfu/datachannels/new":
+				_, _ = io.WriteString(w, `{"dataChannels":[{"id":42},{"errorCode":"repeated_local_track_error","errorDescription":"private"}]}`)
+			case "/api/sfu/datachannels/close":
+				closeCalls++
+				_, _ = io.WriteString(w, `{"dataChannels":[{"id":42,"errorCode":"internal_error"}]}`)
+			default:
+				t.Errorf("unexpected request path %q", r.URL.Path)
+				http.NotFound(w, r)
+			}
+		}))
+		defer server.Close()
+		transport := NewRuntimeParticipantTransport(server.URL, DecodedHandle{ParticipantID: "agent-a"}, handler, nil)
+		transport.session, transport.ctx = "agent-session", context.Background()
+		transport.engine = NewEngine(EngineEvents{}, nil)
+		want := projection("H2")
+		want.Routes = append(want.Routes, want.Routes[0])
+		want.Routes[1].HumanParticipantID = "human-b"
+		want.Sources = append(want.Sources, types.RuntimeParticipantTransportSource{ParticipantID: "human-b", SessionID: "H2b"})
+		err := transport.Update(context.Background(), want)
+		var failure *ParticipantTransportFailure
+		if !errors.As(err, &failure) || failure.Stage != ParticipantTransportFailureStageAllocateReplacement || failure.ProviderErrorClass != "repeated_local_track_error" {
+			t.Fatalf("replacement failure = %#v, want allocation stage/repeated_local_track_error", err)
+		}
+		if closeCalls != 1 || !reflect.DeepEqual(transport.pendingCloseIDs, []uint16{42}) {
+			t.Fatalf("partial allocation ownership lost: closeCalls=%d pending=%v", closeCalls, transport.pendingCloseIDs)
+		}
+	})
+}
+
 func TestParticipantDataTransportSessionRotationClosesCommittedAllocation(t *testing.T) {
 	type operation struct {
 		kind string
