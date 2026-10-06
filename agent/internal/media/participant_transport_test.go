@@ -680,6 +680,340 @@ func TestParticipantDataTransportRepeatedRotationRemovalAndRouteOnlyUpdate(t *te
 	}
 }
 
+func TestParticipantDataTransportUnrelatedCleanupFailureDoesNotBlockHealthyRouteOnlyUpdate(t *testing.T) {
+	type operation struct {
+		kind  string
+		human string
+	}
+	var operations []operation
+	allocationOwner := make(map[uint16]string)
+	nextID := uint16(41)
+	cleanupBFails := true
+	blockNextBCleanup := make(chan struct{}, 1)
+	bCleanupEntered := make(chan struct{}, 1)
+	releaseBCleanup := make(chan struct{})
+	handler := &capabilityTestHandler{
+		calls:       make(chan types.ResidentCapabilityRequest, 4),
+		descriptors: []types.RuntimeCapabilityProjection{validCapabilityTestDescriptor("printer_status", true)},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/sfu/datachannels/new":
+			var body struct {
+				DataChannels []struct {
+					PeerParticipantID string `json:"peerParticipantId"`
+				} `json:"dataChannels"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode DataChannel allocation: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			results := make([]map[string]any, 0, len(body.DataChannels))
+			for _, channel := range body.DataChannels {
+				id := nextID
+				nextID++
+				allocationOwner[id] = channel.PeerParticipantID
+				operations = append(operations, operation{kind: "new", human: channel.PeerParticipantID})
+				results = append(results, map[string]any{"id": id})
+			}
+			if err := json.NewEncoder(w).Encode(map[string]any{"dataChannels": results}); err != nil {
+				t.Errorf("encode DataChannel allocation: %v", err)
+			}
+		case "/api/sfu/datachannels/close":
+			var body struct {
+				DataChannels []struct {
+					ID uint16 `json:"id"`
+				} `json:"dataChannels"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode DataChannel cleanup: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			results := make([]map[string]any, 0, len(body.DataChannels))
+			for _, channel := range body.DataChannels {
+				human := allocationOwner[channel.ID]
+				operations = append(operations, operation{kind: "close", human: human})
+				result := map[string]any{"id": channel.ID}
+				if human == "human-b" && cleanupBFails {
+					select {
+					case <-blockNextBCleanup:
+						bCleanupEntered <- struct{}{}
+						<-releaseBCleanup
+					default:
+					}
+					result["errorCode"] = "internal_error"
+				}
+				results = append(results, result)
+			}
+			if err := json.NewEncoder(w).Encode(map[string]any{"dataChannels": results}); err != nil {
+				t.Errorf("encode DataChannel cleanup: %v", err)
+			}
+		default:
+			t.Errorf("unexpected participant transport request %q", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	transport := NewRuntimeParticipantTransport(server.URL, DecodedHandle{ParticipantID: "agent-a"}, handler, nil)
+	transport.session = "agent-session"
+	transport.engine = NewEngine(EngineEvents{}, nil)
+	transport.ctx = context.Background()
+	transport.waitChannelsReady = func(context.Context, context.Context, []reliableParticipantDataChannel, time.Duration) error {
+		return nil
+	}
+	transport.createParticipantChannel = func(_ string, id uint16) (reliableParticipantDataChannel, error) {
+		return &capabilityTestChannel{payloads: make(chan []byte, 4), id: id}, nil
+	}
+	appID := "generated:123e4567-e89b-12d3-a456-426614174000"
+	makeProjection := func(aSession string, revision int64, includeB bool) types.RuntimeParticipantTransportProjection {
+		projection := types.RuntimeParticipantTransportProjection{
+			Routes: []types.RuntimeParticipantTransportRoute{{
+				AppInstanceID: appID, BundleRevision: revision, TaskRequestID: "task-a",
+				AgentParticipantID: "agent-a", HumanParticipantID: "human-a",
+				RuntimeHostID: "11111111-2222-3333-4444-555555555555", CapabilityIDs: []string{"printer_status"},
+			}},
+			Sources: []types.RuntimeParticipantTransportSource{{ParticipantID: "human-a", SessionID: aSession}},
+		}
+		if includeB {
+			projection.Routes = append(projection.Routes, types.RuntimeParticipantTransportRoute{
+				AppInstanceID: appID, BundleRevision: revision, TaskRequestID: "task-a",
+				AgentParticipantID: "agent-a", HumanParticipantID: "human-b",
+				RuntimeHostID: "11111111-2222-3333-4444-555555555555", CapabilityIDs: []string{"printer_status"},
+			})
+			projection.Sources = append(projection.Sources, types.RuntimeParticipantTransportSource{ParticipantID: "human-b", SessionID: "HB"})
+		}
+		return projection
+	}
+	keyA := participantRouteKey{appInstanceID: appID, humanParticipantID: "human-a"}
+	keyB := participantRouteKey{appInstanceID: appID, humanParticipantID: "human-b"}
+	if err := transport.Update(context.Background(), makeProjection("HA", 1, true)); err != nil {
+		t.Fatalf("commit initial A/B V1 routes: %v", err)
+	}
+	laneA := transport.outbound["human-a"].(*capabilityTestChannel)
+	laneB := transport.outbound["human-b"].(*capabilityTestChannel)
+	if !laneA.Ready() || !laneB.Ready() || laneA == laneB {
+		t.Fatal("initial Human lanes were not independently ready")
+	}
+	allocationA := transport.channelAllocations["human-a"]
+	allocationB := transport.channelAllocations["human-b"]
+
+	// Human B leaves. The fake SFU close remains unresolved. Whether Update
+	// reports that cleanup failure or commits a route-only projection, B must
+	// be immediately revoked while A's committed V1 route/lane stays live.
+	_ = transport.Update(context.Background(), makeProjection("HA", 1, false))
+	if _, ok := transport.routes[keyB]; ok {
+		t.Fatal("removed Human B route remained authorized after cleanup failure")
+	}
+	if _, ok := transport.routes[keyA]; !ok || transport.outbound["human-a"] != laneA || !laneA.Ready() {
+		t.Fatalf("B cleanup failure disrupted healthy A V1 route/lane: route=%v laneSame=%v ready=%v", transport.routes[keyA], transport.outbound["human-a"] == laneA, laneA.Ready())
+	}
+	if transport.outbound["human-b"] != nil || !laneB.closed || !reflect.DeepEqual(transport.pendingCloseIDs, []uint16{allocationB}) {
+		t.Fatalf("B removal did not revoke lane while retaining cleanup ownership: outbound=%v closed=%v pending=%v", transport.outbound["human-b"], laneB.closed, transport.pendingCloseIDs)
+	}
+
+	frame, err := json.Marshal(capabilityFrame{
+		Type: capabilityRequestFrame, RequestID: "request-b-after-removal", AppInstanceID: appID,
+		BundleRevision: 1, TaskRequestID: "task-a", AgentID: "agent-a",
+		CapabilityID: "printer_status", Operation: types.ResidentCapabilityObserve,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire, err := json.Marshal(roomAppEnvelope{ProtocolVersion: 1, Lane: "reliable", AppInstanceID: appID, Payload: frame})
+	if err != nil {
+		t.Fatal(err)
+	}
+	labelB := participantDirectReliableChannelName("agent-a", "human-b")
+	transport.receive(labelB, laneB, wire)
+	select {
+	case call := <-handler.calls:
+		t.Fatalf("removed Human B executed capability after cleanup failure: %+v", call)
+	default:
+	}
+	frameA1, err := json.Marshal(capabilityFrame{
+		Type: capabilityRequestFrame, RequestID: "request-a-v1", AppInstanceID: appID,
+		BundleRevision: 1, TaskRequestID: "task-a", AgentID: "agent-a",
+		CapabilityID: "printer_status", Operation: types.ResidentCapabilityObserve,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wireA1, err := json.Marshal(roomAppEnvelope{ProtocolVersion: 1, Lane: "reliable", AppInstanceID: appID, Payload: frameA1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	labelA := participantDirectReliableChannelName("agent-a", "human-a")
+	transport.receive(labelA, laneA, wireA1)
+	select {
+	case call := <-handler.calls:
+		if call.RequestID != "request-a-v1" {
+			t.Fatalf("A V1 route reached capability handler with wrong identity: %q", call.RequestID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("surviving A V1 route stopped executing after B cleanup failed")
+	}
+
+	beforeRouteOnly := len(operations)
+	blockNextBCleanup <- struct{}{}
+	updateDone := make(chan error, 1)
+	go func() { updateDone <- transport.Update(context.Background(), makeProjection("HA", 2, false)) }()
+	select {
+	case <-bCleanupEntered:
+	case <-time.After(time.Second):
+		t.Fatal("route-only V2 update did not attempt pending B cleanup")
+	}
+	transport.mu.Lock()
+	routeAAfterV2, hasRouteAAfterV2 := transport.routes[keyA]
+	_, hasRouteBAfterV2 := transport.routes[keyB]
+	humanBAfterV2 := transport.outbound["human-b"]
+	laneAAfterV2 := transport.outbound["human-a"]
+	allocationAAfterV2 := transport.channelAllocations["human-a"]
+	transport.mu.Unlock()
+	if !hasRouteAAfterV2 || routeAAfterV2.BundleRevision != 2 {
+		close(releaseBCleanup)
+		t.Fatalf("A V2 route was not committed before pending cleanup responded: route=%+v exists=%v", routeAAfterV2, hasRouteAAfterV2)
+	}
+	if hasRouteBAfterV2 || humanBAfterV2 != nil {
+		close(releaseBCleanup)
+		t.Fatal("removed Human B regained route or lane while A V2 committed")
+	}
+	if laneAAfterV2 != laneA || !laneA.Ready() || allocationAAfterV2 != allocationA {
+		close(releaseBCleanup)
+		t.Fatal("route-only revision did not reuse A's unchanged ready lane")
+	}
+	frameA, err := json.Marshal(capabilityFrame{
+		Type: capabilityRequestFrame, RequestID: "request-a-v2", AppInstanceID: appID,
+		BundleRevision: 2, TaskRequestID: "task-a", AgentID: "agent-a",
+		CapabilityID: "printer_status", Operation: types.ResidentCapabilityObserve,
+	})
+	if err != nil {
+		close(releaseBCleanup)
+		t.Fatal(err)
+	}
+	wireA, err := json.Marshal(roomAppEnvelope{ProtocolVersion: 1, Lane: "reliable", AppInstanceID: appID, Payload: frameA})
+	if err != nil {
+		close(releaseBCleanup)
+		t.Fatal(err)
+	}
+	transport.receive(labelA, laneA, wireA)
+	select {
+	case call := <-handler.calls:
+		if call.RequestID != "request-a-v2" {
+			close(releaseBCleanup)
+			t.Fatalf("V2 request reached capability handler with wrong identity: %q", call.RequestID)
+		}
+	case <-time.After(time.Second):
+		close(releaseBCleanup)
+		t.Fatal("healthy A V2 capability could not execute while unrelated cleanup was unresolved")
+	}
+	close(releaseBCleanup)
+	if err := <-updateDone; err != nil {
+		t.Fatalf("route-only V2 update failed after cleanup response: %v", err)
+	}
+	if !reflect.DeepEqual(operations[beforeRouteOnly:], []operation{{kind: "close", human: "human-b"}}) {
+		t.Fatalf("route-only update churned A's DataChannel: operations=%v", operations[beforeRouteOnly:])
+	}
+	if !reflect.DeepEqual(transport.pendingCloseIDs, []uint16{allocationB}) {
+		t.Fatalf("route-only commit lost unresolved B cleanup ownership: %v", transport.pendingCloseIDs)
+	}
+	cleanupBFails = false
+	if err := transport.Update(context.Background(), makeProjection("HA", 2, false)); err != nil {
+		t.Fatalf("later B cleanup success disturbed committed A V2 route: %v", err)
+	}
+	if len(transport.pendingCloseIDs) != 0 || transport.routes[keyA].BundleRevision != 2 || transport.outbound["human-a"] != laneA {
+		t.Fatalf("later cleanup did not clear only pending ownership while preserving A V2: pending=%v route=%+v laneSame=%v", transport.pendingCloseIDs, transport.routes[keyA], transport.outbound["human-a"] == laneA)
+	}
+}
+
+func TestParticipantDataTransportUnresolvedCleanupStillGatesNewLaneAllocation(t *testing.T) {
+	newCalls := 0
+	var closeIDs []uint16
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/sfu/datachannels/new":
+			newCalls++
+			_, _ = io.WriteString(w, `{"dataChannels":[{"id":51}]}`)
+		case "/api/sfu/datachannels/close":
+			var body struct {
+				DataChannels []struct {
+					ID uint16 `json:"id"`
+				} `json:"dataChannels"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode pending cleanup: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			results := make([]map[string]any, 0, len(body.DataChannels))
+			for _, channel := range body.DataChannels {
+				closeIDs = append(closeIDs, channel.ID)
+				result := map[string]any{"id": channel.ID}
+				if channel.ID == 43 {
+					result["errorCode"] = "internal_error"
+				}
+				results = append(results, result)
+			}
+			if err := json.NewEncoder(w).Encode(map[string]any{"dataChannels": results}); err != nil {
+				t.Errorf("encode pending cleanup: %v", err)
+			}
+		default:
+			t.Errorf("unexpected participant transport request %q", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	appID := "generated:123e4567-e89b-12d3-a456-426614174000"
+	handler := &capabilityTestHandler{descriptors: []types.RuntimeCapabilityProjection{validCapabilityTestDescriptor("printer_status", true)}}
+	transport := NewRuntimeParticipantTransport(server.URL, DecodedHandle{ParticipantID: "agent-a"}, handler, nil)
+	transport.session = "agent-session"
+	transport.engine = NewEngine(EngineEvents{}, nil)
+	transport.ctx = context.Background()
+	laneA := &capabilityTestChannel{payloads: make(chan []byte, 1), id: 42}
+	labelA := participantDirectReliableChannelName("agent-a", "human-a")
+	routeA := types.RuntimeParticipantTransportRoute{
+		AppInstanceID: appID, BundleRevision: 1, TaskRequestID: "task-a",
+		AgentParticipantID: "agent-a", HumanParticipantID: "human-a",
+		RuntimeHostID: "11111111-2222-3333-4444-555555555555", CapabilityIDs: []string{"printer_status"},
+	}
+	transport.outbound = map[string]reliableParticipantDataChannel{"human-a": laneA}
+	transport.routes = map[participantRouteKey]types.RuntimeParticipantTransportRoute{{appInstanceID: appID, humanParticipantID: "human-a"}: routeA}
+	transport.sources = map[string]string{labelA: "human-a"}
+	transport.peerSessions = map[string]string{"human-a": "HA"}
+	transport.channelTokens = map[string]any{"human-a": laneA}
+	transport.channelAllocations = map[string]uint16{"human-a": 42}
+	transport.pendingCloseIDs = []uint16{43} // unresolved allocation from removed Human B
+
+	replacement := routeA
+	replacement.BundleRevision = 2
+	projection := types.RuntimeParticipantTransportProjection{
+		Routes:  []types.RuntimeParticipantTransportRoute{replacement},
+		Sources: []types.RuntimeParticipantTransportSource{{ParticipantID: "human-a", SessionID: "HA2"}},
+	}
+	err := transport.Update(context.Background(), projection)
+	var failure *ParticipantTransportFailure
+	if !errors.As(err, &failure) || failure.Stage != ParticipantTransportFailureStageCleanupRetiredAllocation || failure.ProviderErrorClass != "internal_error" {
+		t.Fatalf("replacement update = %#v, want cleanup-stage gate", err)
+	}
+	if newCalls != 0 {
+		t.Fatalf("replacement allocation ran before pending cleanup resolved: new calls=%d", newCalls)
+	}
+	if !reflect.DeepEqual(closeIDs, []uint16{43, 42}) {
+		t.Fatalf("cleanup did not include unrelated and retiring allocations: %v", closeIDs)
+	}
+	if !reflect.DeepEqual(transport.pendingCloseIDs, []uint16{43, 42}) {
+		t.Fatalf("failed cleanup did not retain ownership: %v", transport.pendingCloseIDs)
+	}
+	if _, ok := transport.routes[participantRouteKey{appInstanceID: appID, humanParticipantID: "human-a"}]; ok || transport.outbound["human-a"] != nil || !laneA.closed {
+		t.Fatal("session replacement failure retained the stale Human A route or lane")
+	}
+}
+
 func TestParticipantDataTransportNewerProjectionFencesAllocationCleanup(t *testing.T) {
 	type operation struct {
 		kind string
