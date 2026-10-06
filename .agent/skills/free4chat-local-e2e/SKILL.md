@@ -163,6 +163,11 @@ best-effort cleanup paths that production intentionally swallows.
 > the Realtime SFU/media plane.** Do not claim media correctness from a
 > harness that fakes `rtc.live.cloudflare.com` or the peer connection.
 
+For cross-layer Room App or Generated Task App lifecycle diagnosis, use
+[`free4chat-lifecycle-diagnostics`](../free4chat-lifecycle-diagnostics/SKILL.md).
+This skill owns causal Browser/Room/Runtime correlation; local E2E remains the
+local Worker/DO/control-plane validation path.
+
 The manual `wrangler dev --local --port 3000` + curl/MCP/Agent Runtime
 workflow below remains the interactive investigation path; the automated
 harness and the manual workflow are complementary, not replacements.
