@@ -120,6 +120,28 @@ type RestClientLike interface {
 	ConfirmPublishedAudioTrackActive(sessionID, trackName string) (bool, PublishedAudioDiagnostic, error)
 }
 
+// SfuProviderError retains only an allowlisted public error class from a
+// Cloudflare DataChannel request or item result. Provider descriptions and
+// response bodies never cross this boundary.
+type SfuProviderError struct {
+	Class string
+}
+
+func (e *SfuProviderError) Error() string { return "sfu_provider_error" }
+
+func sanitizedSfuProviderErrorClass(value string) string {
+	switch value {
+	case "close_track_error", "repeated_local_track_error", "session_error", "invalid_params", "internal_error":
+		return value
+	default:
+		return "unknown"
+	}
+}
+
+func sfuProviderError(value string) error {
+	return &SfuProviderError{Class: sanitizedSfuProviderErrorClass(value)}
+}
+
 // SfuRestClient is the thin REST client for the app's /api/sfu/* endpoints.
 // No SFU credentials live here — only the participant token this Agent
 // already holds from its normal room join. The token is never logged.
@@ -175,6 +197,12 @@ func (c *SfuRestClient) request(path, method string, body map[string]any) (map[s
 		data = map[string]any{}
 	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
+		if strings.HasPrefix(path, "datachannels/") {
+			if errorCode, _ := data["errorCode"].(string); errorCode != "" {
+				return nil, sfuProviderError(errorCode)
+			}
+			return nil, sfuProviderError("unknown")
+		}
 		// Bounded diagnostics only: the stable machine error string (or the
 		// HTTP status) — never the response body, SDP, or errorDescription.
 		errorString, _ := data["error"].(string)
@@ -244,20 +272,36 @@ func (c *SfuRestClient) CreateParticipantDataChannels(sessionID string, channels
 		return nil, err
 	}
 	raw, _ := data["dataChannels"].([]any)
-	if len(raw) != len(channels) {
-		return nil, errors.New("datachannel_allocation_invalid")
-	}
 	ids := make([]uint16, 0, len(raw))
+	firstFailure := ""
 	for _, entry := range raw {
 		record, ok := entry.(map[string]any)
 		if !ok {
-			return nil, errors.New("datachannel_allocation_invalid")
+			if firstFailure == "" {
+				firstFailure = "unknown"
+			}
+			continue
+		}
+		if errorCode, _ := record["errorCode"].(string); errorCode != "" {
+			if firstFailure == "" || sanitizedSfuProviderErrorClass(firstFailure) == "unknown" {
+				firstFailure = errorCode
+			}
+			continue
 		}
 		id, ok := record["id"].(float64)
 		if !ok || id < 0 || id > 65534 || id != float64(uint16(id)) {
-			return nil, errors.New("datachannel_allocation_invalid")
+			if firstFailure == "" {
+				firstFailure = "unknown"
+			}
+			continue
 		}
 		ids = append(ids, uint16(id))
+	}
+	if len(raw) != len(channels) && firstFailure == "" {
+		firstFailure = "unknown"
+	}
+	if firstFailure != "" {
+		return ids, sfuProviderError(firstFailure)
 	}
 	return ids, nil
 }
@@ -295,13 +339,20 @@ func (c *SfuRestClient) CloseParticipantDataChannels(sessionID string, channelID
 		requested[id] = struct{}{}
 	}
 	closed := make(map[uint16]struct{}, len(results))
+	firstFailure := ""
 	for _, result := range results {
 		record, ok := result.(map[string]any)
 		if !ok {
+			if firstFailure == "" {
+				firstFailure = "unknown"
+			}
 			continue
 		}
 		idValue, ok := record["id"].(float64)
 		if !ok || idValue < 0 || idValue > 65534 || idValue != float64(uint16(idValue)) {
+			if firstFailure == "" {
+				firstFailure = "unknown"
+			}
 			continue
 		}
 		id := uint16(idValue)
@@ -311,10 +362,15 @@ func (c *SfuRestClient) CloseParticipantDataChannels(sessionID string, channelID
 		errorCode, _ := record["errorCode"].(string)
 		if errorCode == "" || errorCode == "close_track_error" {
 			closed[id] = struct{}{}
+		} else if firstFailure == "" || sanitizedSfuProviderErrorClass(firstFailure) == "unknown" {
+			firstFailure = errorCode
 		}
 	}
 	if len(closed) != len(requested) {
-		return errors.New("datachannel_close_unresolved")
+		if firstFailure == "" {
+			firstFailure = "unknown"
+		}
+		return sfuProviderError(firstFailure)
 	}
 	return nil
 }

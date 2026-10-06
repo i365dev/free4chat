@@ -465,6 +465,48 @@ func TestParticipantTransportRetryExhaustionAllowsIdenticalProjectionRecovery(t 
 	}
 }
 
+func TestParticipantTransportUpdateFailureLogsBoundedStageAndProviderClass(t *testing.T) {
+	rt, _ := newResidentFenceRuntime(t)
+	configureParticipantTransportRuntime(t, rt, time.Second)
+	defer rt.Stop()
+	logs := &turnLogRecorder{}
+	rt.log = logs.log
+	transport := newScriptedUpdatableParticipantTransport(nil)
+	rt.participantTransportFactory = func(media.DecodedHandle) participantDataTransport { return transport }
+	rt.observeRuntimeParticipantTransport(participantTransportTestProjection("human-a", "session-secret-H1"))
+	if got := awaitParticipantTransportStart(t, transport); got.err != nil {
+		t.Fatalf("initial transport Start failed: %v", got.err)
+	}
+	transport.updateResults <- &media.ParticipantTransportFailure{
+		Class:              media.ParticipantTransportFailureAllocationFailed,
+		Stage:              media.ParticipantTransportFailureStageAllocateReplacement,
+		ProviderErrorClass: "repeated_local_track_error",
+	}
+	rt.observeRuntimeParticipantTransport(participantTransportTestProjection("human-b", "session-secret-H2"))
+	_ = awaitParticipantTransportUpdate(t, transport)
+	waitFor(t, time.Second, func() bool { return logs.count("runtime_participant_transport_update_failed") == 1 }, "bounded update failure diagnostic")
+	fields := logs.fieldsFor("runtime_participant_transport_update_failed")
+	if len(fields) != 1 {
+		t.Fatalf("update failure diagnostics = %d, want one", len(fields))
+	}
+	want := map[string]string{
+		"transition": "update_failed", "failure_class": "allocation_failed",
+		"failure_stage": "allocate_replacement", "provider_error_class": "repeated_local_track_error",
+	}
+	for key, value := range want {
+		if fields[0][key] != value {
+			t.Errorf("diagnostic %q = %q, want %q", key, fields[0][key], value)
+		}
+	}
+	for _, value := range fields[0] {
+		for _, forbidden := range []string{"session-secret", "participant", "private", "description"} {
+			if strings.Contains(value, forbidden) {
+				t.Fatalf("diagnostic leaked %q in %q", forbidden, value)
+			}
+		}
+	}
+}
+
 func TestClassifyParticipantTransportFailureUsesTypedAllowlistOnly(t *testing.T) {
 	tests := []struct {
 		name string

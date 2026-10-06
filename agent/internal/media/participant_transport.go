@@ -26,17 +26,25 @@ const (
 // not carry provider error text or identifiers.
 type ParticipantTransportFailureClass string
 
+type ParticipantTransportFailureStage string
+
 const (
 	ParticipantTransportFailureAllocationFailed    ParticipantTransportFailureClass = "allocation_failed"
 	ParticipantTransportFailureChannelReadyTimeout ParticipantTransportFailureClass = "channel_ready_timeout"
+
+	ParticipantTransportFailureStageCleanupRetiredAllocation ParticipantTransportFailureStage = "cleanup_retired_allocation"
+	ParticipantTransportFailureStageAllocateReplacement      ParticipantTransportFailureStage = "allocate_replacement"
+	ParticipantTransportFailureStageChannelReady             ParticipantTransportFailureStage = "channel_ready"
 )
 
 // ParticipantTransportFailure marks only failures with an explicit local
 // lifecycle source. The underlying error remains available to callers for
 // ordinary control flow, but must not be copied into diagnostics.
 type ParticipantTransportFailure struct {
-	Class ParticipantTransportFailureClass
-	err   error
+	Class              ParticipantTransportFailureClass
+	Stage              ParticipantTransportFailureStage
+	ProviderErrorClass string
+	err                error
 }
 
 func (e *ParticipantTransportFailure) Error() string {
@@ -51,6 +59,23 @@ func (e *ParticipantTransportFailure) ParticipantTransportFailureClass() Partici
 
 func participantTransportFailure(class ParticipantTransportFailureClass, err error) error {
 	return &ParticipantTransportFailure{Class: class, err: err}
+}
+
+func participantTransportFailureAt(class ParticipantTransportFailureClass, stage ParticipantTransportFailureStage, err error) error {
+	failure := &ParticipantTransportFailure{Class: class, Stage: stage, err: err}
+	var providerError *SfuProviderError
+	if errors.As(err, &providerError) {
+		failure.ProviderErrorClass = providerError.Class
+	}
+	return failure
+}
+
+func participantTransportFailureWithStage(stage ParticipantTransportFailureStage, err error) error {
+	var existing *ParticipantTransportFailure
+	if errors.As(err, &existing) {
+		return participantTransportFailureAt(existing.Class, stage, err)
+	}
+	return &ParticipantTransportFailure{Stage: stage, err: err}
 }
 
 func participantDirectReliableChannelName(agentParticipantID, humanParticipantID string) string {
@@ -271,7 +296,7 @@ func (t *RuntimeParticipantTransport) Start(ctx context.Context, projection type
 	}
 	ids, err := rest.CreateParticipantDataChannels(session, channels)
 	if err != nil {
-		return fail(participantTransportFailure(ParticipantTransportFailureAllocationFailed, err))
+		return fail(participantTransportFailureAt(ParticipantTransportFailureAllocationFailed, ParticipantTransportFailureStageAllocateReplacement, err))
 	}
 	outbound := make(map[string]reliableParticipantDataChannel, len(projection.Sources))
 	sources := make(map[string]string, len(projection.Sources))
@@ -283,7 +308,7 @@ func (t *RuntimeParticipantTransport) Start(ctx context.Context, projection type
 		label := participantDirectReliableChannelName(t.handle.ParticipantID, source.ParticipantID)
 		channel, err := engine.CreateParticipantDataChannel(label, ids[i])
 		if err != nil {
-			return fail(participantTransportFailure(ParticipantTransportFailureAllocationFailed, err))
+			return fail(participantTransportFailureAt(ParticipantTransportFailureAllocationFailed, ParticipantTransportFailureStageChannelReady, err))
 		}
 		channelsReady = append(channelsReady, channel)
 		sources[label] = channelHumans[i]
@@ -393,7 +418,7 @@ func (t *RuntimeParticipantTransport) Update(ctx context.Context, projection typ
 	}
 	rest := NewSfuRestClient(t.siteOrigin, t.handle)
 	if err := t.closePendingParticipantDataChannels(session, rest); err != nil {
-		return participantTransportFailure(ParticipantTransportFailureAllocationFailed, err)
+		return participantTransportFailureAt(ParticipantTransportFailureAllocationFailed, ParticipantTransportFailureStageCleanupRetiredAllocation, err)
 	}
 	t.mu.Lock()
 	if t.closed || t.session != session || t.engine != engine || t.ctx != transportCtx {
@@ -433,7 +458,12 @@ func (t *RuntimeParticipantTransport) Update(ctx context.Context, projection typ
 				retireParticipantDataChannel(channel)
 			}
 			if len(allocatedIDs) > 0 {
-				_ = rest.CloseParticipantDataChannels(session, allocatedIDs)
+				t.mu.Lock()
+				if t.session == session {
+					t.pendingCloseIDs = append(t.pendingCloseIDs, allocatedIDs...)
+				}
+				t.mu.Unlock()
+				_ = t.closePendingParticipantDataChannels(session, rest)
 			}
 		}
 	}()
@@ -450,10 +480,10 @@ func (t *RuntimeParticipantTransport) Update(ctx context.Context, projection typ
 			})
 		}
 		ids, err := rest.CreateParticipantDataChannels(session, channels)
-		if err != nil {
-			return participantTransportFailure(ParticipantTransportFailureAllocationFailed, err)
-		}
 		allocatedIDs = ids
+		if err != nil {
+			return participantTransportFailureAt(ParticipantTransportFailureAllocationFailed, ParticipantTransportFailureStageAllocateReplacement, err)
+		}
 		channelsReady := make([]reliableParticipantDataChannel, 0, len(newSources))
 		for i, source := range newSources {
 			label := participantDirectReliableChannelName(t.handle.ParticipantID, source.ParticipantID)
@@ -465,13 +495,13 @@ func (t *RuntimeParticipantTransport) Update(ctx context.Context, projection typ
 				channel, err = engine.CreateParticipantDataChannel(label, ids[i])
 			}
 			if err != nil {
-				return participantTransportFailure(ParticipantTransportFailureAllocationFailed, err)
+				return participantTransportFailureAt(ParticipantTransportFailureAllocationFailed, ParticipantTransportFailureStageChannelReady, err)
 			}
 			channelsReady = append(channelsReady, channel)
 			newOutbound[source.ParticipantID] = channel
 		}
 		if err := t.waitForParticipantChannelsReady(ctx, transportCtx, channelsReady, 10*time.Second); err != nil {
-			return err
+			return participantTransportFailureWithStage(ParticipantTransportFailureStageChannelReady, err)
 		}
 	}
 

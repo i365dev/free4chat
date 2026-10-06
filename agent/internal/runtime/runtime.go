@@ -1566,6 +1566,21 @@ func classifyParticipantTransportFailure(err error) string {
 	return "other"
 }
 
+func participantTransportFailureDiagnosticFields(err error) map[string]string {
+	var classified *media.ParticipantTransportFailure
+	if !errors.As(err, &classified) {
+		return nil
+	}
+	fields := make(map[string]string, 2)
+	if classified.Stage != "" {
+		fields["failure_stage"] = string(classified.Stage)
+	}
+	if classified.ProviderErrorClass != "" {
+		fields["provider_error_class"] = classified.ProviderErrorClass
+	}
+	return fields
+}
+
 func (r *ResidentRuntime) logParticipantTransport(event string, details map[string]string) {
 	if r.log != nil {
 		r.log(event, details)
@@ -1599,7 +1614,7 @@ func (r *ResidentRuntime) updateRuntimeParticipantTransport(
 	})
 	if err := updater.Update(context.Background(), projection); err != nil {
 		failureClass := classifyParticipantTransportFailure(err)
-		r.logParticipantTransport("runtime_participant_transport_update_failed", map[string]string{
+		fields := map[string]string{
 			"reason":                "projection_update_failed",
 			"transition":            "update_failed",
 			"projection_generation": strconv.FormatUint(generation, 10),
@@ -1607,7 +1622,11 @@ func (r *ResidentRuntime) updateRuntimeParticipantTransport(
 			"retry_limit":           strconv.Itoa(participantTransportRetryLimit),
 			"transport_started":     "true",
 			"failure_class":         failureClass,
-		})
+		}
+		for key, value := range participantTransportFailureDiagnosticFields(err) {
+			fields[key] = value
+		}
+		r.logParticipantTransport("runtime_participant_transport_update_failed", fields)
 		r.mu.Lock()
 		if !r.stopped && r.participantTransport == transport &&
 			r.participantTransportGeneration == generation && r.participantTransportProjection == signature {
@@ -1670,14 +1689,18 @@ func (r *ResidentRuntime) startRuntimeParticipantTransport(
 			r.mu.Lock()
 			startAttempt := r.participantTransportRetryCount + 1
 			r.mu.Unlock()
-			r.logParticipantTransport("runtime_participant_transport_unavailable", map[string]string{
+			fields := map[string]string{
 				"reason":                "transport_setup_failed",
 				"transition":            "start_failed",
 				"projection_generation": strconv.FormatUint(generation, 10),
 				"retry_attempt":         strconv.Itoa(startAttempt),
 				"failure_class":         failureClass,
 				"transport_started":     "false",
-			})
+			}
+			for key, value := range participantTransportFailureDiagnosticFields(err) {
+				fields[key] = value
+			}
+			r.logParticipantTransport("runtime_participant_transport_unavailable", fields)
 			transport.Close()
 			r.mu.Lock()
 			if r.participantTransport == transport && !r.stopped &&
