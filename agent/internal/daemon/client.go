@@ -151,12 +151,22 @@ func requireDaemonProvenance(expectedVersion, expectedBuild, expectedRoot string
 		return err
 	}
 	actualBuild := strings.TrimSpace(actual.BuildIdentity)
-	if expectedBuild != "" && actualBuild != "" && expectedBuild != actualBuild {
-		return fmt.Errorf("running daemon build %s does not match CLI build %s; refusing to join; stop/restart or reselect the host-owned daemon", actualBuild, expectedBuild)
+	if expectedBuild != "" {
+		if actualBuild == "" {
+			return errors.New("running daemon cannot prove its build identity; refusing to join; stop/restart or reselect the host-owned daemon")
+		}
+		if expectedBuild != actualBuild {
+			return fmt.Errorf("running daemon build %s does not match CLI build %s; refusing to join; stop/restart or reselect the host-owned daemon", actualBuild, expectedBuild)
+		}
 	}
 	actualRoot := strings.TrimSpace(actual.RuntimeRootIdentity)
-	if expectedRoot != "" && actualRoot != "" && expectedRoot != actualRoot {
-		return errors.New("running daemon belongs to a different Runtime root; refusing to join; reselect the intended Runtime root")
+	if expectedRoot != "" {
+		if actualRoot == "" {
+			return errors.New("running daemon cannot prove its Runtime root identity; refusing to join; stop/restart or reselect the host-owned daemon")
+		}
+		if expectedRoot != actualRoot {
+			return errors.New("running daemon belongs to a different Runtime root; refusing to join; reselect the intended Runtime root")
+		}
 	}
 	return nil
 }
