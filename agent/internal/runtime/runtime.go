@@ -1509,9 +1509,15 @@ func (r *ResidentRuntime) observeRuntimeParticipantTransport(projection types.Ru
 	oldStarted := r.participantTransportStarted
 	r.participantTransportProjection = signature
 	handleText := r.participantHandle
+	started := r.participantTransportStarted
 	if oldStarted && len(projection.Routes) > 0 && projection.Valid() && r.options.CapabilityHandler != nil && r.options.SiteOrigin != "" {
 		if updater, ok := old.(participantDataTransportUpdater); old != nil && ok {
 			r.mu.Unlock()
+			r.logParticipantTransport("runtime_participant_transport_diagnostic", map[string]string{
+				"transition":            "projection_generation_changed",
+				"projection_generation": strconv.FormatUint(generation, 10),
+				"transport_started":     strconv.FormatBool(started),
+			})
 			go r.updateRuntimeParticipantTransport(updater, old, projection, signature, generation)
 			return
 		}
@@ -1522,10 +1528,48 @@ func (r *ResidentRuntime) observeRuntimeParticipantTransport(projection types.Ru
 	if old != nil {
 		old.Close()
 	}
-	if len(projection.Routes) == 0 || !projection.Valid() || r.options.CapabilityHandler == nil || r.options.SiteOrigin == "" {
+	r.logParticipantTransport("runtime_participant_transport_diagnostic", map[string]string{
+		"transition":            "projection_generation_changed",
+		"projection_generation": strconv.FormatUint(generation, 10),
+		"transport_started":     strconv.FormatBool(started),
+	})
+	if !projection.Valid() {
+		r.logParticipantTransport("runtime_participant_transport_diagnostic", map[string]string{
+			"transition":            "projection_rejected",
+			"projection_generation": strconv.FormatUint(generation, 10),
+			"failure_class":         "invalid_projection",
+			"transport_started":     "false",
+		})
+		return
+	}
+	if len(projection.Routes) == 0 || r.options.CapabilityHandler == nil || r.options.SiteOrigin == "" {
 		return
 	}
 	r.startRuntimeParticipantTransport(projection, signature, generation, handleText)
+}
+
+func classifyParticipantTransportFailure(err error) string {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return "context_cancelled"
+	}
+	var classified interface {
+		ParticipantTransportFailureClass() media.ParticipantTransportFailureClass
+	}
+	if errors.As(err, &classified) {
+		switch classified.ParticipantTransportFailureClass() {
+		case media.ParticipantTransportFailureAllocationFailed:
+			return "allocation_failed"
+		case media.ParticipantTransportFailureChannelReadyTimeout:
+			return "channel_ready_timeout"
+		}
+	}
+	return "other"
+}
+
+func (r *ResidentRuntime) logParticipantTransport(event string, details map[string]string) {
+	if r.log != nil {
+		r.log(event, details)
+	}
 }
 
 func (r *ResidentRuntime) updateRuntimeParticipantTransport(
@@ -1544,12 +1588,30 @@ func (r *ResidentRuntime) updateRuntimeParticipantTransport(
 	if !current {
 		return
 	}
+	r.mu.Lock()
+	attempt := r.participantTransportRetryCount + 1
+	r.mu.Unlock()
+	r.logParticipantTransport("runtime_participant_transport_diagnostic", map[string]string{
+		"transition":            "update_started",
+		"projection_generation": strconv.FormatUint(generation, 10),
+		"retry_attempt":         strconv.Itoa(attempt),
+		"transport_started":     "true",
+	})
 	if err := updater.Update(context.Background(), projection); err != nil {
-		r.log("runtime_participant_transport_update_failed", map[string]string{"reason": "projection_update_failed"})
+		failureClass := classifyParticipantTransportFailure(err)
+		r.logParticipantTransport("runtime_participant_transport_update_failed", map[string]string{
+			"reason":                "projection_update_failed",
+			"transition":            "update_failed",
+			"projection_generation": strconv.FormatUint(generation, 10),
+			"retry_attempt":         strconv.Itoa(attempt),
+			"retry_limit":           strconv.Itoa(participantTransportRetryLimit),
+			"transport_started":     "true",
+			"failure_class":         failureClass,
+		})
 		r.mu.Lock()
 		if !r.stopped && r.participantTransport == transport &&
 			r.participantTransportGeneration == generation && r.participantTransportProjection == signature {
-			r.scheduleRuntimeParticipantTransportRetryLocked(projection, signature, generation, "", updater, transport)
+			r.scheduleRuntimeParticipantTransportRetryLocked(projection, signature, generation, "", updater, transport, failureClass)
 		}
 		r.mu.Unlock()
 		return
@@ -1558,6 +1620,12 @@ func (r *ResidentRuntime) updateRuntimeParticipantTransport(
 	if !r.stopped && r.participantTransport == transport &&
 		r.participantTransportGeneration == generation && r.participantTransportProjection == signature {
 		r.participantTransportRetryCount = 0
+		r.logParticipantTransport("runtime_participant_transport_diagnostic", map[string]string{
+			"transition":            "update_succeeded",
+			"projection_generation": strconv.FormatUint(generation, 10),
+			"retry_attempt":         strconv.Itoa(attempt),
+			"transport_started":     "true",
+		})
 	}
 	r.mu.Unlock()
 }
@@ -1598,7 +1666,18 @@ func (r *ResidentRuntime) startRuntimeParticipantTransport(
 	r.mu.Unlock()
 	go func() {
 		if err := transport.Start(context.Background(), projection); err != nil {
-			r.log("runtime_participant_transport_unavailable", map[string]string{"reason": "transport_setup_failed"})
+			failureClass := classifyParticipantTransportFailure(err)
+			r.mu.Lock()
+			startAttempt := r.participantTransportRetryCount + 1
+			r.mu.Unlock()
+			r.logParticipantTransport("runtime_participant_transport_unavailable", map[string]string{
+				"reason":                "transport_setup_failed",
+				"transition":            "start_failed",
+				"projection_generation": strconv.FormatUint(generation, 10),
+				"retry_attempt":         strconv.Itoa(startAttempt),
+				"failure_class":         failureClass,
+				"transport_started":     "false",
+			})
 			transport.Close()
 			r.mu.Lock()
 			if r.participantTransport == transport && !r.stopped &&
@@ -1606,7 +1685,7 @@ func (r *ResidentRuntime) startRuntimeParticipantTransport(
 				r.participantTransportProjection == signature {
 				r.participantTransport = nil
 				r.participantTransportStarted = false
-				r.scheduleRuntimeParticipantTransportRetryLocked(projection, signature, generation, handleText, nil, nil)
+				r.scheduleRuntimeParticipantTransportRetryLocked(projection, signature, generation, handleText, nil, nil, failureClass)
 			}
 			r.mu.Unlock()
 			return
@@ -1616,6 +1695,13 @@ func (r *ResidentRuntime) startRuntimeParticipantTransport(
 			r.participantTransportGeneration == generation &&
 			r.participantTransportProjection == signature {
 			r.participantTransportStarted = true
+			startAttempt := r.participantTransportRetryCount + 1
+			r.logParticipantTransport("runtime_participant_transport_diagnostic", map[string]string{
+				"transition":            "start_succeeded",
+				"projection_generation": strconv.FormatUint(generation, 10),
+				"retry_attempt":         strconv.Itoa(startAttempt),
+				"transport_started":     "true",
+			})
 		}
 		r.mu.Unlock()
 	}()
@@ -1628,6 +1714,7 @@ func (r *ResidentRuntime) scheduleRuntimeParticipantTransportRetryLocked(
 	handleText string,
 	updater participantDataTransportUpdater,
 	transport participantDataTransport,
+	failureClass string,
 ) {
 	if r.stopped || r.participantTransportGeneration != generation ||
 		r.participantTransportProjection != signature || r.participantTransportRetryTimer != nil {
@@ -1643,7 +1730,22 @@ func (r *ResidentRuntime) scheduleRuntimeParticipantTransportRetryLocked(
 		// Leave the failed projection unauthorised. A later Room envelope may
 		// restart attempts, while an idle Room stays fail-closed.
 		r.participantTransportProjection = ""
-		r.log("runtime_participant_transport_retry_exhausted", map[string]string{"reason": "retry_limit_reached"})
+		transition := "start_retry_exhausted"
+		if updater != nil {
+			transition = "update_retry_exhausted"
+		}
+		fields := map[string]string{
+			"reason":                      "retry_limit_reached",
+			"transition":                  transition,
+			"projection_generation":       strconv.FormatUint(generation, 10),
+			"retry_attempt":               strconv.Itoa(participantTransportRetryLimit + 1),
+			"retry_limit":                 strconv.Itoa(participantTransportRetryLimit),
+			"failure_class":               failureClass,
+			"transport_started":           strconv.FormatBool(r.participantTransportStarted),
+			"recovery_owner":              "future_room_projection",
+			"waiting_for_room_projection": "true",
+		}
+		r.logParticipantTransport("runtime_participant_transport_retry_exhausted", fields)
 		return
 	}
 	r.participantTransportRetryCount++

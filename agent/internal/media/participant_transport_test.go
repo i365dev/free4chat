@@ -3,6 +3,7 @@ package media
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -227,6 +228,137 @@ func TestParticipantDataTransportPartialUpdateClosesAllocatedChannels(t *testing
 	}
 	if len(transport.routes) != 0 || len(transport.sources) != 0 || len(transport.outbound) != 0 {
 		t.Fatalf("failed partial update left authorized state: routes=%d sources=%d lanes=%d", len(transport.routes), len(transport.sources), len(transport.outbound))
+	}
+}
+
+func TestParticipantDataTransportH1ToH2FailureThenReplayRecoversRoute(t *testing.T) {
+	var mu sync.Mutex
+	var allocated []uint16
+	channelCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/sfu/datachannels/new":
+			mu.Lock()
+			channelCalls++
+			call := channelCalls
+			if call == 1 {
+				mu.Unlock()
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = io.WriteString(w, `{"error":"private allocation detail"}`)
+				return
+			}
+			id := uint16(70 + len(allocated))
+			allocated = append(allocated, id)
+			mu.Unlock()
+			_, _ = io.WriteString(w, `{"dataChannels":[{"id":`+strconv.Itoa(int(id))+`}]}`)
+		case "/api/sfu/datachannels/close":
+			_, _ = io.WriteString(w, `{}`)
+		default:
+			t.Errorf("unexpected participant transport request %q", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	engine := NewEngine(EngineEvents{}, nil)
+	if err := engine.Create(); err != nil {
+		t.Skipf("Pion unavailable: %v", err)
+	}
+	defer engine.Close()
+	handler := &capabilityTestHandler{
+		calls:       make(chan types.ResidentCapabilityRequest, 1),
+		descriptors: []types.RuntimeCapabilityProjection{validCapabilityTestDescriptor("printer_status", true)},
+	}
+	transport := NewRuntimeParticipantTransport(server.URL, DecodedHandle{ParticipantID: "agent-a"}, handler, nil)
+	transport.session = "agent-session"
+	transport.engine = engine
+	transport.ctx = context.Background()
+	appID := "generated:123e4567-e89b-12d3-a456-426614174000"
+	route := func(human string) types.RuntimeParticipantTransportRoute {
+		return types.RuntimeParticipantTransportRoute{
+			AppInstanceID: appID, BundleRevision: 1, TaskRequestID: "task-a", AgentParticipantID: "agent-a",
+			HumanParticipantID: human, RuntimeHostID: "11111111-2222-3333-4444-555555555555", CapabilityIDs: []string{"printer_status"},
+		}
+	}
+	oldLane := &capabilityTestChannel{payloads: make(chan []byte, 1), id: 5}
+	oldLabel := participantDirectReliableChannelName("agent-a", "human-a")
+	transport.outbound = map[string]reliableParticipantDataChannel{"human-a": oldLane}
+	transport.routes = map[participantRouteKey]types.RuntimeParticipantTransportRoute{{appInstanceID: appID, humanParticipantID: "human-a"}: route("human-a")}
+	transport.sources = map[string]string{oldLabel: "human-a"}
+	transport.peerSessions = map[string]string{"human-a": "session-H1"}
+	transport.channelTokens = map[string]any{"human-a": oldLane}
+
+	var waits int
+	transport.waitChannelsReady = func(context.Context, context.Context, []reliableParticipantDataChannel, time.Duration) error {
+		waits++
+		if waits == 1 {
+			return participantTransportFailure(ParticipantTransportFailureChannelReadyTimeout, errors.New("private timeout detail"))
+		}
+		return nil
+	}
+	var nextChannel uint16
+	createdChannels := 0
+	var h2Lane *capabilityTestChannel
+	transport.createParticipantChannel = func(_ string, id uint16) (reliableParticipantDataChannel, error) {
+		createdChannels++
+		nextChannel = id
+		lane := &capabilityTestChannel{payloads: make(chan []byte, 1), id: id}
+		if createdChannels > 2 {
+			t.Fatal("replayed H2 update created multiple new lanes")
+		}
+		if createdChannels == 1 {
+			return lane, nil // this partial lane is retired by the injected readiness failure
+		}
+		h2Lane = lane
+		return lane, nil
+	}
+	h2 := types.RuntimeParticipantTransportProjection{
+		Routes:  []types.RuntimeParticipantTransportRoute{route("human-b")},
+		Sources: []types.RuntimeParticipantTransportSource{{ParticipantID: "human-b", SessionID: "session-H2"}},
+	}
+	err := transport.Update(context.Background(), h2)
+	var classified *ParticipantTransportFailure
+	if !errors.As(err, &classified) || classified.Class != ParticipantTransportFailureAllocationFailed {
+		t.Fatalf("H2 allocation failure = %v, want typed allocation failure", err)
+	}
+	if !oldLane.closed || len(transport.routes) != 0 || len(transport.outbound) != 0 {
+		t.Fatalf("allocation failure retained H1 state: closed=%v routes=%v outbound=%v", oldLane.closed, transport.routes, transport.outbound)
+	}
+
+	err = transport.Update(context.Background(), h2)
+	if !errors.As(err, &classified) || classified.Class != ParticipantTransportFailureChannelReadyTimeout {
+		t.Fatalf("H2 readiness failure = %v, want typed channel-ready timeout", err)
+	}
+	if !oldLane.closed {
+		t.Fatal("failed H2 update retained the stale H1 lane")
+	}
+	if _, ok := transport.routes[participantRouteKey{appInstanceID: appID, humanParticipantID: "human-a"}]; ok || len(transport.outbound) != 0 || len(transport.sources) != 0 {
+		t.Fatalf("failed H2 update retained stale route/lane: routes=%v outbound=%v sources=%v", transport.routes, transport.outbound, transport.sources)
+	}
+
+	if err := transport.Update(context.Background(), h2); err != nil {
+		t.Fatalf("identical H2 replay failed: %v", err)
+	}
+	if waits != 2 || len(allocated) != 2 || createdChannels != 2 || h2Lane == nil || nextChannel != allocated[1] {
+		t.Fatalf("replay did not establish H2 lane: waits=%d allocated=%v lane=%v", waits, allocated, h2Lane != nil)
+	}
+	if _, ok := transport.routes[participantRouteKey{appInstanceID: appID, humanParticipantID: "human-b"}]; !ok || transport.outbound["human-b"] != h2Lane {
+		t.Fatalf("replay did not restore H2 route/lane: routes=%v outbound=%v", transport.routes, transport.outbound)
+	}
+
+	frame := capabilityFrame{Type: capabilityRequestFrame, RequestID: "request-h2", AppInstanceID: appID, BundleRevision: 1,
+		TaskRequestID: "task-a", AgentID: "agent-a", CapabilityID: "printer_status", Operation: types.ResidentCapabilityObserve}
+	framePayload, _ := json.Marshal(frame)
+	wire, _ := json.Marshal(roomAppEnvelope{ProtocolVersion: 1, Lane: "reliable", AppInstanceID: appID, Payload: framePayload})
+	transport.receive(participantDirectReliableChannelName("agent-a", "human-b"), h2Lane, wire)
+	select {
+	case request := <-handler.calls:
+		if request.RequestID != "request-h2" || request.RuntimeHostID != route("human-b").RuntimeHostID {
+			t.Fatalf("recovered H2 capability route used unexpected request: %+v", request)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("recovered H2 route did not reach capability controller")
 	}
 }
 

@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -20,6 +21,8 @@ type scriptedParticipantTransport struct {
 	result  participantTransportStartResult
 	started chan participantTransportStartResult
 	once    sync.Once
+	mu      sync.Mutex
+	closes  int
 }
 
 type scriptedUpdatableParticipantTransport struct {
@@ -50,7 +53,17 @@ func (t *scriptedParticipantTransport) Start(_ context.Context, projection types
 	return t.result.err
 }
 
-func (*scriptedParticipantTransport) Close() {}
+func (t *scriptedParticipantTransport) Close() {
+	t.mu.Lock()
+	t.closes++
+	t.mu.Unlock()
+}
+
+func (t *scriptedParticipantTransport) closeCount() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.closes
+}
 
 func (t *scriptedParticipantTransport) startResults() <-chan participantTransportStartResult {
 	return t.started
@@ -338,6 +351,105 @@ func TestParticipantTransportUpdateRetryStopsAndIsBounded(t *testing.T) {
 			t.Fatalf("retry count = %d, want bounded limit %d", got, participantTransportRetryLimit)
 		}
 	})
+}
+
+func TestParticipantTransportRetryExhaustionAllowsIdenticalProjectionRecovery(t *testing.T) {
+	rt, _ := newResidentFenceRuntime(t)
+	configureParticipantTransportRuntime(t, rt, time.Millisecond)
+	defer rt.Stop()
+	logs := &turnLogRecorder{}
+	rt.log = logs.log
+	transport := newScriptedUpdatableParticipantTransport(nil)
+	factoryCalls := 0
+	rt.participantTransportFactory = func(media.DecodedHandle) participantDataTransport {
+		factoryCalls++
+		return transport
+	}
+	h1 := participantTransportTestProjection("human-a", "session-secret-H1")
+	rt.observeRuntimeParticipantTransport(h1)
+	if got := awaitParticipantTransportStart(t, transport); got.err != nil {
+		t.Fatalf("initial H1 Start failed: %v", got.err)
+	}
+	h2 := participantTransportTestProjection("human-b", "session-secret-H2")
+	for range participantTransportRetryLimit + 1 {
+		transport.updateResults <- errors.New("raw provider error SECRET-error")
+	}
+	rt.observeRuntimeParticipantTransport(h2)
+	for range participantTransportRetryLimit + 1 {
+		_ = awaitParticipantTransportUpdate(t, transport)
+	}
+	waitFor(t, 2*time.Second, func() bool { return logs.count("runtime_participant_transport_retry_exhausted") == 1 }, "one retry exhaustion diagnostic")
+
+	rt.mu.Lock()
+	current, started := rt.participantTransport, rt.participantTransportStarted
+	signature, retryCount, timer := rt.participantTransportProjection, rt.participantTransportRetryCount, rt.participantTransportRetryTimer
+	rt.mu.Unlock()
+	if current != transport || !started || signature != "" || retryCount != participantTransportRetryLimit || timer != nil {
+		t.Fatalf("exhaustion changed recovery contract: same=%v started=%v signature=%q retries=%d timer=%v", current == transport, started, signature, retryCount, timer)
+	}
+	if factoryCalls != 1 || transport.closeCount() != 0 {
+		t.Fatalf("exhaustion rebuilt/closed transport: factory calls=%d closes=%d", factoryCalls, transport.closeCount())
+	}
+
+	// The identical H2 projection is new after exhaustion clears its signature;
+	// it is retried on the original started transport and can recover in place.
+	rt.observeRuntimeParticipantTransport(h2)
+	if got := awaitParticipantTransportUpdate(t, transport); got.Sources[0].SessionID != "session-secret-H2" {
+		t.Fatalf("replay applied unexpected projection: %+v", got)
+	}
+	waitFor(t, time.Second, func() bool {
+		return logs.count("runtime_participant_transport_diagnostic") > 0 && logs.count("runtime_participant_transport_retry_exhausted") == 1
+	}, "replayed update")
+	rt.mu.Lock()
+	current, started = rt.participantTransport, rt.participantTransportStarted
+	rt.mu.Unlock()
+	if current != transport || !started || factoryCalls != 1 {
+		t.Fatalf("identical replay did not recover on same transport: same=%v started=%v factory calls=%d", current == transport, started, factoryCalls)
+	}
+
+	_, fields := logs.snapshot()
+	exhausted := logs.fieldsFor("runtime_participant_transport_retry_exhausted")
+	if len(exhausted) != 1 {
+		t.Fatalf("retry exhaustion diagnostics = %d, want exactly one", len(exhausted))
+	}
+	want := map[string]string{
+		"transition": "update_retry_exhausted", "failure_class": "other", "transport_started": "true",
+		"recovery_owner": "future_room_projection", "waiting_for_room_projection": "true",
+	}
+	for key, value := range want {
+		if exhausted[0][key] != value {
+			t.Errorf("exhaustion field %q = %q, want %q", key, exhausted[0][key], value)
+		}
+	}
+	for _, eventFields := range fields {
+		for _, value := range eventFields {
+			for _, forbidden := range []string{"session-secret", "SECRET-error", "human-a", "human-b", "agent-a"} {
+				if strings.Contains(value, forbidden) {
+					t.Fatalf("diagnostics leaked %q in %q", forbidden, value)
+				}
+			}
+		}
+	}
+}
+
+func TestClassifyParticipantTransportFailureUsesTypedAllowlistOnly(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "allocation", err: &media.ParticipantTransportFailure{Class: media.ParticipantTransportFailureAllocationFailed}, want: "allocation_failed"},
+		{name: "ready timeout", err: &media.ParticipantTransportFailure{Class: media.ParticipantTransportFailureChannelReadyTimeout}, want: "channel_ready_timeout"},
+		{name: "context", err: context.DeadlineExceeded, want: "context_cancelled"},
+		{name: "arbitrary provider text", err: errors.New("session stale SECRET-session"), want: "other"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := classifyParticipantTransportFailure(test.err); got != test.want {
+				t.Fatalf("failure class = %q, want %q", got, test.want)
+			}
+		})
+	}
 }
 
 func TestParticipantTransportRetryDoesNotCrossProjectionGeneration(t *testing.T) {
