@@ -69,7 +69,7 @@ expect_text "join checks resident daemon version" 'bounded local `daemon-info` h
 expect_text "stale daemon cannot be reused" 'refuse to join and report that the host-owned daemon must be stopped' "$DOC"
 expect_text "daemon version is required to match" 'daemonVersion` as the expected version above' "$DOC"
 expect_text "development daemon source identity is checked" 'buildIdentity' "$DOC"
-expect_text "known source mismatch refuses same-version reuse" 'source-revision mismatch is refused' "$DOC"
+expect_text "missing or mismatched provenance refuses same-version reuse" 'Missing or mismatched' "$DOC"
 expect_text "build identity uses Go VCS revision metadata" 'settings["vcs.revision"]' agent/internal/doctor/doctor.go
 
 join_line="$(grep -nF '   "$runtime_bin" join' "$DOC" | tail -1 | cut -d: -f1)"
