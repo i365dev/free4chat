@@ -176,10 +176,11 @@ re-run the `CI / Deploy` workflow run in GitHub Actions instead of deploying
 locally, unless you're deliberately reproducing the full production build-time
 configuration.
 
-## Temporary Room App transport diagnostics (#221)
+## Local Browser Room App transport diagnostics
 
-For a Whiteboard multi-host investigation, use the **parent Room page** DevTools
-console (not the App iframe) to opt into the local Core transport trace:
+For Browser-side Room App or Generated Task App transport investigations, use
+the **parent Room page** DevTools console (not the App iframe) to opt into the
+local lifecycle trace:
 
 ```js
 window.__free4chatRoomAppTransportDiagnostics.enable()
@@ -188,26 +189,33 @@ window.__free4chatRoomAppTransportDiagnostics.read()
 window.__free4chatRoomAppTransportDiagnostics.disable()
 ```
 
-Collect `current()` and `read()` from every Human host in the same time window
-as the Whiteboard iframe's own trace. Capture each side before and after a
-reload. The Core trace uses a new, non-secret `browserId` for each Room page
-execution and a monotonically increasing `sessionEpoch` for media session
-rotations in that page. `roomSocketEpoch` increments for each Room control
-WebSocket created in the same page. `room_app_host_state_sent` records a locally
-successful `ready=true/false` send, including reconnect replay; it does not
-claim server acceptance or scene convergence. `broker_agent_request_received`
-records receipt at the parent browser before iframe forwarding, with a fixed
-hash of the request ID for correlation to the Whiteboard trace. It includes the public participant ID, current local
-reliable DataChannel state, ready remote reliable peers, and bounded events for
-channel creation/open/close, reconnection, and accepted or rejected reliable
-transport sends/receives. `reliable_sent` means the browser accepted a send;
-the other host's `reliable_received` is the evidence of delivery.
+Collect `current()` and `read()` from each relevant Human Room page around the
+event under investigation. The trace is off by default, remains local to that
+page, keeps at most 200 events in memory, and disappears on reload. It never
+changes transport, retry, or reconnect behavior.
 
-The trace is off by default, keeps at most 200 events in memory, and disappears
-on page reload. It records fixed Whiteboard protocol type classes only, never
-Room message contents, Whiteboard elements, participant tokens/handles, SFU
-session IDs, DataChannel IDs, credentials, or arbitrary payloads. Do not paste
-the whole browser console or network captures into an issue.
+`lane_transition` records the Browser lifecycle for participant-direct and
+ordinary remote Room App lanes. Its bounded fields include component, lane,
+transition, reason, subscriber/publisher/PeerConnection/Room-socket epochs,
+retry attempt/budget, and recovery owner. For a Generated App capability
+request, `capability_request` → `route_check` → `rejected` identifies the first
+failed Browser precondition while the App still receives only
+`{ ok: false, error: "unavailable" }`. Reasons can distinguish a missing
+originating Agent or publisher projection, disconnected PeerConnection,
+missing subscriber/publisher session, absent/connecting/closed direct lane,
+retry exhaustion, stale generations, encoding failure, and send failure.
+
+Epochs are local monotonic counters: the subscriber epoch advances with the
+local media session, the publisher epoch with a participant transport
+projection, the PeerConnection epoch when one is created, and the existing
+`roomSocketEpoch` for each Room control WebSocket. They are not SFU session
+IDs. `recovery_owner` shows which existing component is expected to move a
+non-ready lane forward; the trace does not add recovery behavior.
+
+The trace contains no capability arguments/results, prompts/messages, SDP,
+tokens, credentials, SFU session IDs, or DataChannel IDs. Existing local trace
+fields can include participant IDs; remove those before sharing issue evidence.
+Do not paste a full browser console or raw network capture into an issue.
 
 ## SFU architecture
 
