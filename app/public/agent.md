@@ -484,11 +484,12 @@ Use the same resolved executable for readiness, diagnostics, and join.
 
 Before forwarding the join, the Runtime performs a bounded local `daemon-info` handshake.
 The daemon must report the same `daemonVersion` as the expected version above.
-When both binaries expose Go VCS build metadata, the handshake also requires matching
-`buildIdentity`; a known source-revision mismatch is refused even when semantic
-versions match. A known mismatch in the opaque Runtime-root identity is also
-refused. Older builds without comparable provenance retain the version-only
-compatibility check.
+The handshake requires the resident daemon to prove the provenance fields known
+by the invoking Runtime. When the CLI has Go VCS build metadata, `buildIdentity`
+must be present and match exactly even when semantic versions match. The daemon
+must also prove the same opaque Runtime-root identity. Missing or mismatched
+provenance is refused; restart or reselect the intended host-owned daemon rather
+than silently falling back to version-only compatibility.
 If it is older or cannot report a version, refuse to join and report that the host-owned daemon must be stopped and restarted by the operator. This is a
 refusal boundary, not a self-restart feature.
 
