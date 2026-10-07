@@ -2473,6 +2473,14 @@ export default function RoomContent({
       className="room-shell room-shell--live flex h-screen flex-col overflow-hidden bg-gray-900 text-white"
       data-room-app-focus={isStageAppFullscreen ? "true" : undefined}
     >
+      {/* A stale reconnect can request fresh Human verification while the
+          canonical participant projection keeps this live Room mounted. Keep
+          one bounded, invisible Turnstile target available in that state. */}
+      <div
+        ref={turnstileContainerRef}
+        className="room-warp__turnstile"
+        data-testid="turnstile-mount"
+      />
       {connectionStatus === "reconnecting" && (
         <div
           data-testid="room-reconnect-guard"

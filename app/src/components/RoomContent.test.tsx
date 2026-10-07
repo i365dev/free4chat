@@ -391,6 +391,47 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     expect(container.querySelector(".room-warp__streak")).toBeNull()
   })
 
+  it("keeps Turnstile available for fresh verification in a live Room", async () => {
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      // This is the in-place state after an authoritative stale reconnect 401:
+      // the existing canonical participant projection remains visible.
+      connectionStatus: "verifying",
+      participants: [
+        {
+          peerId: "human-local",
+          name: "tester",
+          kind: "human",
+          room: "test-room",
+          muteState: false,
+        },
+      ],
+    })
+
+    render(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+
+    const turnstileMount = screen.getByTestId("turnstile-mount")
+    expect(turnstileMount).toBeInTheDocument()
+
+    const hookOptions = mockUseSfuChatRoom.mock.calls.at(-1)?.[3] as {
+      getTurnstileToken: () => Promise<string>
+    }
+    let tokenPromise!: Promise<string>
+    act(() => {
+      tokenPromise = hookOptions.getTurnstileToken()
+    })
+
+    await waitFor(() => expect(mock.execute).toHaveBeenCalledTimes(1))
+    expect(mock.render).toHaveBeenCalledWith(
+      turnstileMount,
+      expect.objectContaining({ action: "sfu-session" })
+    )
+    act(() => mock.fireSuccess("fresh-turnstile-token"))
+    await expect(tokenPromise).resolves.toBe("fresh-turnstile-token")
+  })
+
   it("shows Harness-advertised select controls only after choosing an explicit project", async () => {
     mockUseSfuChatRoom.mockReturnValue({
       ...baseHookReturn,
