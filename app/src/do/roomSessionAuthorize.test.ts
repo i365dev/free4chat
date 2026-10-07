@@ -112,6 +112,7 @@ function makeRoomSession(stored: ReturnType<typeof buildStoredRoom>) {
         json: (await response.json()) as Record<string, unknown>,
       }))
   return {
+    session: rs,
     authorize(body: Record<string, unknown>): Promise<{
       status: number
       json: Record<string, unknown>
@@ -137,6 +138,82 @@ describe("RoomSession authorize — real DO agent matrix (#83 review P1)", () =>
       dataChannelSessionId: "hsess",
     })
     expect(result.status).toBe(200)
+    expect(result.json).toMatchObject({ ok: true, kind: "agent" })
+  })
+
+  it("participant-reliable close authorizes the current Agent endpoint without Human-source correlation", async () => {
+    const transportRoom: any = buildStoredRoom({
+      meetingNotesFor: "agent-a",
+      agentVoiceFor: "agent-a",
+    })
+    transportRoom.participants["agent-a"].participantDataTransport = {
+      sessionId: "agent-data-session",
+      ready: true,
+    }
+    transportRoom.runtimeHosts["host-agent"].capabilities = [
+      {
+        capabilityId: "printer_status",
+        title: "Printer status",
+        version: "1",
+        observe: true,
+        actions: [],
+      },
+    ]
+    transportRoom.participants["human-1"].media = {
+      sessionId: "human-source-session",
+      appDataChannelReady: true,
+      muted: false,
+      fileChannelReady: true,
+      tracks: [],
+    }
+    transportRoom.messages = [
+      {
+        id: "task-request",
+        peerId: "human-1",
+        name: "Human 1",
+        kind: "human",
+        type: "action",
+        actionType: "collab",
+        createdAt: 1,
+        sequence: 1,
+        collab: {
+          kind: "request",
+          requestId: "task-a",
+          fromParticipantId: "human-1",
+          targetParticipantId: "agent-a",
+          summary: "Create a status app",
+        },
+      },
+    ]
+    transportRoom.generatedApps = {
+      "generated:123e4567-e89b-12d3-a456-426614174000": {
+        appInstanceId: "generated:123e4567-e89b-12d3-a456-426614174000",
+        taskRequestId: "task-a",
+        title: "Status",
+        bundleBytes: 100,
+        bundleRevision: 1,
+        stateRevision: 0,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    }
+
+    const fixture = makeRoomSession(transportRoom)
+    const roomSession = fixture.session as any
+    roomSession.projectRuntimeParticipantTransportState = () => ({
+      routes: [{ humanParticipantId: "human-1" }],
+      sources: [
+        { participantId: "human-1", sessionId: "human-source-session" },
+      ],
+    })
+    const result = await fixture.authorize({
+      participantId: "agent-a",
+      token: "tok-a",
+      sessionId: "agent-data-session",
+      purpose: "participant-reliable",
+    })
+
+    expect(result.status, JSON.stringify(result.json)).toBe(200)
     expect(result.json).toMatchObject({ ok: true, kind: "agent" })
   })
 

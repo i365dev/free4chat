@@ -271,6 +271,59 @@ func TestCloseParticipantDataChannelsRequiresResolvedPerIDResult(t *testing.T) {
 	}
 }
 
+func TestCloseParticipantDataChannelsUsesEndpointSessionAndAllocationIDsOnly(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/api/sfu/datachannels/close" {
+			t.Errorf("close request = %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		var body struct {
+			SessionID    string                     `json:"sessionId"`
+			Purpose      string                     `json:"purpose"`
+			DataChannels []map[string]json.RawMessage `json:"dataChannels"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode close request: %v", err)
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
+			return
+		}
+		if body.SessionID != "agent-data-session" {
+			t.Errorf("top-level sessionId = %q, want Agent participant-data endpoint", body.SessionID)
+		}
+		if body.Purpose != string(PurposeParticipantReliable) {
+			t.Errorf("purpose = %q, want %q", body.Purpose, PurposeParticipantReliable)
+		}
+		if len(body.DataChannels) != 2 {
+			t.Errorf("close allocations = %d, want 2", len(body.DataChannels))
+		}
+		gotIDs := make([]uint16, 0, len(body.DataChannels))
+		for _, channel := range body.DataChannels {
+			if len(channel) != 1 {
+				t.Errorf("close item = %v, want only id", channel)
+			}
+			var id uint16
+			if err := json.Unmarshal(channel["id"], &id); err != nil {
+				t.Errorf("decode allocation id: %v", err)
+				continue
+			}
+			gotIDs = append(gotIDs, id)
+		}
+		if !reflect.DeepEqual(gotIDs, []uint16{7, 8}) {
+			t.Errorf("allocation ids = %v, want [7 8]", gotIDs)
+		}
+		writeParticipantDataChannelCloseResult(t, w, gotIDs)
+	}))
+	defer server.Close()
+
+	client := NewSfuRestClient(server.URL, DecodedHandle{
+		Room: "room", ParticipantID: "agent", ParticipantToken: "token",
+	})
+	if err := client.CloseParticipantDataChannels("agent-data-session", []uint16{7, 8}); err != nil {
+		t.Fatalf("CloseParticipantDataChannels() error = %v", err)
+	}
+}
+
 func TestCreateParticipantDataChannelsPreservesPartialResultsAndSanitizesErrors(t *testing.T) {
 	tests := []struct {
 		name      string

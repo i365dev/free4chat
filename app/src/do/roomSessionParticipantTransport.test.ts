@@ -416,6 +416,92 @@ describe("RoomSession Runtime participant transport association", () => {
     ])
   })
 
+  it("force-pushes the restored ready Human source after reconnect without new Room events", async () => {
+    const room: any = makeRoom()
+    room.expiresAt = Date.now() + 60_000
+    room.nextMessageSequence = 2
+    room.attachments = []
+    room.meetingNotes = { active: false }
+    room.agentVoice = {}
+    room.liveTranscript = { active: false }
+    room.participants.owner.connectionNonce = "owner-connection"
+    room.participants.resident.connectionNonce = "resident-connection"
+
+    const agentSend = vi.fn()
+    const agentSocket = {
+      deserializeAttachment: () => ({
+        kind: "agent-event",
+        participantId: "resident",
+        connectionNonce: "resident-connection",
+        cursor: room.nextMessageSequence,
+      }),
+      serializeAttachment: vi.fn(),
+      send: agentSend,
+      close: vi.fn(),
+    } as unknown as WebSocket
+    const session = new RoomSession(
+      { getWebSockets: () => [agentSocket] } as never,
+      { ROOM_APPS_ENABLED: "true" } as never
+    ) as any
+    session.loadRoom = async () => room
+    session.activeRoom = async () => room
+    session.isExpired = () => false
+    session.saveRoom = vi.fn(async () => undefined)
+    session.scheduleNextAlarm = vi.fn(async () => undefined)
+    session.broadcastState = vi.fn(async () => undefined)
+
+    const humanSocket = {
+      deserializeAttachment: () => ({
+        participantId: "owner",
+        token: "owner-token",
+        connectionNonce: "owner-connection",
+      }),
+      close: vi.fn(),
+      send: vi.fn(),
+    } as unknown as WebSocket
+    await session.webSocketClose(humanSocket, 1000, "refresh", true)
+
+    const disconnectedEnvelope = JSON.parse(agentSend.mock.calls.at(-1)![0])
+    expect(disconnectedEnvelope.events).toEqual([])
+    expect(disconnectedEnvelope.participantTransport).toEqual({
+      routes: [],
+      sources: [],
+    })
+
+    // Model the new Human WebSocket and SFU session before the browser's
+    // appDataChannelReady acknowledgement arrives.
+    room.participants.owner.connected = true
+    room.participants.owner.connectionNonce = "owner-reconnected"
+    room.participants.owner.media.sessionId = "owner-session-reconnected"
+    room.participants.owner.media.appDataChannelReady = false
+    expect(
+      session.projectRuntimeParticipantTransportState(room, "resident")
+    ).toEqual({ routes: [], sources: [] })
+
+    await session.handleClientMessage(
+      humanSocket,
+      {
+        participantId: "owner",
+        token: "owner-token",
+        connectionNonce: "owner-reconnected",
+      },
+      { type: "datachannel-ready", appDataChannelReady: true }
+    )
+
+    const restoredEnvelope = JSON.parse(agentSend.mock.calls.at(-1)![0])
+    expect(restoredEnvelope.events).toEqual([])
+    expect(restoredEnvelope.cursor).toBe(room.nextMessageSequence)
+    expect(restoredEnvelope.participantTransport.routes).toHaveLength(1)
+    expect(restoredEnvelope.participantTransport.sources).toEqual([
+      {
+        participantId: "owner",
+        sessionId: "owner-session-reconnected",
+      },
+    ])
+    expect(session.saveRoom).toHaveBeenCalledTimes(2)
+    expect(session.broadcastState).toHaveBeenCalledTimes(2)
+  })
+
   it("authorizes each authenticated Room Human on its own current pairwise lane", async () => {
     const session = new RoomSession(
       {} as never,

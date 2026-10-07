@@ -129,6 +129,20 @@ func awaitParticipantTransportStart(t *testing.T, transport interface {
 	}
 }
 
+func hasParticipantTransportDiagnostic(
+	logs *turnLogRecorder,
+	transition string,
+	generation string,
+) bool {
+	for _, fields := range logs.fieldsFor("runtime_participant_transport_diagnostic") {
+		if fields["transition"] == transition &&
+			fields["projection_generation"] == generation {
+			return true
+		}
+	}
+	return false
+}
+
 func TestParticipantTransportRetriesSameProjectionWithoutRoomEnvelope(t *testing.T) {
 	rt, _ := newResidentFenceRuntime(t)
 	configureParticipantTransportRuntime(t, rt, 10*time.Millisecond)
@@ -171,6 +185,117 @@ func TestParticipantTransportRetriesSameProjectionWithoutRoomEnvelope(t *testing
 	defer mu.Unlock()
 	if factoryCalls != 2 {
 		t.Fatalf("transport factory calls = %d, want exactly 2", factoryCalls)
+	}
+}
+
+func TestParticipantTransportEmptyProjectionTearsDownAndRestoredProjectionRestarts(t *testing.T) {
+	rt, _ := newResidentFenceRuntime(t)
+	configureParticipantTransportRuntime(t, rt, 10*time.Millisecond)
+	defer rt.Stop()
+	logs := &turnLogRecorder{}
+	rt.log = logs.log
+
+	first := newScriptedUpdatableParticipantTransport(nil)
+	second := newScriptedUpdatableParticipantTransport(nil)
+	transports := []*scriptedUpdatableParticipantTransport{first, second}
+	factoryCalls := 0
+	rt.participantTransportFactory = func(media.DecodedHandle) participantDataTransport {
+		factoryCalls++
+		if factoryCalls > len(transports) {
+			t.Error("projection recovery created an unexpected transport")
+			return nil
+		}
+		return transports[factoryCalls-1]
+	}
+
+	initial := participantTransportTestProjection("human-a", "session-a")
+	rt.observeRuntimeParticipantTransport(initial)
+	if got := awaitParticipantTransportStart(t, first); got.err != nil {
+		t.Fatalf("generation 1 Start failed: %v", got.err)
+	}
+	waitFor(t, time.Second, func() bool {
+		return hasParticipantTransportDiagnostic(logs, "start_succeeded", "1")
+	}, "generation 1 start success")
+
+	// A Human refresh temporarily removes the last eligible source. The empty
+	// projection must retire the old transport and leave a clear diagnostic.
+	rt.observeRuntimeParticipantTransport(types.RuntimeParticipantTransportProjection{})
+	if got := first.closeCount(); got != 1 {
+		t.Fatalf("empty projection closed transport %d times, want 1", got)
+	}
+	rt.mu.Lock()
+	current, started := rt.participantTransport, rt.participantTransportStarted
+	rt.mu.Unlock()
+	if current != nil || started {
+		t.Fatalf("empty projection retained transport: current=%v started=%v", current != nil, started)
+	}
+
+	restored := participantTransportTestProjection("human-a", "session-b")
+	rt.observeRuntimeParticipantTransport(restored)
+	if got := awaitParticipantTransportStart(t, second); got.err != nil {
+		t.Fatalf("restored generation Start failed: %v", got.err)
+	}
+	waitFor(t, time.Second, func() bool {
+		return hasParticipantTransportDiagnostic(logs, "start_succeeded", "3")
+	}, "restored generation start success")
+	rt.mu.Lock()
+	current, started = rt.participantTransport, rt.participantTransportStarted
+	rt.mu.Unlock()
+	if current != second || !started || factoryCalls != 2 {
+		t.Fatalf("restored projection did not start a fresh transport: current=%v started=%v factoryCalls=%d", current == second, started, factoryCalls)
+	}
+
+	changed := logs.fieldsFor("runtime_participant_transport_diagnostic")
+	var generationDecisions []map[string]string
+	for _, fields := range changed {
+		if fields["transition"] == "projection_generation_changed" {
+			generationDecisions = append(generationDecisions, fields)
+		}
+	}
+	if len(generationDecisions) != 3 {
+		t.Fatalf("projection generation diagnostics = %d, want 3", len(generationDecisions))
+	}
+	if got := generationDecisions[1]; got["projection_generation"] != "2" || got["route_count"] != "0" || got["source_count"] != "0" || got["decision"] != "teardown_empty" || got["old_transport_present"] != "true" || got["old_transport_started"] != "true" {
+		t.Fatalf("empty generation diagnostic = %#v", got)
+	}
+	if got := generationDecisions[2]; got["projection_generation"] != "3" || got["route_count"] != "1" || got["source_count"] != "1" || got["decision"] != "restart_new" || got["old_transport_present"] != "false" || got["old_transport_started"] != "false" {
+		t.Fatalf("restored generation diagnostic = %#v", got)
+	}
+	for _, eventFields := range changed {
+		for _, value := range eventFields {
+			for _, forbidden := range []string{"human-a", "session-a", "session-b", "agent-a"} {
+				if strings.Contains(value, forbidden) {
+					t.Fatalf("transport diagnostics leaked %q in %q", forbidden, value)
+				}
+			}
+		}
+	}
+}
+
+func TestParticipantTransportUpdateSupersededBeforeStartIsDiagnosed(t *testing.T) {
+	rt, _ := newResidentFenceRuntime(t)
+	logs := &turnLogRecorder{}
+	rt.log = logs.log
+	transport := newScriptedUpdatableParticipantTransport(nil)
+	projection := participantTransportTestProjection("human-a", "session-a")
+
+	rt.updateRuntimeParticipantTransport(
+		transport,
+		transport,
+		projection,
+		"superseded-signature",
+		9,
+	)
+
+	fields := logs.fieldsFor("runtime_participant_transport_diagnostic")
+	if len(fields) != 1 {
+		t.Fatalf("diagnostic events = %d, want 1", len(fields))
+	}
+	if fields[0]["transition"] != "update_superseded_before_start" || fields[0]["projection_generation"] != "9" || fields[0]["route_count"] != "1" || fields[0]["source_count"] != "1" || fields[0]["decision"] != "update_existing" {
+		t.Fatalf("superseded update diagnostic = %#v", fields[0])
+	}
+	if got := len(transport.updates); got != 0 {
+		t.Fatalf("superseded update reached transport; update calls = %d", got)
 	}
 }
 

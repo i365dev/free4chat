@@ -1495,7 +1495,15 @@ func (r *ResidentRuntime) observeRuntimeParticipantTransport(projection types.Ru
 		return
 	}
 	if signature == r.participantTransportProjection {
+		generation := r.participantTransportGeneration
+		old := r.participantTransport
+		oldStarted := r.participantTransportStarted
 		r.mu.Unlock()
+		fields := participantTransportProjectionDiagnosticFields(
+			projection, generation, old != nil, oldStarted, "skipped_duplicate",
+		)
+		fields["transition"] = "projection_unchanged"
+		r.logParticipantTransport("runtime_participant_transport_diagnostic", fields)
 		return
 	}
 	r.participantTransportGeneration++
@@ -1513,11 +1521,11 @@ func (r *ResidentRuntime) observeRuntimeParticipantTransport(projection types.Ru
 	if oldStarted && len(projection.Routes) > 0 && projection.Valid() && r.options.CapabilityHandler != nil && r.options.SiteOrigin != "" {
 		if updater, ok := old.(participantDataTransportUpdater); old != nil && ok {
 			r.mu.Unlock()
-			r.logParticipantTransport("runtime_participant_transport_diagnostic", map[string]string{
-				"transition":            "projection_generation_changed",
-				"projection_generation": strconv.FormatUint(generation, 10),
-				"transport_started":     strconv.FormatBool(started),
-			})
+			fields := participantTransportProjectionDiagnosticFields(
+				projection, generation, old != nil, started, "update_existing",
+			)
+			fields["transition"] = "projection_generation_changed"
+			r.logParticipantTransport("runtime_participant_transport_diagnostic", fields)
 			go r.updateRuntimeParticipantTransport(updater, old, projection, signature, generation)
 			return
 		}
@@ -1528,11 +1536,17 @@ func (r *ResidentRuntime) observeRuntimeParticipantTransport(projection types.Ru
 	if old != nil {
 		old.Close()
 	}
-	r.logParticipantTransport("runtime_participant_transport_diagnostic", map[string]string{
-		"transition":            "projection_generation_changed",
-		"projection_generation": strconv.FormatUint(generation, 10),
-		"transport_started":     strconv.FormatBool(started),
-	})
+	decision := "restart_new"
+	if !projection.Valid() || r.options.CapabilityHandler == nil || r.options.SiteOrigin == "" {
+		decision = "teardown_invalid"
+	} else if len(projection.Routes) == 0 || len(projection.Sources) == 0 {
+		decision = "teardown_empty"
+	}
+	fields := participantTransportProjectionDiagnosticFields(
+		projection, generation, old != nil, started, decision,
+	)
+	fields["transition"] = "projection_generation_changed"
+	r.logParticipantTransport("runtime_participant_transport_diagnostic", fields)
 	if !projection.Valid() {
 		r.logParticipantTransport("runtime_participant_transport_diagnostic", map[string]string{
 			"transition":            "projection_rejected",
@@ -1546,6 +1560,25 @@ func (r *ResidentRuntime) observeRuntimeParticipantTransport(projection types.Ru
 		return
 	}
 	r.startRuntimeParticipantTransport(projection, signature, generation, handleText)
+}
+
+func participantTransportProjectionDiagnosticFields(
+	projection types.RuntimeParticipantTransportProjection,
+	generation uint64,
+	oldTransportPresent bool,
+	oldTransportStarted bool,
+	decision string,
+) map[string]string {
+	return map[string]string{
+		"projection_generation": strconv.FormatUint(generation, 10),
+		"route_count":           strconv.Itoa(len(projection.Routes)),
+		"source_count":          strconv.Itoa(len(projection.Sources)),
+		"projection_valid":      strconv.FormatBool(projection.Valid()),
+		"old_transport_present": strconv.FormatBool(oldTransportPresent),
+		"old_transport_started": strconv.FormatBool(oldTransportStarted),
+		"transport_started":     strconv.FormatBool(oldTransportStarted),
+		"decision":              decision,
+	}
 }
 
 func classifyParticipantTransportFailure(err error) string {
@@ -1571,12 +1604,21 @@ func participantTransportFailureDiagnosticFields(err error) map[string]string {
 	if !errors.As(err, &classified) {
 		return nil
 	}
-	fields := make(map[string]string, 2)
+	fields := make(map[string]string, 5)
 	if classified.Stage != "" {
 		fields["failure_stage"] = string(classified.Stage)
 	}
 	if classified.ProviderErrorClass != "" {
 		fields["provider_error_class"] = classified.ProviderErrorClass
+	}
+	if classified.CloseHTTPStatus > 0 {
+		fields["close_http_status"] = strconv.Itoa(classified.CloseHTTPStatus)
+	}
+	if classified.CloseOrigin != "" {
+		fields["close_response_origin"] = classified.CloseOrigin
+	}
+	if classified.CloseResultShape != "" {
+		fields["close_result_shape"] = classified.CloseResultShape
 	}
 	return fields
 }
@@ -1599,8 +1641,15 @@ func (r *ResidentRuntime) updateRuntimeParticipantTransport(
 	r.mu.Lock()
 	current := !r.stopped && r.participantTransport == transport &&
 		r.participantTransportGeneration == generation && r.participantTransportProjection == signature
+	started := r.participantTransportStarted
+	oldPresent := r.participantTransport != nil
 	r.mu.Unlock()
 	if !current {
+		fields := participantTransportProjectionDiagnosticFields(
+			projection, generation, oldPresent, started, "update_existing",
+		)
+		fields["transition"] = "update_superseded_before_start"
+		r.logParticipantTransport("runtime_participant_transport_diagnostic", fields)
 		return
 	}
 	r.mu.Lock()
