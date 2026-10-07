@@ -932,6 +932,7 @@ export function useSfuChatRoom(
   const fileSendQueueRef = useRef(Promise.resolve())
   const dataChannelReadyRef = useRef(false)
   const closingRef = useRef(false)
+  const freshAdmissionVisibilityCancelRef = useRef<(() => void) | null>(null)
   const sfuEgressSamplerRef = useRef<ReturnType<
     typeof createSfuEgressSampler
   > | null>(null)
@@ -4563,6 +4564,49 @@ export function useSfuChatRoom(
     subscribeTrack,
   ])
 
+  const waitForForegroundFreshAdmission = useCallback(
+    (expectedSession: SfuSession | null): Promise<boolean> => {
+      if (closingRef.current || sessionRef.current !== expectedSession)
+        return Promise.resolve(false)
+      if (
+        typeof document === "undefined" ||
+        document.visibilityState === "visible"
+      )
+        return Promise.resolve(true)
+
+      return new Promise((resolve) => {
+        let settled = false
+        let cancelWait = () => undefined
+        const finish = (foreground: boolean) => {
+          if (settled) return
+          settled = true
+          document.removeEventListener(
+            "visibilitychange",
+            handleVisibilityChange
+          )
+          if (freshAdmissionVisibilityCancelRef.current === cancelWait)
+            freshAdmissionVisibilityCancelRef.current = null
+          resolve(foreground)
+        }
+        const handleVisibilityChange = () => {
+          if (closingRef.current || sessionRef.current !== expectedSession) {
+            finish(false)
+          } else if (document.visibilityState === "visible") {
+            finish(true)
+          }
+        }
+        cancelWait = () => finish(false)
+        freshAdmissionVisibilityCancelRef.current?.()
+        freshAdmissionVisibilityCancelRef.current = cancelWait
+        document.addEventListener("visibilitychange", handleVisibilityChange)
+        // Recheck after installing the listener so a foreground transition
+        // between the initial state read and registration cannot be missed.
+        handleVisibilityChange()
+      })
+    },
+    []
+  )
+
   const connectMediaSession = useCallback(
     async (reconnecting: boolean): Promise<boolean> => {
       const previousSession = sessionRef.current
@@ -4619,6 +4663,15 @@ export function useSfuChatRoom(
       if (!reconnecting && getTurnstileToken) {
         setConnectionStatus("verifying")
         try {
+          const foreground = await waitForForegroundFreshAdmission(
+            previousSession
+          )
+          if (
+            !foreground ||
+            closingRef.current ||
+            sessionRef.current !== previousSession
+          )
+            return false
           turnstileToken = await getTurnstileToken()
         } catch (err) {
           throw new TurnstileVerificationError(
@@ -4702,6 +4755,7 @@ export function useSfuChatRoom(
         pc.close()
         return false
       }
+      freshAdmissionVisibilityCancelRef.current?.()
       sessionRef.current = { ...session, room: roomName }
       dataChannelBootstrapReadyRef.current = false
       roomAppDiagnostic.setParticipant(session.participantId)
@@ -4764,6 +4818,7 @@ export function useSfuChatRoom(
       roomAppDiagnostic,
       sendSocketMessage,
       sampleSfuEgress,
+      waitForForegroundFreshAdmission,
     ]
   )
 
@@ -4875,6 +4930,7 @@ export function useSfuChatRoom(
 
     return () => {
       closingRef.current = true
+      freshAdmissionVisibilityCancelRef.current?.()
       dataChannelBootstrapReadyRef.current = false
       sampleSfuEgress("disconnect", peerConnectionRef.current)
       clearAllAgentAudioSubscriptionRetries("unmount")
