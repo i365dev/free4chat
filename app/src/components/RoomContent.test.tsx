@@ -440,11 +440,25 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       tokenPromise = hookOptions.getTurnstileToken()
     })
 
+    expect(screen.getByTestId("live-turnstile-preparing")).toHaveTextContent(
+      "Preparing verification…"
+    )
+    expect(turnstileMount).toHaveAttribute("data-turnstile-status", "loading")
+    expect(screen.getByTestId("turnstile-mount")).toHaveStyle({
+      pointerEvents: "auto",
+    })
+    expect(screen.getByTestId("live-turnstile-preparing")).toHaveStyle({
+      pointerEvents: "none",
+    })
+
     await waitFor(() => expect(mock.execute).toHaveBeenCalledTimes(1))
+    expect(turnstileMount).toHaveAttribute("data-turnstile-status", "verifying")
+    expect(screen.getByTestId("live-turnstile-preparing")).toBeInTheDocument()
     expect(mock.render).toHaveBeenCalledWith(
       turnstileMount,
       expect.objectContaining({ action: "sfu-session" })
     )
+    expect(mock.render).toHaveBeenCalledTimes(1)
     act(() => mock.fireSuccess("fresh-turnstile-token"))
     await expect(tokenPromise).resolves.toBe("fresh-turnstile-token")
 
@@ -461,6 +475,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     expect(connectedMount).toBe(turnstileMount)
     expect(connectedMount).toHaveClass("room-warp__turnstile")
     expect(connectedMount).not.toHaveClass("room-live__turnstile--active")
+    expect(screen.queryByTestId("live-turnstile-preparing")).toBeNull()
   })
 
   it("shows Harness-advertised select controls only after choosing an explicit project", async () => {
