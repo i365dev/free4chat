@@ -110,6 +110,7 @@ const baseHookReturn = {
   toggleMicrophone: vi.fn(),
   toggleScreenShare: vi.fn(),
   retryVerification: vi.fn(),
+  retryRoomConnection: vi.fn(),
   error: "",
   expiryWarning: "",
   connectionStatus: "verifying" as string,
@@ -389,6 +390,23 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
 
     expect(screen.queryByTestId("room-joining-warp")).not.toBeInTheDocument()
     expect(container.querySelector(".room-warp__streak")).toBeNull()
+  })
+
+  it("offers a Human retry while passively waiting after Room socket exhaustion", () => {
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "disconnected",
+    })
+
+    render(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+
+    expect(screen.getByText("Connection interrupted")).toBeInTheDocument()
+    expect(screen.getByText("Waiting for network…")).toBeInTheDocument()
+    expect(screen.queryByText("Reload page")).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }))
+    expect(baseHookReturn.retryRoomConnection).toHaveBeenCalledTimes(1)
   })
 
   it("keeps Turnstile available for fresh verification in a live Room", async () => {
@@ -4549,13 +4567,37 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
       expect(visible).not.toHaveAttribute("inert")
     })
 
-    it("keeps resident hosts across an ordinary transport reconnect", async () => {
+    it("keeps the same RoomAppHost, iframe, and MessagePort through disconnected recovery", async () => {
       const view = renderAppRoom()
 
       openAppInLauncher(screen, "test-app-1")
+      const host = slotHost("test-app-1")
       const iframe = slotIframe("test-app-1")
-      loadAppIframe(iframe)
+      const frameWindow = loadAppIframe(iframe)
+      const port = channels[0].port1
+      completeHandshake(frameWindow, "test-app-1", port)
+      await within(host).findByText("ready")
       expect(channels).toHaveLength(1)
+
+      const retryRoomConnection = vi.fn()
+      mockUseSfuChatRoom.mockReturnValue({
+        ...baseHookReturn,
+        connectionStatus: "disconnected",
+        roomAppsEnabled: true,
+        retryRoomConnection,
+        participants: [localParticipant],
+      })
+      view.rerender(
+        <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
+      )
+
+      expect(screen.getByTestId("room-disconnected-guard")).toBeInTheDocument()
+      expect(slotHost("test-app-1")).toBe(host)
+      expect(slotIframe("test-app-1")).toBe(iframe)
+      expect(channels[0].port1).toBe(port)
+      expect(port.close).not.toHaveBeenCalled()
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }))
+      expect(retryRoomConnection).toHaveBeenCalledTimes(1)
 
       // Ordinary SFU/media reconnect: useSfuChatRoom drops the exposed flag
       // while it rebuilds the App DataChannels. That is not a catalog removal.
@@ -4569,12 +4611,15 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
       )
 
+      expect(screen.queryByTestId("room-disconnected-guard")).toBeNull()
+      expect(screen.getByTestId("room-reconnect-guard")).toBeInTheDocument()
       // The App is hidden while the transport is unavailable, but its host and
       // MessagePort stay resident.
       expect(slotHidden("test-app-1")).toBe(true)
+      expect(slotHost("test-app-1")).toBe(host)
       expect(slotIframe("test-app-1")).toBe(iframe)
       expect(channels).toHaveLength(1)
-      expect(channels[0].port1.close).not.toHaveBeenCalled()
+      expect(port.close).not.toHaveBeenCalled()
 
       // Reconnect succeeds: same host, same Stage selection.
       mockUseSfuChatRoom.mockReturnValue({
@@ -4587,10 +4632,11 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
         <RoomContent roomName="test-room" nickName="Alice" roomType="audio" />
       )
 
+      expect(slotHost("test-app-1")).toBe(host)
       expect(slotHidden("test-app-1")).toBe(false)
       expect(slotIframe("test-app-1")).toBe(iframe)
       expect(channels).toHaveLength(1)
-      expect(channels[0].port1.close).not.toHaveBeenCalled()
+      expect(port.close).not.toHaveBeenCalled()
     })
 
     it("tears resident hosts down on a stable disable, closing each port once", async () => {

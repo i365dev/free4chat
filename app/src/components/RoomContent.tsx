@@ -516,6 +516,7 @@ export default function RoomContent({
     toggleMicrophone,
     toggleScreenShare,
     retryVerification,
+    retryRoomConnection,
     error,
     connectionStatus,
     resolvedRoomType,
@@ -2520,6 +2521,26 @@ export default function RoomContent({
         >
           <div className="mb-4 h-10 w-10 animate-spin rounded-full border-4 border-gray-700 border-t-yellow-400" />
           <p className="text-sm text-gray-400">Reconnecting...</p>
+        </div>
+      )}
+      {connectionStatus === "disconnected" && (
+        <div
+          data-testid="room-disconnected-guard"
+          role="alert"
+          aria-live="assertive"
+          className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-gray-950/95 px-4 text-center"
+        >
+          <p className="text-xl font-semibold text-gray-200">
+            Connection interrupted
+          </p>
+          <p className="text-sm text-gray-400">Waiting for network…</p>
+          <button
+            type="button"
+            onClick={retryRoomConnection}
+            className="mt-2 rounded-md bg-yellow-500 px-6 py-2 text-sm font-medium text-gray-950 hover:bg-yellow-400 focus:outline-none focus:ring focus:ring-yellow-300"
+          >
+            Try again
+          </button>
         </div>
       )}
 

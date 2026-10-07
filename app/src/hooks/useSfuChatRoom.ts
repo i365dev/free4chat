@@ -91,6 +91,7 @@ type ConnectionStatus =
   | "connecting"
   | "connected"
   | "reconnecting"
+  | "disconnected"
   | "verification_failed"
   | "failed"
 
@@ -825,6 +826,9 @@ export function useSfuChatRoom(
   const negotiationQueueRef = useRef(Promise.resolve())
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const reconnectAttemptsRef = useRef(0)
+  const roomReconnectActiveRef = useRef(false)
+  const roomConnectionWaitingRef = useRef(false)
+  const roomTerminalRef = useRef(false)
   const mediaReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null
   )
@@ -4135,6 +4139,8 @@ export function useSfuChatRoom(
     websocketRef.current = socket
     socket.onopen = () => {
       reconnectAttemptsRef.current = 0
+      roomReconnectActiveRef.current = false
+      roomConnectionWaitingRef.current = false
       if (dataChannelBootstrapReadyRef.current) setConnectionStatus("connected")
       setError("")
       sendSocketMessage({ type: "resync" })
@@ -4440,6 +4446,13 @@ export function useSfuChatRoom(
           setAttachments(nextAttachments)
         }
       } else if (message.type === "expired") {
+        roomTerminalRef.current = true
+        roomReconnectActiveRef.current = false
+        roomConnectionWaitingRef.current = false
+        if (reconnectTimerRef.current) {
+          clearTimeout(reconnectTimerRef.current)
+          reconnectTimerRef.current = null
+        }
         setError(
           "This room has closed after being empty for a while. Please open a new room."
         )
@@ -4535,19 +4548,29 @@ export function useSfuChatRoom(
         })
       }
       pendingRuntimeCapabilityRequestsRef.current.clear()
-      if (closingRef.current) return
+      if (closingRef.current || roomTerminalRef.current) return
       if (socket !== websocketRef.current) return
+      websocketRef.current = null
       setConnectionStatus("reconnecting")
+      roomReconnectActiveRef.current = true
       const attempt = reconnectAttemptsRef.current++
       if (attempt >= 5) {
-        setError("SFU connection lost. Reload to start a new session.")
-        setConnectionStatus("failed")
+        roomReconnectActiveRef.current = false
+        roomConnectionWaitingRef.current = true
+        setError("")
+        setConnectionStatus("disconnected")
         return
       }
-      reconnectTimerRef.current = setTimeout(
-        connectWebSocket,
-        Math.min(1000 * 2 ** attempt, 8000)
-      )
+      reconnectTimerRef.current = setTimeout(() => {
+        reconnectTimerRef.current = null
+        if (
+          closingRef.current ||
+          roomTerminalRef.current ||
+          !roomReconnectActiveRef.current
+        )
+          return
+        connectWebSocket()
+      }, Math.min(1000 * 2 ** attempt, 8000))
     }
     return socket
   }, [
@@ -4563,6 +4586,28 @@ export function useSfuChatRoom(
     subscribeRoomAppChannel,
     subscribeTrack,
   ])
+
+  const retryRoomConnection = useCallback(() => {
+    if (
+      closingRef.current ||
+      roomTerminalRef.current ||
+      !roomConnectionWaitingRef.current ||
+      roomReconnectActiveRef.current ||
+      reconnectTimerRef.current ||
+      !sessionRef.current
+    )
+      return
+    roomConnectionWaitingRef.current = false
+    roomReconnectActiveRef.current = true
+    reconnectAttemptsRef.current = 0
+    setError("")
+    setConnectionStatus("reconnecting")
+    if (!connectWebSocket()) {
+      roomReconnectActiveRef.current = false
+      roomConnectionWaitingRef.current = true
+      setConnectionStatus("disconnected")
+    }
+  }, [connectWebSocket])
 
   const waitForForegroundFreshAdmission = useCallback(
     (expectedSession: SfuSession | null): Promise<boolean> => {
@@ -4892,6 +4937,10 @@ export function useSfuChatRoom(
   useEffect(() => {
     if (!enabled || !roomName || !nickName) return
     closingRef.current = false
+    roomTerminalRef.current = false
+    roomReconnectActiveRef.current = false
+    roomConnectionWaitingRef.current = false
+    reconnectAttemptsRef.current = 0
     const start = async () => {
       try {
         await connectMediaSession(false)
@@ -4917,7 +4966,9 @@ export function useSfuChatRoom(
     const handlePageHide = () => {
       sampleSfuEgress("pagehide", peerConnectionRef.current)
     }
+    const handleOnline = () => retryRoomConnection()
     window.addEventListener("pagehide", handlePageHide)
+    window.addEventListener("online", handleOnline)
     void start()
 
     const remoteFileChannels = remoteFileChannelsRef.current
@@ -4947,6 +4998,7 @@ export function useSfuChatRoom(
         sfuEgressTimerRef.current = null
       }
       window.removeEventListener("pagehide", handlePageHide)
+      window.removeEventListener("online", handleOnline)
       void closeDataChannels(sessionRef.current)
       clearAllRemoteFileChannels("unmount")
       clearAllRemoteRoomAppChannels("unmount")
@@ -4993,6 +5045,7 @@ export function useSfuChatRoom(
     nickName,
     reconnectMedia,
     roomName,
+    retryRoomConnection,
     sampleSfuEgress,
     sendSocketMessage,
   ])
@@ -6182,6 +6235,7 @@ export function useSfuChatRoom(
     toggleMicrophone,
     toggleScreenShare,
     retryVerification,
+    retryRoomConnection,
     error,
     connectionStatus,
     resolvedRoomType,
