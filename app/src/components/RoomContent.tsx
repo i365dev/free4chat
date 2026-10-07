@@ -484,7 +484,11 @@ export default function RoomContent({
     )
   }, [])
 
-  const { containerRef: turnstileContainerRef, requestToken } = useTurnstile()
+  const {
+    containerRef: turnstileContainerRef,
+    requestToken,
+    status: turnstileStatus,
+  } = useTurnstile()
 
   const {
     participants,
@@ -2477,6 +2481,21 @@ export default function RoomContent({
           canonical participant projection keeps this live Room mounted. Keep
           the same bounded mount visible and interactive only during the
           verification challenge. */}
+      {connectionStatus === "verifying" && turnstileStatus !== "error" && (
+        <div
+          className="room-live__turnstile-preparing"
+          data-testid="live-turnstile-preparing"
+          role="status"
+          aria-live="polite"
+          style={{ pointerEvents: "none" }}
+        >
+          <span
+            aria-hidden="true"
+            className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white"
+          />
+          <span>Preparing verification…</span>
+        </div>
+      )}
       <div
         ref={turnstileContainerRef}
         className={
@@ -2490,6 +2509,7 @@ export default function RoomContent({
             : undefined
         }
         data-testid="turnstile-mount"
+        data-turnstile-status={turnstileStatus}
       />
       {connectionStatus === "reconnecting" && (
         <div

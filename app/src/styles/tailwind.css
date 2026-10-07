@@ -642,6 +642,24 @@ html {
   pointer-events: auto;
 }
 
+.room-live__turnstile-preparing {
+  position: fixed;
+  z-index: 61;
+  bottom: 12vh;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  transform: translateX(-50%);
+  border-radius: 0.75rem;
+  background: rgb(17 24 39 / 90%);
+  padding: 0.75rem 1rem;
+  color: rgb(243 244 246);
+  font-size: 0.875rem;
+  box-shadow: 0 10px 30px rgb(0 0 0 / 25%);
+  pointer-events: none;
+}
+
 @keyframes room-warp-streak {
   0% {
     opacity: 0;
