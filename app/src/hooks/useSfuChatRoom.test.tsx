@@ -208,6 +208,7 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
   afterEach(() => {
     lastFakeWebSocket = null
     setProductionRoomAppCatalog(EMPTY_ROOM_APP_CATALOG)
+    Reflect.deleteProperty(document, "visibilityState")
     vi.useRealTimers()
     vi.restoreAllMocks()
   })
@@ -259,10 +260,11 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
   })
 
   it("falls back once to fresh verified Human admission after stale reconnect is rejected", async () => {
-    const getTurnstileToken = vi
-      .fn()
-      .mockResolvedValueOnce("turnstile-1")
-      .mockResolvedValueOnce("turnstile-2")
+    const tokenVisibility: DocumentVisibilityState[] = []
+    const getTurnstileToken = vi.fn().mockImplementation(() => {
+      tokenVisibility.push(document.visibilityState)
+      return Promise.resolve(`turnstile-${tokenVisibility.length}`)
+    })
     const sessionRequests: Array<Record<string, unknown>> = []
     let rejectStaleReconnect!: (response: Response) => void
     const staleReconnectPending = new Promise<Response>((resolve) => {
@@ -335,11 +337,234 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
     })
     expect(sessionRequests[2].turnstileToken).toBe("turnstile-2")
     expect(sessionRequests[2].reconnect).toBeUndefined()
+    expect(tokenVisibility).toEqual(["visible", "visible"])
     expect(result.current.connectionStatus).not.toBe("failed")
     expect(sessionRequests.filter((request) => request.reconnect)).toHaveLength(
       1
     )
     unmount()
+  })
+
+  it("waits for foreground before requesting Turnstile for a stale reconnect fallback", async () => {
+    const tokenVisibility: DocumentVisibilityState[] = []
+    const getTurnstileToken = vi.fn().mockImplementation(() => {
+      tokenVisibility.push(document.visibilityState)
+      return Promise.resolve(`turnstile-${tokenVisibility.length}`)
+    })
+    const addDocumentListener = vi.spyOn(document, "addEventListener")
+    const removeDocumentListener = vi.spyOn(document, "removeEventListener")
+    const sessionRequests: Array<Record<string, unknown>> = []
+    let rejectStaleReconnect!: (response: Response) => void
+    const staleReconnectPending = new Promise<Response>((resolve) => {
+      rejectStaleReconnect = resolve
+    })
+    fetchMock.mockImplementation(
+      (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        if (url.endsWith("/api/sfu/session")) {
+          const body = JSON.parse(String(init?.body ?? "{}")) as Record<
+            string,
+            unknown
+          >
+          sessionRequests.push(body)
+          if (body.reconnect) return staleReconnectPending
+          const admission = sessionRequests.filter(
+            (request) => !request.reconnect
+          ).length
+          return jsonResponse({
+            participantId: `human-${admission}`,
+            participantToken: `token-${admission}`,
+            sessionId: `session-${admission}`,
+            expiresAt: Date.now() + 60 * 60 * 1000,
+          })
+        }
+        if (url.endsWith("/api/sfu/datachannels/establish"))
+          return jsonResponse({})
+        if (url.endsWith("/api/sfu/datachannels/new"))
+          return jsonResponse({ dataChannels: [{ id: 1 }] })
+        if (url.endsWith("/api/sfu/tracks"))
+          return localTrackResponse(init) ?? jsonResponse({})
+        return jsonResponse({})
+      }
+    )
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "visible",
+    })
+
+    const { result, unmount, rerender } = renderHook(() =>
+      useSfuChatRoom("room-hidden-stale-reconnect", "alice", "audio", {
+        getTurnstileToken,
+      })
+    )
+
+    await waitFor(() =>
+      expect(result.current.connectionStatus).toBe("connected")
+    )
+    expect(tokenVisibility).toEqual(["visible"])
+
+    act(() => {
+      const pc = FakePeerConnection.instances[0]
+      pc.connectionState = "disconnected"
+      pc.onconnectionstatechange?.()
+    })
+    await waitFor(() =>
+      expect(
+        sessionRequests.filter((request) => request.reconnect)
+      ).toHaveLength(1)
+    )
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "hidden",
+    })
+    await act(async () => {
+      rejectStaleReconnect(await jsonResponse({ error: "unauthorized" }, 401))
+    })
+
+    // Before the lifecycle fix, this observes Turnstile execution while hidden.
+    await waitFor(() => expect(tokenVisibility).toEqual(["visible"]))
+    expect(getTurnstileToken).toHaveBeenCalledTimes(1)
+    const visibilityListener = addDocumentListener.mock.calls.find(
+      ([eventName]) => eventName === "visibilitychange"
+    )?.[1]
+    expect(visibilityListener).toBeTypeOf("function")
+    expect(sessionRequests).toHaveLength(2)
+
+    act(() => {
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        value: "visible",
+      })
+      document.dispatchEvent(new Event("visibilitychange"))
+      document.dispatchEvent(new Event("visibilitychange"))
+      rerender()
+    })
+    await waitFor(() =>
+      expect(result.current.connectionStatus).toBe("connected")
+    )
+    expect(tokenVisibility).toEqual(["visible", "visible"])
+    expect(getTurnstileToken).toHaveBeenCalledTimes(2)
+    expect(sessionRequests).toHaveLength(3)
+    expect(sessionRequests[1].reconnect).toEqual({
+      participantId: "human-1",
+      participantToken: "token-1",
+      sessionId: "session-1",
+    })
+    expect(sessionRequests[2].turnstileToken).toBe("turnstile-2")
+    expect(sessionRequests[2].reconnect).toBeUndefined()
+    expect(
+      fetchMock.mock.calls.filter(([input]) =>
+        String(input).endsWith("/api/sfu/datachannels/establish")
+      )
+    ).toHaveLength(2)
+    const freshSocketMessages = lastFakeWebSocket!.send.mock.calls.map(
+      ([message]) => JSON.parse(message as string)
+    )
+    expect(freshSocketMessages).toContainEqual({
+      type: "datachannel-ready",
+      appDataChannelReady: false,
+    })
+    expect(removeDocumentListener).toHaveBeenCalledWith(
+      "visibilitychange",
+      visibilityListener
+    )
+
+    unmount()
+  })
+
+  it("cancels hidden stale-fallback verification on unmount and removes its visibility listener", async () => {
+    const getTurnstileToken = vi.fn().mockResolvedValue("turnstile-token")
+    const addDocumentListener = vi.spyOn(document, "addEventListener")
+    const removeDocumentListener = vi.spyOn(document, "removeEventListener")
+    let rejectStaleReconnect!: (response: Response) => void
+    const staleReconnectPending = new Promise<Response>((resolve) => {
+      rejectStaleReconnect = resolve
+    })
+    const sessionRequests: Array<Record<string, unknown>> = []
+    fetchMock.mockImplementation(
+      (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        if (url.endsWith("/api/sfu/session")) {
+          const body = JSON.parse(String(init?.body ?? "{}")) as Record<
+            string,
+            unknown
+          >
+          sessionRequests.push(body)
+          if (body.reconnect) return staleReconnectPending
+          const admission = sessionRequests.filter(
+            (request) => !request.reconnect
+          ).length
+          return jsonResponse({
+            participantId: `human-${admission}`,
+            participantToken: `token-${admission}`,
+            sessionId: `session-${admission}`,
+            expiresAt: Date.now() + 60 * 60 * 1000,
+          })
+        }
+        if (url.endsWith("/api/sfu/datachannels/establish"))
+          return jsonResponse({})
+        if (url.endsWith("/api/sfu/datachannels/new"))
+          return jsonResponse({ dataChannels: [{ id: 1 }] })
+        if (url.endsWith("/api/sfu/tracks"))
+          return localTrackResponse(init) ?? jsonResponse({})
+        return jsonResponse({})
+      }
+    )
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "visible",
+    })
+
+    const { result, unmount } = renderHook(() =>
+      useSfuChatRoom("room-cancel-hidden-stale-reconnect", "alice", "audio", {
+        getTurnstileToken,
+      })
+    )
+    await waitFor(() =>
+      expect(result.current.connectionStatus).toBe("connected")
+    )
+    act(() => {
+      FakePeerConnection.instances[0].connectionState = "disconnected"
+      FakePeerConnection.instances[0].onconnectionstatechange?.()
+    })
+    await waitFor(() =>
+      expect(
+        sessionRequests.filter((request) => request.reconnect)
+      ).toHaveLength(1)
+    )
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "hidden",
+    })
+    await act(async () => {
+      rejectStaleReconnect(await jsonResponse({ error: "unauthorized" }, 401))
+    })
+    await waitFor(() =>
+      expect(
+        addDocumentListener.mock.calls.some(
+          ([name]) => name === "visibilitychange"
+        )
+      ).toBe(true)
+    )
+    const visibilityListener = addDocumentListener.mock.calls.find(
+      ([eventName]) => eventName === "visibilitychange"
+    )?.[1]
+    expect(getTurnstileToken).toHaveBeenCalledTimes(1)
+
+    unmount()
+    expect(removeDocumentListener).toHaveBeenCalledWith(
+      "visibilitychange",
+      visibilityListener
+    )
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "visible",
+    })
+    act(() => document.dispatchEvent(new Event("visibilitychange")))
+    await Promise.resolve()
+    expect(getTurnstileToken).toHaveBeenCalledTimes(1)
+    expect(sessionRequests).toHaveLength(2)
   })
 
   it("keeps the existing Human capability for a successful short reconnect", async () => {
