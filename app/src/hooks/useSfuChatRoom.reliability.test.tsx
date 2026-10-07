@@ -408,6 +408,19 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
     for (let index = 0; index < 20; index += 1) await Promise.resolve()
   }
 
+  async function exhaustRoomWebSocketRetryBudget() {
+    vi.useFakeTimers()
+    for (const delay of [1000, 2000, 4000, 8000, 8000]) {
+      const socket = TestWebSocket.instances.at(-1)!
+      act(() => socket.onclose?.())
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(delay)
+        await flushAsync()
+      })
+    }
+    act(() => TestWebSocket.instances.at(-1)!.onclose?.())
+  }
+
   it("reuses canonical message objects across a muted full Room state refresh", async () => {
     const { result, socket, unmount } = await connect()
     const initialState = roomState([participant("publisher-a", [])])
@@ -833,6 +846,89 @@ describe("useSfuChatRoom remote SFU subscriber reliability", () => {
     await flushAsync()
     expect(trackRequestNumber).toBe(2)
     expect(newPc.ontrack).not.toBeNull()
+    unmount()
+  })
+
+  it("stops after the Room WebSocket retry budget and passively waits for a trigger", async () => {
+    const { result, unmount } = await connect()
+    await exhaustRoomWebSocketRetryBudget()
+
+    expect(TestWebSocket.instances).toHaveLength(6)
+    expect(result.current.connectionStatus).toBe("disconnected")
+    expect(result.current.error).toBe("")
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000)
+      await flushAsync()
+    })
+    expect(TestWebSocket.instances).toHaveLength(6)
+    expect(result.current.connectionStatus).toBe("disconnected")
+    unmount()
+  })
+
+  it("starts one bounded recovery for online and ignores duplicate active triggers", async () => {
+    const { result, unmount } = await connect()
+    await exhaustRoomWebSocketRetryBudget()
+
+    act(() => {
+      window.dispatchEvent(new Event("online"))
+      window.dispatchEvent(new Event("online"))
+      result.current.retryRoomConnection()
+    })
+    expect(TestWebSocket.instances).toHaveLength(7)
+    expect(result.current.connectionStatus).toBe("reconnecting")
+
+    const recoverySocket = TestWebSocket.instances[6]
+    act(() => recoverySocket.onopen?.())
+    expect(result.current.connectionStatus).toBe("connected")
+    expect(JSON.parse(recoverySocket.sent[0])).toEqual({ type: "resync" })
+    act(() => recoverySocket.onclose?.())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(999)
+      await flushAsync()
+    })
+    expect(TestWebSocket.instances).toHaveLength(7)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1)
+      await flushAsync()
+    })
+    expect(TestWebSocket.instances).toHaveLength(8)
+    unmount()
+  })
+
+  it("lets an explicit Human retry start one sequence and removes online recovery on unmount", async () => {
+    const { result, unmount } = await connect()
+    await exhaustRoomWebSocketRetryBudget()
+
+    act(() => result.current.retryRoomConnection())
+    act(() => result.current.retryRoomConnection())
+    expect(TestWebSocket.instances).toHaveLength(7)
+    expect(result.current.connectionStatus).toBe("reconnecting")
+
+    unmount()
+    act(() => window.dispatchEvent(new Event("online")))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000)
+      await flushAsync()
+    })
+    expect(TestWebSocket.instances).toHaveLength(7)
+  })
+
+  it("keeps an authoritative Room-expired message terminal", async () => {
+    const { result, socket, unmount } = await connect()
+    act(() =>
+      socket.onmessage?.({
+        data: JSON.stringify({ type: "expired" }),
+      })
+    )
+    act(() => socket.onclose?.())
+
+    expect(result.current.connectionStatus).toBe("failed")
+    expect(result.current.error).toContain("This room has closed")
+    act(() => {
+      window.dispatchEvent(new Event("online"))
+      result.current.retryRoomConnection()
+    })
+    expect(TestWebSocket.instances).toHaveLength(1)
     unmount()
   })
 

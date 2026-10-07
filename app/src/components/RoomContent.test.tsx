@@ -110,6 +110,7 @@ const baseHookReturn = {
   toggleMicrophone: vi.fn(),
   toggleScreenShare: vi.fn(),
   retryVerification: vi.fn(),
+  retryRoomConnection: vi.fn(),
   error: "",
   expiryWarning: "",
   connectionStatus: "verifying" as string,
@@ -389,6 +390,23 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
 
     expect(screen.queryByTestId("room-joining-warp")).not.toBeInTheDocument()
     expect(container.querySelector(".room-warp__streak")).toBeNull()
+  })
+
+  it("offers a Human retry while passively waiting after Room socket exhaustion", () => {
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "disconnected",
+    })
+
+    render(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+
+    expect(screen.getByText("Connection interrupted")).toBeInTheDocument()
+    expect(screen.getByText("Waiting for network…")).toBeInTheDocument()
+    expect(screen.queryByText("Reload page")).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }))
+    expect(baseHookReturn.retryRoomConnection).toHaveBeenCalledTimes(1)
   })
 
   it("keeps Turnstile available for fresh verification in a live Room", async () => {
