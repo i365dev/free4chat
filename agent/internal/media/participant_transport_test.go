@@ -279,8 +279,8 @@ func TestCloseParticipantDataChannelsUsesEndpointSessionAndAllocationIDsOnly(t *
 			return
 		}
 		var body struct {
-			SessionID    string                     `json:"sessionId"`
-			Purpose      string                     `json:"purpose"`
+			SessionID    string                       `json:"sessionId"`
+			Purpose      string                       `json:"purpose"`
 			DataChannels []map[string]json.RawMessage `json:"dataChannels"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
