@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
+import { roomLifecycleDiagnostics } from "../common/roomLifecycleDiagnostics"
 import { TURNSTILE_ACTION } from "../common/turnstile"
 
 declare global {
@@ -39,7 +40,10 @@ let scriptPromise: Promise<void> | null = null
 function loadTurnstileScript(): Promise<void> {
   if (typeof window === "undefined")
     return Promise.reject(new Error("turnstile_unavailable"))
-  if (window.turnstile) return Promise.resolve()
+  if (window.turnstile) {
+    roomLifecycleDiagnostics.recordTurnstileStage("turnstile_script_ready")
+    return Promise.resolve()
+  }
   if (!scriptPromise) {
     // Always create a brand-new <script> element for this attempt. Reusing
     // whatever the DOM happens to have is what caused the retry hang: a
@@ -51,12 +55,16 @@ function loadTurnstileScript(): Promise<void> {
       script.src = TURNSTILE_SCRIPT_SRC
       script.async = true
       script.defer = true
-      const onReady = () => resolve()
+      const onReady = () => {
+        roomLifecycleDiagnostics.recordTurnstileStage("turnstile_script_ready")
+        resolve()
+      }
       const onFail = () => {
         script.removeEventListener("load", onReady)
         script.removeEventListener("error", onFail)
         script.remove()
         scriptPromise = null
+        roomLifecycleDiagnostics.recordTurnstileStage("turnstile_script_error")
         reject(new Error("turnstile_script_failed"))
       }
       script.addEventListener("load", onReady, { once: true })
@@ -156,17 +164,26 @@ export function useTurnstile() {
       execution: "execute",
       retry: "never",
       "refresh-expired": "manual",
-      callback: (token: string) => settle(token),
-      "error-callback": () => {
+      callback: (token: string) => {
+        roomLifecycleDiagnostics.recordTurnstileStage("turnstile_success")
+        settle(token)
+      },
+      "error-callback": (errorCode: unknown) => {
+        roomLifecycleDiagnostics.recordTurnstileError(errorCode)
         settle(undefined, new Error("turnstile_error"))
         return false
       },
-      "expired-callback": () =>
-        settle(undefined, new Error("turnstile_expired")),
-      "timeout-callback": () =>
-        settle(undefined, new Error("turnstile_timeout")),
+      "expired-callback": () => {
+        roomLifecycleDiagnostics.recordTurnstileStage("turnstile_expired")
+        settle(undefined, new Error("turnstile_expired"))
+      },
+      "timeout-callback": () => {
+        roomLifecycleDiagnostics.recordTurnstileStage("turnstile_timeout")
+        settle(undefined, new Error("turnstile_timeout"))
+      },
     })
     widgetIdRef.current = widgetId
+    roomLifecycleDiagnostics.recordTurnstileStage("turnstile_widget_rendered")
     return widgetId
   }, [settle])
 
@@ -187,6 +204,7 @@ export function useTurnstile() {
         try {
           // Reset first so a stale/consumed token can never be handed back.
           ts.reset(widgetId)
+          roomLifecycleDiagnostics.recordTurnstileStage("turnstile_execute")
           ts.execute(container)
         } catch (err) {
           settlementRef.current = null

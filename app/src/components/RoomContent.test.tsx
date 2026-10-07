@@ -317,6 +317,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
 
   afterEach(() => {
     delete (window as { turnstile?: unknown }).turnstile
+    delete (document as unknown as { execCommand?: unknown }).execCommand
     // #98 recency is remembered per browser tab, so one test's opened Apps must
     // never leak into the next test's inline Stage strip.
     window.sessionStorage.clear()
@@ -338,6 +339,9 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     )
 
     expect(screen.getByText("Verifying…")).toBeInTheDocument()
+    expect(
+      screen.queryByRole("button", { name: "Copy diagnostics" })
+    ).not.toBeInTheDocument()
     expect(screen.queryByTestId("room-joining-warp")).not.toBeInTheDocument()
     const turnstileMount = screen.getByTestId("turnstile-mount")
 
@@ -396,6 +400,7 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     mockUseSfuChatRoom.mockReturnValue({
       ...baseHookReturn,
       connectionStatus: "disconnected",
+      participants: [],
     })
 
     render(
@@ -407,6 +412,65 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     expect(screen.queryByText("Reload page")).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Try again" }))
     expect(baseHookReturn.retryRoomConnection).toHaveBeenCalledTimes(1)
+  })
+
+  it("copies local lifecycle diagnostics from the verification failure screen", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { clipboard: { writeText } })
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "verification_failed",
+      participants: [],
+    })
+
+    render(
+      <RoomContent
+        roomName="private-room-name"
+        nickName="private-nickname"
+        roomType="audio"
+      />
+    )
+
+    expect(
+      screen.getByRole("button", { name: "Try again" })
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole("button", { name: "Copy diagnostics" })
+    ).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Copy diagnostics" }))
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1))
+    const copied = writeText.mock.calls[0][0] as string
+    expect(copied).toContain("Free4Chat Room lifecycle diagnostics v1")
+    expect(copied).not.toContain("private-room-name")
+    expect(copied).not.toContain("private-nickname")
+    expect(await screen.findByText("Copied")).toBeInTheDocument()
+  })
+
+  it("falls back to a click-triggered text selection when clipboard write is unavailable", async () => {
+    const writeText = vi
+      .fn()
+      .mockRejectedValue(new Error("clipboard unavailable"))
+    Object.assign(navigator, { clipboard: { writeText } })
+    const execCommand = vi.fn().mockReturnValue(true)
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: execCommand,
+    })
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "verification_failed",
+      participants: [],
+    })
+
+    render(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Copy diagnostics" }))
+
+    expect(await screen.findByText("Copied")).toBeInTheDocument()
+    expect(writeText).toHaveBeenCalledTimes(1)
+    expect(execCommand).toHaveBeenCalledWith("copy")
   })
 
   it("keeps Turnstile available for fresh verification in a live Room", async () => {
@@ -494,6 +558,90 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     expect(connectedMount).toHaveClass("room-warp__turnstile")
     expect(connectedMount).not.toHaveClass("room-live__turnstile--active")
     expect(screen.queryByTestId("live-turnstile-preparing")).toBeNull()
+  })
+
+  it("keeps a live Room and Turnstile mount resident through verification failure and exposes diagnostics", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { clipboard: { writeText } })
+    const participants = [
+      {
+        peerId: "private-participant-id",
+        name: "private-nickname",
+        kind: "human",
+        room: "private-room-name",
+        muteState: false,
+      },
+    ]
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      participants,
+    })
+
+    const view = render(
+      <RoomContent
+        roomName="private-room-name"
+        nickName="private-nickname"
+        roomType="audio"
+      />
+    )
+    const liveRoom = view.container.querySelector(".room-shell--live")
+    const turnstileMount = screen.getByTestId("turnstile-mount")
+    expect(liveRoom).toBeInTheDocument()
+
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "verifying",
+      participants,
+    })
+    view.rerender(
+      <RoomContent
+        roomName="private-room-name"
+        nickName="private-nickname"
+        roomType="audio"
+      />
+    )
+    expect(screen.getByTestId("turnstile-mount")).toBe(turnstileMount)
+    expect(view.container.querySelector(".room-shell--live")).toBe(liveRoom)
+
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "verification_failed",
+      participants,
+    })
+    view.rerender(
+      <RoomContent
+        roomName="private-room-name"
+        nickName="private-nickname"
+        roomType="audio"
+      />
+    )
+
+    expect(
+      screen.getByTestId("live-verification-failed-guard")
+    ).toBeInTheDocument()
+    expect(screen.getByText("Verification failed")).toBeInTheDocument()
+    expect(
+      screen.getByRole("button", { name: "Try again" })
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole("button", { name: "Copy diagnostics" })
+    ).toBeInTheDocument()
+    expect(screen.getByTestId("turnstile-mount")).toBe(turnstileMount)
+    expect(view.container.querySelector(".room-shell--live")).toBe(liveRoom)
+    expect(screen.queryByTestId("room-joining-warp")).toBeNull()
+
+    baseHookReturn.retryVerification.mockClear()
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }))
+    expect(baseHookReturn.retryVerification).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole("button", { name: "Copy diagnostics" }))
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1))
+    const copied = writeText.mock.calls[0][0] as string
+    expect(copied).toContain("verification_failed")
+    expect(copied).not.toContain("private-room-name")
+    expect(copied).not.toContain("private-participant-id")
+    expect(copied).not.toContain("private-nickname")
+    expect(await screen.findByText("Copied")).toBeInTheDocument()
   })
 
   it("shows Harness-advertised select controls only after choosing an explicit project", async () => {
