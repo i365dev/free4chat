@@ -119,11 +119,15 @@ function localTrackResponse(init?: RequestInit) {
 }
 
 let lastFakeWebSocket: {
+  readyState: number
   onopen: (() => void) | null
   onclose: (() => void) | null
   onmessage: ((event: { data: string }) => void) | null
+  onerror: (() => void) | null
   send: ReturnType<typeof vi.fn>
+  close: ReturnType<typeof vi.fn>
 } | null = null
+let fakeWebSocketCount = 0
 
 describe("useSfuChatRoom — Turnstile boundary", () => {
   let fetchMock: ReturnType<typeof vi.fn>
@@ -133,6 +137,7 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
     setProductionRoomAppCatalog([TEST_ROOM_APP])
     FakePeerConnection.instances.length = 0
     FakePeerConnection.dataChannels.length = 0
+    fakeWebSocketCount = 0
     ;(global as unknown as { RTCPeerConnection: unknown }).RTCPeerConnection =
       FakePeerConnection
     class FakeMediaStream {
@@ -157,10 +162,14 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
       onerror: (() => void) | null = null
       onclose: (() => void) | null = null
       send = vi.fn()
+      close = vi.fn(() => {
+        this.readyState = 3
+        this.onclose?.()
+      })
       constructor(public url: string) {
+        fakeWebSocketCount += 1
         lastFakeWebSocket = this
       }
-      close() {}
     }
     ;(global as unknown as { WebSocket: unknown }).WebSocket = FakeWebSocket
 
@@ -246,6 +255,343 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
     )
 
     expect(result.current.connectionStatus).not.toBe("verification_failed")
+    unmount()
+  })
+
+  it("falls back once to fresh verified Human admission after stale reconnect is rejected", async () => {
+    const getTurnstileToken = vi
+      .fn()
+      .mockResolvedValueOnce("turnstile-1")
+      .mockResolvedValueOnce("turnstile-2")
+    const sessionRequests: Array<Record<string, unknown>> = []
+    let rejectStaleReconnect!: (response: Response) => void
+    const staleReconnectPending = new Promise<Response>((resolve) => {
+      rejectStaleReconnect = resolve
+    })
+    fetchMock.mockImplementation(
+      (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        if (url.endsWith("/api/sfu/session")) {
+          const body = JSON.parse(String(init?.body ?? "{}")) as Record<
+            string,
+            unknown
+          >
+          sessionRequests.push(body)
+          if (body.reconnect) return staleReconnectPending
+          return jsonResponse({
+            participantId:
+              sessionRequests.length === 1 ? "human-h1" : "human-h2",
+            participantToken:
+              sessionRequests.length === 1 ? "token-t1" : "token-t2",
+            sessionId:
+              sessionRequests.length === 1 ? "session-s1" : "session-s2",
+            expiresAt: Date.now() + 60 * 60 * 1000,
+          })
+        }
+        if (url.endsWith("/api/sfu/datachannels/establish"))
+          return jsonResponse({})
+        if (url.endsWith("/api/sfu/datachannels/new"))
+          return jsonResponse({ dataChannels: [{ id: 1 }] })
+        if (url.endsWith("/api/sfu/tracks"))
+          return localTrackResponse(init) ?? jsonResponse({})
+        return jsonResponse({})
+      }
+    )
+
+    const { result, unmount } = renderHook(() =>
+      useSfuChatRoom("room-stale-reconnect", "alice", "audio", {
+        getTurnstileToken,
+      })
+    )
+
+    await waitFor(() => expect(lastFakeWebSocket).not.toBeNull())
+    expect(getTurnstileToken).toHaveBeenCalledTimes(1)
+    expect(sessionRequests[0].turnstileToken).toBe("turnstile-1")
+    expect(sessionRequests[0].reconnect).toBeUndefined()
+
+    act(() => {
+      const pc = FakePeerConnection.instances[0]
+      pc.connectionState = "disconnected"
+      pc.onconnectionstatechange?.()
+    })
+
+    await waitFor(() => expect(sessionRequests).toHaveLength(2))
+    act(() => FakePeerConnection.instances[0].onconnectionstatechange?.())
+    expect(sessionRequests).toHaveLength(2)
+    await act(async () => {
+      rejectStaleReconnect(await jsonResponse({ error: "unauthorized" }, 401))
+    })
+
+    await waitFor(() => expect(getTurnstileToken).toHaveBeenCalledTimes(2), {
+      timeout: 3000,
+    })
+    await waitFor(() => expect(sessionRequests).toHaveLength(3), {
+      timeout: 3000,
+    })
+    expect(sessionRequests[1].reconnect).toEqual({
+      participantId: "human-h1",
+      participantToken: "token-t1",
+      sessionId: "session-s1",
+    })
+    expect(sessionRequests[2].turnstileToken).toBe("turnstile-2")
+    expect(sessionRequests[2].reconnect).toBeUndefined()
+    expect(result.current.connectionStatus).not.toBe("failed")
+    expect(sessionRequests.filter((request) => request.reconnect)).toHaveLength(
+      1
+    )
+    unmount()
+  })
+
+  it("keeps the existing Human capability for a successful short reconnect", async () => {
+    const getTurnstileToken = vi.fn().mockResolvedValue("turnstile-1")
+    const { unmount } = renderHook(() =>
+      useSfuChatRoom("room-short-reconnect", "alice", "audio", {
+        getTurnstileToken,
+      })
+    )
+    await waitFor(() => expect(lastFakeWebSocket).not.toBeNull())
+
+    act(() => {
+      const pc = FakePeerConnection.instances[0]
+      pc.connectionState = "disconnected"
+      pc.onconnectionstatechange?.()
+    })
+
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.filter(([input]) =>
+          String(input).endsWith("/api/sfu/session")
+        )
+      ).toHaveLength(2)
+    )
+    const reconnect = JSON.parse(
+      fetchMock.mock.calls.filter(([input]) =>
+        String(input).endsWith("/api/sfu/session")
+      )[1][1].body as string
+    ) as { reconnect?: Record<string, unknown> }
+    expect(reconnect.reconnect).toEqual({
+      participantId: "participant-1",
+      participantToken: "participant-token",
+      sessionId: "session-1",
+    })
+    expect(getTurnstileToken).toHaveBeenCalledTimes(1)
+    unmount()
+  })
+
+  it("reports a fresh-admission failure without retrying the stale capability", async () => {
+    const getTurnstileToken = vi
+      .fn()
+      .mockResolvedValueOnce("turnstile-1")
+      .mockResolvedValueOnce("turnstile-2")
+    const sessionRequests: Array<Record<string, unknown>> = []
+    fetchMock.mockImplementation(
+      (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        if (url.endsWith("/api/sfu/session")) {
+          const body = JSON.parse(String(init?.body ?? "{}")) as Record<
+            string,
+            unknown
+          >
+          sessionRequests.push(body)
+          if (body.reconnect)
+            return jsonResponse({ error: "unauthorized" }, 401)
+          if (sessionRequests.length > 1)
+            return jsonResponse({ error: "verification_failed" }, 403)
+          return jsonResponse({
+            participantId: "human-h1",
+            participantToken: "token-t1",
+            sessionId: "session-s1",
+            expiresAt: Date.now() + 60 * 60 * 1000,
+          })
+        }
+        if (url.endsWith("/api/sfu/datachannels/establish"))
+          return jsonResponse({})
+        if (url.endsWith("/api/sfu/datachannels/new"))
+          return jsonResponse({ dataChannels: [{ id: 1 }] })
+        if (url.endsWith("/api/sfu/tracks"))
+          return localTrackResponse(init) ?? jsonResponse({})
+        return jsonResponse({})
+      }
+    )
+
+    const { result, unmount } = renderHook(() =>
+      useSfuChatRoom("room-stale-fresh-failure", "alice", "audio", {
+        getTurnstileToken,
+      })
+    )
+    await waitFor(() => expect(lastFakeWebSocket).not.toBeNull())
+    act(() => {
+      const pc = FakePeerConnection.instances[0]
+      pc.connectionState = "disconnected"
+      pc.onconnectionstatechange?.()
+    })
+
+    await waitFor(() =>
+      expect(result.current.connectionStatus).toBe("verification_failed")
+    )
+    expect(result.current.error).toBe("verification_failed")
+    expect(sessionRequests).toHaveLength(3)
+    expect(sessionRequests.filter((request) => request.reconnect)).toHaveLength(
+      1
+    )
+    expect(getTurnstileToken).toHaveBeenCalledTimes(2)
+    unmount()
+  })
+
+  it("receives canonical Room state while DataChannel bootstrap is pending, then publishes readiness", async () => {
+    let resolveEstablish!: (response: Response) => void
+    const establishPending = new Promise<Response>((resolve) => {
+      resolveEstablish = resolve
+    })
+    fetchMock.mockImplementation(
+      (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        if (url.endsWith("/api/sfu/session"))
+          return jsonResponse({
+            participantId: "human-1",
+            participantToken: "token-1",
+            sessionId: "session-1",
+            expiresAt: Date.now() + 60 * 60 * 1000,
+          })
+        if (url.endsWith("/api/sfu/datachannels/establish"))
+          return establishPending
+        if (url.endsWith("/api/sfu/datachannels/new"))
+          return jsonResponse({ dataChannels: [{ id: 1 }] })
+        if (url.endsWith("/api/sfu/tracks"))
+          return localTrackResponse(init) ?? jsonResponse({})
+        return jsonResponse({})
+      }
+    )
+
+    const { result, unmount } = renderHook(() =>
+      useSfuChatRoom("room-progressive-start", "alice", "audio")
+    )
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([input]) =>
+          String(input).endsWith("/api/sfu/datachannels/establish")
+        )
+      ).toBe(true)
+    )
+    for (let index = 0; index < 20; index += 1) await Promise.resolve()
+    expect(lastFakeWebSocket).not.toBeNull()
+
+    const socket = lastFakeWebSocket!
+    act(() => {
+      socket.onopen?.()
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "state",
+          state: {
+            createdAt: 0,
+            expiresAt: Date.now() + 60 * 60 * 1000,
+            participants: [
+              {
+                id: "remote-human",
+                name: "Remote Human",
+                kind: "human",
+                connected: true,
+                joinedAt: 0,
+                lastSeenAt: 0,
+                media: {
+                  sessionId: "remote-session",
+                  muted: true,
+                  fileChannelReady: false,
+                  tracks: [],
+                },
+              },
+            ],
+            messages: [],
+            meetingNotes: { active: false },
+          },
+        }),
+      })
+    })
+    await waitFor(() =>
+      expect(
+        result.current.participants.some(
+          (participant) => participant.peerId === "remote-human"
+        )
+      ).toBe(true)
+    )
+    expect(
+      socket.send.mock.calls.map(([message]) => JSON.parse(message as string))
+    ).toContainEqual({ type: "resync" })
+    expect(
+      socket.send.mock.calls
+        .map(([message]) => JSON.parse(message as string))
+        .some((message) => message.type === "datachannel-ready")
+    ).toBe(false)
+
+    await act(async () => {
+      resolveEstablish(await jsonResponse({}))
+    })
+    await waitFor(() =>
+      expect(
+        socket.send.mock.calls.map(([message]) => JSON.parse(message as string))
+      ).toContainEqual({
+        type: "datachannel-ready",
+        appDataChannelReady: false,
+      })
+    )
+    unmount()
+  })
+
+  it("closes the attempt Room socket when mandatory DataChannel bootstrap fails", async () => {
+    let rejectEstablish!: (error: Error) => void
+    const establishPending = new Promise<Response>((_resolve, reject) => {
+      rejectEstablish = reject
+    })
+    fetchMock.mockImplementation(
+      (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        if (url.endsWith("/api/sfu/session"))
+          return jsonResponse({
+            participantId: "human-1",
+            participantToken: "token-1",
+            sessionId: "session-1",
+            expiresAt: Date.now() + 60 * 60 * 1000,
+          })
+        if (url.endsWith("/api/sfu/datachannels/establish"))
+          return establishPending
+        if (url.endsWith("/api/sfu/datachannels/new"))
+          return jsonResponse({ dataChannels: [{ id: 1 }] })
+        if (url.endsWith("/api/sfu/tracks"))
+          return localTrackResponse(init) ?? jsonResponse({})
+        return jsonResponse({})
+      }
+    )
+
+    const { result, unmount } = renderHook(() =>
+      useSfuChatRoom("room-bootstrap-failure", "alice", "audio")
+    )
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([input]) =>
+          String(input).endsWith("/api/sfu/datachannels/establish")
+        )
+      ).toBe(true)
+    )
+    const socket = lastFakeWebSocket!
+    expect(socket).not.toBeNull()
+    act(() => socket.onopen?.())
+    expect(socket.readyState).toBe(1)
+
+    await act(async () => rejectEstablish(new Error("bootstrap failed")))
+    await waitFor(() => expect(result.current.connectionStatus).toBe("failed"))
+
+    expect(socket.close).toHaveBeenCalledTimes(1)
+    expect(socket.readyState).toBe(3)
+    expect(socket.onclose).toBeNull()
+    expect(
+      socket.send.mock.calls
+        .map(([message]) => JSON.parse(message as string))
+        .some((message) => message.type === "datachannel-ready")
+    ).toBe(false)
+    const socketsAtFailure = fakeWebSocketCount
+    await new Promise((resolve) => setTimeout(resolve, 1100))
+    expect(fakeWebSocketCount).toBe(socketsAtFailure)
+
     unmount()
   })
 

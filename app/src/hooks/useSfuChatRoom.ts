@@ -116,6 +116,13 @@ class TurnstileVerificationError extends Error {
   }
 }
 
+class StaleReconnectCapabilityError extends Error {
+  constructor(readonly session: SfuSessionResponse) {
+    super("The previous Human session is no longer authorized")
+    this.name = "StaleReconnectCapabilityError"
+  }
+}
+
 const MAX_FILE_SIZE = 20 * 1024 * 1024
 const FILE_CHUNK_SIZE = 32 * 1024
 const FILE_BUFFER_HIGH_WATER_MARK = 256 * 1024
@@ -910,6 +917,7 @@ export function useSfuChatRoom(
     droppedMessages: 0,
   })
   const roomAppsServerEnabledRef = useRef(false)
+  const dataChannelBootstrapReadyRef = useRef(false)
   const roomAppsEnabledRef = useRef(false)
   const roomAppChannelsReadyRef = useRef(false)
   const dataChannelsRef = useRef(new Set<RTCDataChannel>())
@@ -4085,7 +4093,8 @@ export function useSfuChatRoom(
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === "connected") {
         mediaReconnectAttemptsRef.current = 0
-        setConnectionStatus("connected")
+        if (dataChannelBootstrapReadyRef.current)
+          setConnectionStatus("connected")
         sampleSfuEgress("interval", pc)
         // Room state and ICE/DTLS completion are independent events. Replay
         // all currently published remote media at this boundary so an early
@@ -4112,9 +4121,9 @@ export function useSfuChatRoom(
     roomAppDiagnostic,
   ])
 
-  const connectWebSocket = useCallback(() => {
+  const connectWebSocket = useCallback((): WebSocket | null => {
     const session = sessionRef.current
-    if (!session || closingRef.current) return
+    if (!session || closingRef.current) return null
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
     const url = new URL(`${protocol}//${window.location.host}/api/sfu/ws`)
     url.searchParams.set("room", session.room)
@@ -4125,7 +4134,7 @@ export function useSfuChatRoom(
     websocketRef.current = socket
     socket.onopen = () => {
       reconnectAttemptsRef.current = 0
-      setConnectionStatus("connected")
+      if (dataChannelBootstrapReadyRef.current) setConnectionStatus("connected")
       setError("")
       sendSocketMessage({ type: "resync" })
       for (const appInstanceId of roomAppHostsRef.current) {
@@ -4154,7 +4163,7 @@ export function useSfuChatRoom(
           micTrack.enabled
         ),
       })
-      if (dataChannelReadyRef.current)
+      if (dataChannelBootstrapReadyRef.current)
         sendSocketMessage({
           type: "datachannel-ready",
           appDataChannelReady: roomAppChannelsReadyRef.current,
@@ -4539,6 +4548,7 @@ export function useSfuChatRoom(
         Math.min(1000 * 2 ** attempt, 8000)
       )
     }
+    return socket
   }, [
     appendRoomMessage,
     applyRoomState,
@@ -4554,7 +4564,7 @@ export function useSfuChatRoom(
   ])
 
   const connectMediaSession = useCallback(
-    async (reconnecting: boolean) => {
+    async (reconnecting: boolean): Promise<boolean> => {
       const previousSession = sessionRef.current
       if (reconnecting && !previousSession)
         throw new Error("SFU session is not ready")
@@ -4591,6 +4601,7 @@ export function useSfuChatRoom(
         }
         peerConnectionRef.current = null
         dataChannelReadyRef.current = false
+        dataChannelBootstrapReadyRef.current = false
         roomAppsEnabledRef.current = false
         localTrackMidsRef.current.clear()
         clearAllAgentAudioSubscriptionRetries("media_reconnect")
@@ -4615,6 +4626,8 @@ export function useSfuChatRoom(
           )
         }
       }
+      if (closingRef.current || sessionRef.current !== previousSession)
+        return false
       setConnectionStatus(reconnecting ? "reconnecting" : "connecting")
 
       // #402: joining a Room never captures audio. A Human who never enabled
@@ -4661,6 +4674,18 @@ export function useSfuChatRoom(
         const data = (await response.json().catch(() => ({}))) as {
           error?: string
         }
+        if (
+          reconnecting &&
+          response.status === 401 &&
+          data.error === "unauthorized" &&
+          previousSession
+        ) {
+          if (peerConnectionRef.current === pc) {
+            pc.close()
+            peerConnectionRef.current = null
+          }
+          throw new StaleReconnectCapabilityError(previousSession)
+        }
         if (!reconnecting && response.status === 403) {
           throw new TurnstileVerificationError(
             data.error || "Verification failed"
@@ -4669,13 +4694,41 @@ export function useSfuChatRoom(
         throw new Error(data.error || "Unable to create SFU session")
       }
       const session = (await response.json()) as SfuSessionResponse
+      if (
+        closingRef.current ||
+        peerConnectionRef.current !== pc ||
+        sessionRef.current !== previousSession
+      ) {
+        pc.close()
+        return false
+      }
       sessionRef.current = { ...session, room: roomName }
+      dataChannelBootstrapReadyRef.current = false
       roomAppDiagnostic.setParticipant(session.participantId)
       roomAppDiagnostic.nextLaneEpoch("subscriber", session.participantId)
       roomAppsServerEnabledRef.current = session.roomAppsEnabled === true
       roomAppsEnabledRef.current = false
       setRoomAppsEnabled(false)
-      await establishDataChannelTransport()
+      const roomSocket = connectWebSocket()
+      try {
+        await establishDataChannelTransport()
+      } catch (error) {
+        if (roomSocket && websocketRef.current === roomSocket) {
+          roomSocket.onclose = null
+          roomSocket.onerror = null
+          roomSocket.close()
+          if (websocketRef.current === roomSocket) websocketRef.current = null
+        }
+        throw error
+      }
+      dataChannelBootstrapReadyRef.current = true
+      if (websocketRef.current?.readyState === WebSocket.OPEN) {
+        sendSocketMessage({
+          type: "datachannel-ready",
+          appDataChannelReady: roomAppChannelsReadyRef.current,
+        })
+        setConnectionStatus("connected")
+      }
       if (audioTrack)
         await publishTrack(
           audioTrack,
@@ -4689,9 +4742,9 @@ export function useSfuChatRoom(
           localScreenTrackNameRef.current
         )
       }
-      connectWebSocket()
       if (reconnecting)
         roomAppDiagnostic.record({ event: "media_reconnect_complete" })
+      return true
     },
     [
       closeDataChannels,
@@ -4709,6 +4762,7 @@ export function useSfuChatRoom(
       rebuildParticipants,
       roomName,
       roomAppDiagnostic,
+      sendSocketMessage,
       sampleSfuEgress,
     ]
   )
@@ -4726,10 +4780,37 @@ export function useSfuChatRoom(
       roomAppDiagnostic.record({ event: "media_reconnect_start" })
       setConnectionStatus("reconnecting")
       try {
-        await connectMediaSession(true)
+        const reconnected = await connectMediaSession(true)
+        if (!reconnected || closingRef.current) return
         mediaReconnectAttemptsRef.current = 0
         setError("")
       } catch (err) {
+        if (err instanceof StaleReconnectCapabilityError) {
+          // Another lifecycle may have installed a newer valid capability
+          // while this request was in flight. Its result owns the hook now.
+          if (sessionRef.current !== err.session || closingRef.current) return
+          sessionRef.current = null
+          try {
+            // The old capability has been authoritatively rejected. Retire it
+            // and enter the single, existing fresh Human admission path.
+            const freshlyAdmitted = await connectMediaSession(false)
+            if (!freshlyAdmitted || closingRef.current) return
+            mediaReconnectAttemptsRef.current = 0
+            setError("")
+          } catch (freshAdmissionError) {
+            setError(
+              freshAdmissionError instanceof Error
+                ? freshAdmissionError.message
+                : "Unable to create SFU session"
+            )
+            setConnectionStatus(
+              freshAdmissionError instanceof TurnstileVerificationError
+                ? "verification_failed"
+                : "failed"
+            )
+          }
+          return
+        }
         if (attempt >= 4) {
           roomAppDiagnostic.record({ event: "media_reconnect_failed" })
           setError(
@@ -4794,6 +4875,7 @@ export function useSfuChatRoom(
 
     return () => {
       closingRef.current = true
+      dataChannelBootstrapReadyRef.current = false
       sampleSfuEgress("disconnect", peerConnectionRef.current)
       clearAllAgentAudioSubscriptionRetries("unmount")
       clearAllRemoteTrackSubscriptionRetries("unmount")
