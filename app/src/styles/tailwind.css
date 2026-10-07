@@ -627,6 +627,21 @@ html {
   pointer-events: none;
 }
 
+.room-live__turnstile--active {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  overflow: visible;
+  background: rgba(3, 7, 18, 0.9);
+  opacity: 1;
+  pointer-events: auto;
+}
+
 @keyframes room-warp-streak {
   0% {
     opacity: 0;

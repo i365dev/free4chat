@@ -2475,10 +2475,20 @@ export default function RoomContent({
     >
       {/* A stale reconnect can request fresh Human verification while the
           canonical participant projection keeps this live Room mounted. Keep
-          one bounded, invisible Turnstile target available in that state. */}
+          the same bounded mount visible and interactive only during the
+          verification challenge. */}
       <div
         ref={turnstileContainerRef}
-        className="room-warp__turnstile"
+        className={
+          connectionStatus === "verifying"
+            ? "room-live__turnstile--active"
+            : "room-warp__turnstile"
+        }
+        style={
+          connectionStatus === "verifying"
+            ? { opacity: 1, pointerEvents: "auto" }
+            : undefined
+        }
         data-testid="turnstile-mount"
       />
       {connectionStatus === "reconnecting" && (

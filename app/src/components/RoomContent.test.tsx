@@ -392,28 +392,45 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
   })
 
   it("keeps Turnstile available for fresh verification in a live Room", async () => {
+    const participants = [
+      {
+        peerId: "human-local",
+        name: "tester",
+        kind: "human",
+        room: "test-room",
+        muteState: false,
+      },
+    ]
     mockUseSfuChatRoom.mockReturnValue({
       ...baseHookReturn,
-      // This is the in-place state after an authoritative stale reconnect 401:
-      // the existing canonical participant projection remains visible.
-      connectionStatus: "verifying",
-      participants: [
-        {
-          peerId: "human-local",
-          name: "tester",
-          kind: "human",
-          room: "test-room",
-          muteState: false,
-        },
-      ],
+      connectionStatus: "connected",
+      participants,
     })
 
-    render(
+    const { rerender } = render(
       <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
     )
 
     const turnstileMount = screen.getByTestId("turnstile-mount")
     expect(turnstileMount).toBeInTheDocument()
+    expect(turnstileMount).toHaveClass("room-warp__turnstile")
+
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      // This is the in-place state after an authoritative stale reconnect 401:
+      // the existing canonical participant projection remains visible.
+      connectionStatus: "verifying",
+      participants,
+    })
+    rerender(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+
+    const verifyingMount = screen.getByTestId("turnstile-mount")
+    expect(verifyingMount).toBe(turnstileMount)
+    expect(verifyingMount).toHaveClass("room-live__turnstile--active")
+    expect(verifyingMount).not.toHaveClass("room-warp__turnstile")
+    expect(verifyingMount).toHaveStyle({ opacity: "1", pointerEvents: "auto" })
 
     const hookOptions = mockUseSfuChatRoom.mock.calls.at(-1)?.[3] as {
       getTurnstileToken: () => Promise<string>
@@ -430,6 +447,20 @@ describe("RoomContent — Turnstile widget lifecycle", () => {
     )
     act(() => mock.fireSuccess("fresh-turnstile-token"))
     await expect(tokenPromise).resolves.toBe("fresh-turnstile-token")
+
+    mockUseSfuChatRoom.mockReturnValue({
+      ...baseHookReturn,
+      connectionStatus: "connected",
+      participants,
+    })
+    rerender(
+      <RoomContent roomName="test-room" nickName="tester" roomType="audio" />
+    )
+
+    const connectedMount = screen.getByTestId("turnstile-mount")
+    expect(connectedMount).toBe(turnstileMount)
+    expect(connectedMount).toHaveClass("room-warp__turnstile")
+    expect(connectedMount).not.toHaveClass("room-live__turnstile--active")
   })
 
   it("shows Harness-advertised select controls only after choosing an explicit project", async () => {
