@@ -4121,9 +4121,9 @@ export function useSfuChatRoom(
     roomAppDiagnostic,
   ])
 
-  const connectWebSocket = useCallback(() => {
+  const connectWebSocket = useCallback((): WebSocket | null => {
     const session = sessionRef.current
-    if (!session || closingRef.current) return
+    if (!session || closingRef.current) return null
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
     const url = new URL(`${protocol}//${window.location.host}/api/sfu/ws`)
     url.searchParams.set("room", session.room)
@@ -4548,6 +4548,7 @@ export function useSfuChatRoom(
         Math.min(1000 * 2 ** attempt, 8000)
       )
     }
+    return socket
   }, [
     appendRoomMessage,
     applyRoomState,
@@ -4708,8 +4709,18 @@ export function useSfuChatRoom(
       roomAppsServerEnabledRef.current = session.roomAppsEnabled === true
       roomAppsEnabledRef.current = false
       setRoomAppsEnabled(false)
-      connectWebSocket()
-      await establishDataChannelTransport()
+      const roomSocket = connectWebSocket()
+      try {
+        await establishDataChannelTransport()
+      } catch (error) {
+        if (roomSocket && websocketRef.current === roomSocket) {
+          roomSocket.onclose = null
+          roomSocket.onerror = null
+          roomSocket.close()
+          if (websocketRef.current === roomSocket) websocketRef.current = null
+        }
+        throw error
+      }
       dataChannelBootstrapReadyRef.current = true
       if (websocketRef.current?.readyState === WebSocket.OPEN) {
         sendSocketMessage({
@@ -4864,6 +4875,7 @@ export function useSfuChatRoom(
 
     return () => {
       closingRef.current = true
+      dataChannelBootstrapReadyRef.current = false
       sampleSfuEgress("disconnect", peerConnectionRef.current)
       clearAllAgentAudioSubscriptionRetries("unmount")
       clearAllRemoteTrackSubscriptionRetries("unmount")

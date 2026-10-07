@@ -119,11 +119,15 @@ function localTrackResponse(init?: RequestInit) {
 }
 
 let lastFakeWebSocket: {
+  readyState: number
   onopen: (() => void) | null
   onclose: (() => void) | null
   onmessage: ((event: { data: string }) => void) | null
+  onerror: (() => void) | null
   send: ReturnType<typeof vi.fn>
+  close: ReturnType<typeof vi.fn>
 } | null = null
+let fakeWebSocketCount = 0
 
 describe("useSfuChatRoom — Turnstile boundary", () => {
   let fetchMock: ReturnType<typeof vi.fn>
@@ -133,6 +137,7 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
     setProductionRoomAppCatalog([TEST_ROOM_APP])
     FakePeerConnection.instances.length = 0
     FakePeerConnection.dataChannels.length = 0
+    fakeWebSocketCount = 0
     ;(global as unknown as { RTCPeerConnection: unknown }).RTCPeerConnection =
       FakePeerConnection
     class FakeMediaStream {
@@ -157,10 +162,14 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
       onerror: (() => void) | null = null
       onclose: (() => void) | null = null
       send = vi.fn()
+      close = vi.fn(() => {
+        this.readyState = 3
+        this.onclose?.()
+      })
       constructor(public url: string) {
+        fakeWebSocketCount += 1
         lastFakeWebSocket = this
       }
-      close() {}
     }
     ;(global as unknown as { WebSocket: unknown }).WebSocket = FakeWebSocket
 
@@ -525,6 +534,64 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
         appDataChannelReady: false,
       })
     )
+    unmount()
+  })
+
+  it("closes the attempt Room socket when mandatory DataChannel bootstrap fails", async () => {
+    let rejectEstablish!: (error: Error) => void
+    const establishPending = new Promise<Response>((_resolve, reject) => {
+      rejectEstablish = reject
+    })
+    fetchMock.mockImplementation(
+      (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        if (url.endsWith("/api/sfu/session"))
+          return jsonResponse({
+            participantId: "human-1",
+            participantToken: "token-1",
+            sessionId: "session-1",
+            expiresAt: Date.now() + 60 * 60 * 1000,
+          })
+        if (url.endsWith("/api/sfu/datachannels/establish"))
+          return establishPending
+        if (url.endsWith("/api/sfu/datachannels/new"))
+          return jsonResponse({ dataChannels: [{ id: 1 }] })
+        if (url.endsWith("/api/sfu/tracks"))
+          return localTrackResponse(init) ?? jsonResponse({})
+        return jsonResponse({})
+      }
+    )
+
+    const { result, unmount } = renderHook(() =>
+      useSfuChatRoom("room-bootstrap-failure", "alice", "audio")
+    )
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([input]) =>
+          String(input).endsWith("/api/sfu/datachannels/establish")
+        )
+      ).toBe(true)
+    )
+    const socket = lastFakeWebSocket!
+    expect(socket).not.toBeNull()
+    act(() => socket.onopen?.())
+    expect(socket.readyState).toBe(1)
+
+    await act(async () => rejectEstablish(new Error("bootstrap failed")))
+    await waitFor(() => expect(result.current.connectionStatus).toBe("failed"))
+
+    expect(socket.close).toHaveBeenCalledTimes(1)
+    expect(socket.readyState).toBe(3)
+    expect(socket.onclose).toBeNull()
+    expect(
+      socket.send.mock.calls
+        .map(([message]) => JSON.parse(message as string))
+        .some((message) => message.type === "datachannel-ready")
+    ).toBe(false)
+    const socketsAtFailure = fakeWebSocketCount
+    await new Promise((resolve) => setTimeout(resolve, 1100))
+    expect(fakeWebSocketCount).toBe(socketsAtFailure)
+
     unmount()
   })
 
