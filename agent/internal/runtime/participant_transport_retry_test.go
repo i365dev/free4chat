@@ -174,6 +174,57 @@ func TestParticipantTransportRetriesSameProjectionWithoutRoomEnvelope(t *testing
 	}
 }
 
+func TestParticipantTransportEmptyProjectionTearsDownAndRestoredProjectionRestarts(t *testing.T) {
+	rt, _ := newResidentFenceRuntime(t)
+	configureParticipantTransportRuntime(t, rt, 10*time.Millisecond)
+	defer rt.Stop()
+
+	first := newScriptedUpdatableParticipantTransport(nil)
+	second := newScriptedUpdatableParticipantTransport(nil)
+	transports := []*scriptedUpdatableParticipantTransport{first, second}
+	factoryCalls := 0
+	rt.participantTransportFactory = func(media.DecodedHandle) participantDataTransport {
+		factoryCalls++
+		if factoryCalls > len(transports) {
+			t.Error("projection recovery created an unexpected transport")
+			return nil
+		}
+		return transports[factoryCalls-1]
+	}
+
+	initial := participantTransportTestProjection("human-a", "session-a")
+	rt.observeRuntimeParticipantTransport(initial)
+	if got := awaitParticipantTransportStart(t, first); got.err != nil {
+		t.Fatalf("generation 1 Start failed: %v", got.err)
+	}
+
+	// A Human refresh temporarily removes the last eligible source. The empty
+	// projection must retire the old transport.
+	rt.observeRuntimeParticipantTransport(types.RuntimeParticipantTransportProjection{})
+	if got := first.closeCount(); got != 1 {
+		t.Fatalf("empty projection closed transport %d times, want 1", got)
+	}
+	rt.mu.Lock()
+	current, started := rt.participantTransport, rt.participantTransportStarted
+	rt.mu.Unlock()
+	if current != nil || started {
+		t.Fatalf("empty projection retained transport: current=%v started=%v", current != nil, started)
+	}
+
+	restored := participantTransportTestProjection("human-a", "session-b")
+	rt.observeRuntimeParticipantTransport(restored)
+	if got := awaitParticipantTransportStart(t, second); got.err != nil {
+		t.Fatalf("restored generation Start failed: %v", got.err)
+	}
+	rt.mu.Lock()
+	current, started = rt.participantTransport, rt.participantTransportStarted
+	rt.mu.Unlock()
+	if current != second || !started || factoryCalls != 2 {
+		t.Fatalf("restored projection did not start a fresh transport: current=%v started=%v factoryCalls=%d", current == second, started, factoryCalls)
+	}
+
+}
+
 func TestParticipantTransportProjectionUpdatesExistingTransportInPlace(t *testing.T) {
 	rt, _ := newResidentFenceRuntime(t)
 	configureParticipantTransportRuntime(t, rt, 10*time.Millisecond)

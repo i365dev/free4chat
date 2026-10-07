@@ -124,7 +124,10 @@ type RestClientLike interface {
 // Cloudflare DataChannel request or item result. Provider descriptions and
 // response bodies never cross this boundary.
 type SfuProviderError struct {
-	Class string
+	Class       string
+	HTTPStatus  int
+	Origin      string
+	ResultShape string
 }
 
 func (e *SfuProviderError) Error() string { return "sfu_provider_error" }
@@ -140,6 +143,17 @@ func sanitizedSfuProviderErrorClass(value string) string {
 
 func sfuProviderError(value string) error {
 	return &SfuProviderError{Class: sanitizedSfuProviderErrorClass(value)}
+}
+
+func sanitizedCloseApplicationError(value string) string {
+	switch value {
+	case "participant_direct_transport_forbidden", "participant_direct_pair_not_authorized",
+		"agent_datachannel_forbidden", "invalid_data_channel", "missing_session",
+		"unauthorized", "datachannel_session_not_found":
+		return value
+	default:
+		return "unknown_application_error"
+	}
 }
 
 // SfuRestClient is the thin REST client for the app's /api/sfu/* endpoints.
@@ -198,6 +212,21 @@ func (c *SfuRestClient) request(path, method string, body map[string]any) (map[s
 	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
 		if strings.HasPrefix(path, "datachannels/") {
+			if path == "datachannels/close" {
+				closeErr := &SfuProviderError{
+					HTTPStatus:  response.StatusCode,
+					ResultShape: "datachannels_missing",
+				}
+				if errorCode, _ := data["errorCode"].(string); errorCode != "" {
+					closeErr.Origin = "cloudflare_upstream"
+					closeErr.Class = sanitizedSfuProviderErrorClass(errorCode)
+				} else {
+					closeErr.Origin = "free4chat_worker"
+					appError, _ := data["error"].(string)
+					closeErr.Class = sanitizedCloseApplicationError(appError)
+				}
+				return nil, closeErr
+			}
 			if errorCode, _ := data["errorCode"].(string); errorCode != "" {
 				return nil, sfuProviderError(errorCode)
 			}
@@ -320,7 +349,7 @@ func (c *SfuRestClient) CloseParticipantDataChannels(sessionID string, channelID
 			continue
 		}
 		seen[id] = struct{}{}
-		channels = append(channels, map[string]any{"id": id, "sessionId": sessionID})
+		channels = append(channels, map[string]any{"id": id})
 	}
 	body := c.base()
 	body["sessionId"] = sessionID

@@ -44,6 +44,9 @@ type ParticipantTransportFailure struct {
 	Class              ParticipantTransportFailureClass
 	Stage              ParticipantTransportFailureStage
 	ProviderErrorClass string
+	CloseHTTPStatus    int
+	CloseOrigin        string
+	CloseResultShape   string
 	err                error
 }
 
@@ -66,6 +69,9 @@ func participantTransportFailureAt(class ParticipantTransportFailureClass, stage
 	var providerError *SfuProviderError
 	if errors.As(err, &providerError) {
 		failure.ProviderErrorClass = providerError.Class
+		failure.CloseHTTPStatus = providerError.HTTPStatus
+		failure.CloseOrigin = providerError.Origin
+		failure.CloseResultShape = providerError.ResultShape
 	}
 	return failure
 }

@@ -2279,14 +2279,13 @@ describe("#83 review: purpose reaches every DO authorize along the real path", (
   })
 
   it("tracks re-authorizes EACH remote track with the request purpose (remote-track reauth)", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
+    const fetchMock = vi.fn(
+      async (_input: string | URL | Request, _init?: RequestInit) =>
         Response.json({
           tracks: [{ mid: "mid-a" }, { mid: "mid-b" }],
         })
-      )
     )
+    vi.stubGlobal("fetch", fetchMock)
     const { authorizations, env } = recordingEnv()
     const res = await handleSfuRequest(
       req("tracks", {
@@ -2318,7 +2317,19 @@ describe("#83 review: purpose reaches every DO authorize along the real path", (
     expect(reauths).toHaveLength(2)
     expect(reauths[0].purpose).toBe("meeting-notes")
     expect(reauths[1].purpose).toBe("meeting-notes")
+    expect(reauths.map((auth) => auth.trackSessionId)).toEqual([
+      "human-1",
+      "human-2",
+    ])
     expect(reauths[0].trackName).toBe("mic")
+    expect(String(fetchMock.mock.calls[0][0])).toContain(
+      "/sessions/sess-a/tracks/new"
+    )
+    expect(
+      JSON.parse(String(fetchMock.mock.calls[0][1]?.body)).tracks.map(
+        (track: Record<string, unknown>) => track.sessionId
+      )
+    ).toEqual(["human-1", "human-2"])
   })
 
   it("renegotiate forwards its purpose to the DO authorize", async () => {
@@ -2607,6 +2618,96 @@ describe("participant direct reliable DataChannel authorization", () => {
       "/sessions/sess-a/datachannels/close"
     )
   })
+
+  it("participant-reliable close uses the Agent endpoint and forwards allocation IDs only", async () => {
+    const authorizations: Record<string, unknown>[] = []
+    const fetchMock = vi.fn(
+      async (_input: string | URL | Request, _init?: RequestInit) =>
+        Response.json({ dataChannels: [{ id: 7 }, { id: 8 }] })
+    )
+    vi.stubGlobal("fetch", fetchMock)
+    const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
+      if (body.action === "authorize") {
+        authorizations.push(body)
+        return { status: 200, body: { ok: true, kind: "agent" } }
+      }
+      return { status: 200, body: { ok: true } }
+    })
+    const res = await handleSfuRequest(
+      req("datachannels/close", {
+        ...origin,
+        method: "PUT",
+        body: JSON.stringify({
+          ...baseBody,
+          dataChannels: [{ id: 7 }, { id: 8 }],
+        }),
+      }),
+      env
+    )
+
+    expect(res.status).toBe(200)
+    expect(authorizations).toHaveLength(1)
+    expect(authorizations[0]).toMatchObject({
+      action: "authorize",
+      participantId: agentBody.participantId,
+      sessionId: "sess-a",
+      purpose: "participant-reliable",
+    })
+    expect(authorizations[0].dataChannelSessionId).toBeUndefined()
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(String(fetchMock.mock.calls[0][0])).toContain(
+      "/sessions/sess-a/datachannels/close"
+    )
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      dataChannels: [{ id: 7 }, { id: 8 }],
+    })
+  })
+
+  it("ordinary Human close uses its endpoint session and forwards allocation IDs only", async () => {
+    const authorizations: Record<string, unknown>[] = []
+    const fetchMock = vi.fn(
+      async (_input: string | URL | Request, _init?: RequestInit) =>
+        Response.json({ dataChannels: [{ id: 9 }] })
+    )
+    vi.stubGlobal("fetch", fetchMock)
+    const env = makeEnv({}, (body) => {
+      if (body.action === "authorize") {
+        authorizations.push(body)
+        return { status: 200, body: { ok: true, kind: "human" } }
+      }
+      return { status: 200, body: { ok: true } }
+    })
+    const res = await handleSfuRequest(
+      req("datachannels/close", {
+        ...origin,
+        method: "PUT",
+        body: JSON.stringify({
+          room: "room-1",
+          participantId: "human-1",
+          token: "human-token",
+          sessionId: "human-session",
+          dataChannels: [{ id: 9 }],
+        }),
+      }),
+      env
+    )
+
+    expect(res.status).toBe(200)
+    expect(authorizations).toEqual([
+      expect.objectContaining({
+        action: "authorize",
+        participantId: "human-1",
+        sessionId: "human-session",
+      }),
+    ])
+    expect(authorizations[0].dataChannelSessionId).toBeUndefined()
+    expect(String(fetchMock.mock.calls[0][0])).toContain(
+      "/sessions/human-session/datachannels/close"
+    )
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      dataChannels: [{ id: 9 }],
+    })
+  })
 })
 
 describe("#83 review P1: datachannels/close authorize parameter mapping", () => {
@@ -2616,8 +2717,9 @@ describe("#83 review P1: datachannels/close authorize parameter mapping", () => 
 
   it("the main and per-channel authorizes carry purpose AND the right dataChannelSessionId", async () => {
     const authorizations: Array<Record<string, unknown>> = []
-    const fetchMock = vi.fn(async (_input: string | URL | Request) =>
-      Response.json({ ok: true })
+    const fetchMock = vi.fn(
+      async (_input: string | URL | Request, _init?: RequestInit) =>
+        Response.json({ ok: true })
     )
     vi.stubGlobal("fetch", fetchMock)
     const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" }, (body) => {
@@ -2655,6 +2757,68 @@ describe("#83 review P1: datachannels/close authorize parameter mapping", () => 
     expect(authorizations[1].purpose).toBe("agent-transport")
     expect(authorizations[2].purpose).toBe("agent-transport")
     expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      dataChannels: [
+        { id: 1, sessionId: "human-pub" },
+        { id: 2, sessionId: "human-other" },
+      ],
+    })
+  })
+})
+
+describe("tracks/close endpoint ownership", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it("authorizes the owner endpoint and forwards allocation mids only", async () => {
+    const authorizations: Array<Record<string, unknown>> = []
+    const fetchMock = vi.fn(
+      async (_input: string | URL | Request, _init?: RequestInit) =>
+        Response.json({ sessionDescription: {} })
+    )
+    vi.stubGlobal("fetch", fetchMock)
+    const env = makeEnv({}, (body) => {
+      if (body.action === "authorize") {
+        authorizations.push(body)
+        return { status: 200, body: { ok: true, kind: "human" } }
+      }
+      return { status: 200, body: { ok: true } }
+    })
+
+    const res = await handleSfuRequest(
+      req("tracks/close", {
+        origin: "https://www.free4.chat",
+        method: "PUT",
+        body: JSON.stringify({
+          room: "room-1",
+          participantId: "human-1",
+          token: "human-token",
+          sessionId: "human-session",
+          tracks: [{ mid: "7", trackName: "audio-agent" }],
+          force: true,
+        }),
+      }),
+      env
+    )
+
+    expect(res.status).toBe(200)
+    expect(authorizations).toEqual([
+      expect.objectContaining({
+        action: "authorize",
+        participantId: "human-1",
+        sessionId: "human-session",
+      }),
+    ])
+    expect(authorizations[0].trackSessionId).toBeUndefined()
+    expect(String(fetchMock.mock.calls[0][0])).toContain(
+      "/sessions/human-session/tracks/close"
+    )
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      tracks: [{ mid: "7" }],
+      sessionDescription: undefined,
+      force: true,
+    })
   })
 })
 

@@ -1571,12 +1571,21 @@ func participantTransportFailureDiagnosticFields(err error) map[string]string {
 	if !errors.As(err, &classified) {
 		return nil
 	}
-	fields := make(map[string]string, 2)
+	fields := make(map[string]string, 5)
 	if classified.Stage != "" {
 		fields["failure_stage"] = string(classified.Stage)
 	}
 	if classified.ProviderErrorClass != "" {
 		fields["provider_error_class"] = classified.ProviderErrorClass
+	}
+	if classified.CloseHTTPStatus > 0 {
+		fields["close_http_status"] = strconv.Itoa(classified.CloseHTTPStatus)
+	}
+	if classified.CloseOrigin != "" {
+		fields["close_response_origin"] = classified.CloseOrigin
+	}
+	if classified.CloseResultShape != "" {
+		fields["close_result_shape"] = classified.CloseResultShape
 	}
 	return fields
 }
