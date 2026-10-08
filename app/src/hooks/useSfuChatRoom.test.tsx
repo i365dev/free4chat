@@ -1,6 +1,16 @@
 import { act, renderHook, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+const roomLifecycleDiagnosticsMock = vi.hoisted(() => ({
+  navigationType: vi.fn(() => "navigate"),
+  hasSeenPageShow: vi.fn(() => true),
+  waitForFirstPageShow: vi.fn(async (_signal?: AbortSignal) => true),
+}))
+
+vi.mock("../common/roomLifecycleDiagnostics", () => ({
+  roomLifecycleDiagnostics: roomLifecycleDiagnosticsMock,
+}))
+
 import { useSfuChatRoom } from "./useSfuChatRoom"
 import { participantDirectReliableChannelName } from "../common/participantDataChannel"
 import {
@@ -134,6 +144,15 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
   let getUserMedia: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
+    roomLifecycleDiagnosticsMock.navigationType
+      .mockReset()
+      .mockReturnValue("navigate")
+    roomLifecycleDiagnosticsMock.hasSeenPageShow
+      .mockReset()
+      .mockReturnValue(true)
+    roomLifecycleDiagnosticsMock.waitForFirstPageShow
+      .mockReset()
+      .mockResolvedValue(true)
     setProductionRoomAppCatalog([TEST_ROOM_APP])
     FakePeerConnection.instances.length = 0
     FakePeerConnection.dataChannels.length = 0
@@ -256,6 +275,267 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
     )
 
     expect(result.current.connectionStatus).not.toBe("verification_failed")
+    unmount()
+  })
+
+  it("waits for first pageshow before fresh admission on a visible back_forward document", async () => {
+    const order: string[] = []
+    roomLifecycleDiagnosticsMock.navigationType.mockReturnValue("back_forward")
+    roomLifecycleDiagnosticsMock.hasSeenPageShow.mockReturnValue(false)
+    roomLifecycleDiagnosticsMock.waitForFirstPageShow.mockImplementation(
+      (signal?: AbortSignal) =>
+        new Promise<boolean>((resolve) => {
+          const onPageShow = () => {
+            order.push("pageshow")
+            resolve(!signal?.aborted)
+          }
+          const onAbort = () => {
+            window.removeEventListener("pageshow", onPageShow)
+            resolve(false)
+          }
+          window.addEventListener("pageshow", onPageShow, { once: true })
+          signal?.addEventListener("abort", onAbort, { once: true })
+        })
+    )
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "visible",
+    })
+    const getTurnstileToken = vi.fn(async () => {
+      order.push("turnstile")
+      return "fresh-token"
+    })
+
+    const { result, unmount } = renderHook(() =>
+      useSfuChatRoom("room-back-forward", "alice", "audio", {
+        getTurnstileToken,
+      })
+    )
+
+    await waitFor(() =>
+      expect(
+        getTurnstileToken.mock.calls.length +
+          roomLifecycleDiagnosticsMock.waitForFirstPageShow.mock.calls.length
+      ).toBe(1)
+    )
+    expect(getTurnstileToken).not.toHaveBeenCalled()
+    expect(
+      roomLifecycleDiagnosticsMock.waitForFirstPageShow
+    ).toHaveBeenCalledOnce()
+    expect(result.current.connectionStatus).toBe("verifying")
+
+    act(() => {
+      window.dispatchEvent(
+        new PageTransitionEvent("pageshow", { persisted: false })
+      )
+    })
+    await waitFor(() => expect(getTurnstileToken).toHaveBeenCalledTimes(1))
+    await waitFor(() =>
+      expect(result.current.connectionStatus).toBe("connected")
+    )
+    expect(order).toEqual(["pageshow", "turnstile"])
+    unmount()
+  })
+
+  it.each(["navigate", "reload", "unavailable"] as const)(
+    "%s navigation does not wait for pageshow before fresh admission",
+    async (navigationType) => {
+      roomLifecycleDiagnosticsMock.navigationType.mockReturnValue(
+        navigationType
+      )
+      roomLifecycleDiagnosticsMock.hasSeenPageShow.mockReturnValue(false)
+      const getTurnstileToken = vi.fn().mockResolvedValue("fresh-token")
+
+      const { result, unmount } = renderHook(() =>
+        useSfuChatRoom(`room-${navigationType}`, "alice", "audio", {
+          getTurnstileToken,
+        })
+      )
+
+      await waitFor(() =>
+        expect(result.current.connectionStatus).toBe("connected")
+      )
+      expect(getTurnstileToken).toHaveBeenCalledTimes(1)
+      expect(
+        roomLifecycleDiagnosticsMock.waitForFirstPageShow
+      ).not.toHaveBeenCalled()
+      unmount()
+    }
+  )
+
+  it("continues immediately when back_forward pageshow was already observed", async () => {
+    roomLifecycleDiagnosticsMock.navigationType.mockReturnValue("back_forward")
+    roomLifecycleDiagnosticsMock.hasSeenPageShow.mockReturnValue(true)
+    const getTurnstileToken = vi.fn().mockResolvedValue("fresh-token")
+
+    const { result, unmount } = renderHook(() =>
+      useSfuChatRoom("room-shown-back-forward", "alice", "audio", {
+        getTurnstileToken,
+      })
+    )
+
+    await waitFor(() =>
+      expect(result.current.connectionStatus).toBe("connected")
+    )
+    expect(getTurnstileToken).toHaveBeenCalledTimes(1)
+    expect(
+      roomLifecycleDiagnosticsMock.waitForFirstPageShow
+    ).not.toHaveBeenCalled()
+    unmount()
+  })
+
+  it("still waits for #617 foreground recovery after first pageshow", async () => {
+    roomLifecycleDiagnosticsMock.navigationType.mockReturnValue("back_forward")
+    roomLifecycleDiagnosticsMock.hasSeenPageShow.mockReturnValue(false)
+    roomLifecycleDiagnosticsMock.waitForFirstPageShow.mockImplementation(
+      (signal?: AbortSignal) =>
+        new Promise<boolean>((resolve) => {
+          const onPageShow = () => resolve(!signal?.aborted)
+          const onAbort = () => {
+            window.removeEventListener("pageshow", onPageShow)
+            resolve(false)
+          }
+          window.addEventListener("pageshow", onPageShow, { once: true })
+          signal?.addEventListener("abort", onAbort, { once: true })
+        })
+    )
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "hidden",
+    })
+    const getTurnstileToken = vi.fn().mockResolvedValue("fresh-token")
+    const addDocumentListener = vi.spyOn(document, "addEventListener")
+
+    const { result, unmount } = renderHook(() =>
+      useSfuChatRoom("room-hidden-back-forward", "alice", "audio", {
+        getTurnstileToken,
+      })
+    )
+    await waitFor(() =>
+      expect(
+        roomLifecycleDiagnosticsMock.waitForFirstPageShow
+      ).toHaveBeenCalledOnce()
+    )
+
+    act(() => {
+      window.dispatchEvent(
+        new PageTransitionEvent("pageshow", { persisted: false })
+      )
+    })
+    await waitFor(() =>
+      expect(
+        addDocumentListener.mock.calls.some(
+          ([eventName]) => eventName === "visibilitychange"
+        )
+      ).toBe(true)
+    )
+    expect(getTurnstileToken).not.toHaveBeenCalled()
+
+    act(() => {
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        value: "visible",
+      })
+      document.dispatchEvent(new Event("visibilitychange"))
+    })
+    await waitFor(() => expect(getTurnstileToken).toHaveBeenCalledTimes(1))
+    await waitFor(() =>
+      expect(result.current.connectionStatus).toBe("connected")
+    )
+    unmount()
+  })
+
+  it("cancels a pending first-pageshow admission on unmount", async () => {
+    roomLifecycleDiagnosticsMock.navigationType.mockReturnValue("back_forward")
+    roomLifecycleDiagnosticsMock.hasSeenPageShow.mockReturnValue(false)
+    let receivedSignal: AbortSignal | undefined
+    roomLifecycleDiagnosticsMock.waitForFirstPageShow.mockImplementation(
+      (signal?: AbortSignal) => {
+        receivedSignal = signal
+        return new Promise<boolean>((resolve) => {
+          const onPageShow = () => resolve(!signal?.aborted)
+          const onAbort = () => {
+            window.removeEventListener("pageshow", onPageShow)
+            resolve(false)
+          }
+          window.addEventListener("pageshow", onPageShow, { once: true })
+          signal?.addEventListener("abort", onAbort, { once: true })
+        })
+      }
+    )
+    const getTurnstileToken = vi.fn().mockResolvedValue("fresh-token")
+    const { unmount } = renderHook(() =>
+      useSfuChatRoom("room-unmount-before-pageshow", "alice", "audio", {
+        getTurnstileToken,
+      })
+    )
+    await waitFor(() =>
+      expect(
+        roomLifecycleDiagnosticsMock.waitForFirstPageShow
+      ).toHaveBeenCalledOnce()
+    )
+
+    unmount()
+    expect(receivedSignal?.aborted).toBe(true)
+    act(() => {
+      window.dispatchEvent(
+        new PageTransitionEvent("pageshow", { persisted: false })
+      )
+    })
+    await Promise.resolve()
+    expect(getTurnstileToken).not.toHaveBeenCalled()
+  })
+
+  it("fences an older pageshow wait when a newer explicit admission takes ownership", async () => {
+    roomLifecycleDiagnosticsMock.navigationType.mockReturnValue("back_forward")
+    roomLifecycleDiagnosticsMock.hasSeenPageShow.mockReturnValue(false)
+    const signals: AbortSignal[] = []
+    roomLifecycleDiagnosticsMock.waitForFirstPageShow.mockImplementation(
+      (signal?: AbortSignal) =>
+        new Promise<boolean>((resolve) => {
+          if (signal) signals.push(signal)
+          const onPageShow = () => resolve(!signal?.aborted)
+          const onAbort = () => {
+            window.removeEventListener("pageshow", onPageShow)
+            resolve(false)
+          }
+          window.addEventListener("pageshow", onPageShow, { once: true })
+          signal?.addEventListener("abort", onAbort, { once: true })
+        })
+    )
+    const getTurnstileToken = vi.fn().mockResolvedValue("fresh-token")
+    const { result, unmount } = renderHook(() =>
+      useSfuChatRoom("room-new-admission-owns-pageshow", "alice", "audio", {
+        getTurnstileToken,
+      })
+    )
+    await waitFor(() =>
+      expect(
+        roomLifecycleDiagnosticsMock.waitForFirstPageShow
+      ).toHaveBeenCalledOnce()
+    )
+
+    act(() => result.current.retryVerification())
+    await waitFor(() =>
+      expect(
+        roomLifecycleDiagnosticsMock.waitForFirstPageShow
+      ).toHaveBeenCalledTimes(2)
+    )
+    expect(signals[0]?.aborted).toBe(true)
+    expect(signals[1]?.aborted).toBe(false)
+
+    act(() => {
+      window.dispatchEvent(
+        new PageTransitionEvent("pageshow", { persisted: false })
+      )
+      window.dispatchEvent(
+        new PageTransitionEvent("pageshow", { persisted: false })
+      )
+    })
+    await waitFor(() => expect(getTurnstileToken).toHaveBeenCalledTimes(1))
+    await waitFor(() =>
+      expect(result.current.connectionStatus).toBe("connected")
+    )
     unmount()
   })
 
