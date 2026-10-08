@@ -363,7 +363,7 @@ describe("useSfuChatRoom — Turnstile boundary", () => {
     }
   )
 
-  it("continues immediately when back_forward pageshow was already observed", async () => {
+  it("continues immediately when the eager observer saw back_forward pageshow before admission", async () => {
     roomLifecycleDiagnosticsMock.navigationType.mockReturnValue("back_forward")
     roomLifecycleDiagnosticsMock.hasSeenPageShow.mockReturnValue(true)
     const getTurnstileToken = vi.fn().mockResolvedValue("fresh-token")
