@@ -5,6 +5,9 @@ import { useRouter } from "next/router"
 import Script from "next/script"
 
 import "../styles/tailwind.css"
+// Initialize the page lifecycle observer before the dynamically loaded Room
+// consumer can run; the initial pageshow event is delivered only once.
+import "../common/roomLifecycleDiagnostics"
 
 function MyApp({ Component, pageProps }: AppProps): React.JSX.Element {
   const router = useRouter()

@@ -35,6 +35,12 @@ export type TurnstileErrorCode =
   | "600xxx"
   | "unknown"
 
+export type TurnstileErrorInputKind =
+  | "number"
+  | "numeric_string"
+  | "missing"
+  | "other"
+
 export type RoomLifecycleTurnstileStage =
   | "turnstile_script_ready"
   | "turnstile_script_error"
@@ -73,6 +79,7 @@ export type RoomLifecycleDiagnosticEvent = EventTiming &
         event: "turnstile_error"
         family: TurnstileErrorFamily
         code: TurnstileErrorCode
+        inputKind: TurnstileErrorInputKind
       }
   )
 
@@ -126,22 +133,43 @@ export function normalizeVisibilityState(
 export function normalizeTurnstileErrorCode(value: unknown): {
   family: TurnstileErrorFamily
   code: TurnstileErrorCode
+  inputKind: TurnstileErrorInputKind
 } {
-  if (typeof value !== "number" || !Number.isSafeInteger(value))
-    return { family: "unknown", code: "unknown" }
+  const inputKind: TurnstileErrorInputKind =
+    typeof value === "number"
+      ? "number"
+      : typeof value === "string" && /^\d+$/.test(value)
+      ? "numeric_string"
+      : value === undefined
+      ? "missing"
+      : "other"
+  const normalized =
+    typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+      ? String(value)
+      : inputKind === "numeric_string" && /^\d{6}$/.test(value as string)
+      ? (value as string)
+      : ""
+  const unknown = () => ({
+    family: "unknown" as const,
+    code: "unknown" as const,
+    inputKind,
+  })
+  if (!/^\d{6}$/.test(normalized)) return unknown()
 
-  const normalized = String(value)
   const family = normalized.slice(0, 3)
-  if (/^300\d{3}$/.test(normalized)) return { family: "300", code: "300xxx" }
-  if (/^600\d{3}$/.test(normalized)) return { family: "600", code: "600xxx" }
+  if (/^300\d{3}$/.test(normalized))
+    return { family: "300", code: "300xxx", inputKind }
+  if (/^600\d{3}$/.test(normalized))
+    return { family: "600", code: "600xxx", inputKind }
 
   if (EXACT_TURNSTILE_CODES.has(normalized as TurnstileErrorCode))
     return {
       family: family as TurnstileErrorFamily,
       code: normalized as TurnstileErrorCode,
+      inputKind,
     }
 
-  return { family: "unknown", code: "unknown" }
+  return unknown()
 }
 
 function getBrowserWindow(override: Window | null | undefined): Window | null {
@@ -202,12 +230,15 @@ function normalizeStoredEvent(
           ? { family: "300" as const, code: "300xxx" as const }
           : value.code === "600xxx"
           ? { family: "600" as const, code: "600xxx" as const }
-          : normalizeTurnstileErrorCode(
-              typeof value.code === "string" && /^\d+$/.test(value.code)
-                ? Number(value.code)
-                : NaN
-            )
-      return { ...timing, event: value.event, ...error }
+          : normalizeTurnstileErrorCode(value.code)
+      const inputKind =
+        value.inputKind === "number" ||
+        value.inputKind === "numeric_string" ||
+        value.inputKind === "missing" ||
+        value.inputKind === "other"
+          ? value.inputKind
+          : "other"
+      return { ...timing, event: value.event, ...error, inputKind }
     }
     case "verification_failed":
     case "turnstile_script_ready":
@@ -249,7 +280,7 @@ function formatEvents(events: RoomLifecycleDiagnosticEvent[]): string[] {
       case "pagehide":
         return `${prefix} persisted=${event.persisted} visibility=${event.visibility}`
       case "turnstile_error":
-        return `${prefix} family=${event.family} code=${event.code}`
+        return `${prefix} family=${event.family} code=${event.code} input_kind=${event.inputKind}`
       default:
         return prefix
     }
@@ -262,8 +293,11 @@ export class RoomLifecycleDiagnosticTrace {
   private readonly pageWindow: Window | null
   private readonly storage: Storage | null
   private readonly now: () => number
+  private readonly initialNavigationType: RoomLifecycleNavigationType
   private priorFailure: RoomLifecycleDiagnosticSnapshot | null
   private disposed = false
+  private firstPageShowSeen = false
+  private readonly firstPageShowWaiters = new Set<(shown: boolean) => void>()
   private readonly onPageShow: (event: PageTransitionEvent) => void
   private readonly onPageHide: (event: PageTransitionEvent) => void
 
@@ -284,16 +318,52 @@ export class RoomLifecycleDiagnosticTrace {
     }
     this.startedAt = this.now()
     this.priorFailure = this.readLastFailure()
-    this.onPageShow = (event) =>
+    this.initialNavigationType = this.readNavigationType()
+    this.onPageShow = (event) => {
+      if (!this.firstPageShowSeen) {
+        this.firstPageShowSeen = true
+        for (const settle of [...this.firstPageShowWaiters]) settle(true)
+      }
       this.recordPageTransition("pageshow", event.persisted)
+    }
     this.onPageHide = (event) =>
       this.recordPageTransition("pagehide", event.persisted)
 
     if (this.pageWindow) {
-      this.recordPageLoad(this.readNavigationType(), this.readVisibility())
+      this.recordPageLoad(this.initialNavigationType, this.readVisibility())
       this.pageWindow.addEventListener("pageshow", this.onPageShow)
       this.pageWindow.addEventListener("pagehide", this.onPageHide)
     }
+  }
+
+  navigationType(): RoomLifecycleNavigationType {
+    return this.initialNavigationType
+  }
+
+  hasSeenPageShow(): boolean {
+    return this.firstPageShowSeen
+  }
+
+  waitForFirstPageShow(signal?: AbortSignal): Promise<boolean> {
+    if (this.firstPageShowSeen) return Promise.resolve(true)
+    if (this.disposed || signal?.aborted) return Promise.resolve(false)
+
+    return new Promise((resolve) => {
+      let settled = false
+      const finish = (shown: boolean) => {
+        if (settled) return
+        settled = true
+        this.firstPageShowWaiters.delete(finish)
+        signal?.removeEventListener("abort", onAbort)
+        resolve(shown)
+      }
+      const onAbort = () => finish(false)
+      this.firstPageShowWaiters.add(finish)
+      signal?.addEventListener("abort", onAbort, { once: true })
+      // Close the race between the initial check and registering the waiter.
+      if (this.firstPageShowSeen) finish(true)
+      else if (signal?.aborted) finish(false)
+    })
   }
 
   recordPageLoad(
@@ -372,6 +442,7 @@ export class RoomLifecycleDiagnosticTrace {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
+    for (const settle of [...this.firstPageShowWaiters]) settle(false)
     this.pageWindow?.removeEventListener("pageshow", this.onPageShow)
     this.pageWindow?.removeEventListener("pagehide", this.onPageHide)
   }

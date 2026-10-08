@@ -34,6 +34,7 @@ import {
   type RoomAppDiagnosticInput,
 } from "@common/roomAppTransportDiagnostics"
 import { validateRoomAttachmentRead } from "@common/roomAttachments"
+import { roomLifecycleDiagnostics } from "@common/roomLifecycleDiagnostics"
 import type {
   RuntimeCapabilityOperation,
   RuntimeCapabilityResult,
@@ -937,6 +938,8 @@ export function useSfuChatRoom(
   const dataChannelReadyRef = useRef(false)
   const closingRef = useRef(false)
   const freshAdmissionVisibilityCancelRef = useRef<(() => void) | null>(null)
+  const freshAdmissionGenerationRef = useRef(0)
+  const freshAdmissionPageShowAbortRef = useRef<AbortController | null>(null)
   const sfuEgressSamplerRef = useRef<ReturnType<
     typeof createSfuEgressSampler
   > | null>(null)
@@ -4609,10 +4612,23 @@ export function useSfuChatRoom(
     }
   }, [connectWebSocket])
 
+  const invalidateFreshAdmissionWaits = useCallback(() => {
+    freshAdmissionGenerationRef.current += 1
+    freshAdmissionPageShowAbortRef.current?.abort()
+    freshAdmissionPageShowAbortRef.current = null
+    freshAdmissionVisibilityCancelRef.current?.()
+  }, [])
+
   const waitForForegroundFreshAdmission = useCallback(
-    (expectedSession: SfuSession | null): Promise<boolean> => {
-      if (closingRef.current || sessionRef.current !== expectedSession)
-        return Promise.resolve(false)
+    (
+      expectedSession: SfuSession | null,
+      isCurrentAdmission: () => boolean
+    ): Promise<boolean> => {
+      const isCurrent = () =>
+        !closingRef.current &&
+        sessionRef.current === expectedSession &&
+        isCurrentAdmission()
+      if (!isCurrent()) return Promise.resolve(false)
       if (
         typeof document === "undefined" ||
         document.visibilityState === "visible"
@@ -4634,7 +4650,7 @@ export function useSfuChatRoom(
           resolve(foreground)
         }
         const handleVisibilityChange = () => {
-          if (closingRef.current || sessionRef.current !== expectedSession) {
+          if (!isCurrent()) {
             finish(false)
           } else if (document.visibilityState === "visible") {
             finish(true)
@@ -4657,6 +4673,12 @@ export function useSfuChatRoom(
       const previousSession = sessionRef.current
       if (reconnecting && !previousSession)
         throw new Error("SFU session is not ready")
+      const freshAdmissionGeneration = reconnecting
+        ? null
+        : (() => {
+            invalidateFreshAdmissionWaits()
+            return freshAdmissionGenerationRef.current
+          })()
 
       if (reconnecting) {
         if (reconnectTimerRef.current) {
@@ -4707,21 +4729,57 @@ export function useSfuChatRoom(
       let turnstileToken: string | undefined
       if (!reconnecting && getTurnstileToken) {
         setConnectionStatus("verifying")
+        const isCurrentAdmission = () =>
+          freshAdmissionGeneration !== null &&
+          freshAdmissionGenerationRef.current === freshAdmissionGeneration
+        let pageShowAbortController: AbortController | null = null
         try {
+          if (
+            roomLifecycleDiagnostics.navigationType() === "back_forward" &&
+            !roomLifecycleDiagnostics.hasSeenPageShow()
+          ) {
+            pageShowAbortController = new AbortController()
+            freshAdmissionPageShowAbortRef.current = pageShowAbortController
+            const pageShown =
+              await roomLifecycleDiagnostics.waitForFirstPageShow(
+                pageShowAbortController.signal
+              )
+            if (!pageShown) return false
+          }
+          if (
+            closingRef.current ||
+            !isCurrentAdmission() ||
+            sessionRef.current !== previousSession
+          )
+            return false
           const foreground = await waitForForegroundFreshAdmission(
-            previousSession
+            previousSession,
+            isCurrentAdmission
           )
           if (
             !foreground ||
             closingRef.current ||
+            !isCurrentAdmission() ||
             sessionRef.current !== previousSession
           )
             return false
           turnstileToken = await getTurnstileToken()
+          if (
+            closingRef.current ||
+            !isCurrentAdmission() ||
+            sessionRef.current !== previousSession
+          )
+            return false
         } catch (err) {
           throw new TurnstileVerificationError(
             err instanceof Error ? err.message : "Verification failed"
           )
+        } finally {
+          if (
+            pageShowAbortController &&
+            freshAdmissionPageShowAbortRef.current === pageShowAbortController
+          )
+            freshAdmissionPageShowAbortRef.current = null
         }
       }
       if (closingRef.current || sessionRef.current !== previousSession)
@@ -4800,7 +4858,7 @@ export function useSfuChatRoom(
         pc.close()
         return false
       }
-      freshAdmissionVisibilityCancelRef.current?.()
+      invalidateFreshAdmissionWaits()
       sessionRef.current = { ...session, room: roomName }
       dataChannelBootstrapReadyRef.current = false
       roomAppDiagnostic.setParticipant(session.participantId)
@@ -4864,6 +4922,7 @@ export function useSfuChatRoom(
       sendSocketMessage,
       sampleSfuEgress,
       waitForForegroundFreshAdmission,
+      invalidateFreshAdmissionWaits,
     ]
   )
 
@@ -4889,6 +4948,7 @@ export function useSfuChatRoom(
           // Another lifecycle may have installed a newer valid capability
           // while this request was in flight. Its result owns the hook now.
           if (sessionRef.current !== err.session || closingRef.current) return
+          invalidateFreshAdmissionWaits()
           sessionRef.current = null
           try {
             // The old capability has been authoritatively rejected. Retire it
@@ -4932,7 +4992,7 @@ export function useSfuChatRoom(
     } finally {
       mediaReconnectPromiseRef.current = null
     }
-  }, [connectMediaSession, roomAppDiagnostic])
+  }, [connectMediaSession, invalidateFreshAdmissionWaits, roomAppDiagnostic])
 
   useEffect(() => {
     if (!enabled || !roomName || !nickName) return
@@ -4981,7 +5041,7 @@ export function useSfuChatRoom(
 
     return () => {
       closingRef.current = true
-      freshAdmissionVisibilityCancelRef.current?.()
+      invalidateFreshAdmissionWaits()
       dataChannelBootstrapReadyRef.current = false
       sampleSfuEgress("disconnect", peerConnectionRef.current)
       clearAllAgentAudioSubscriptionRetries("unmount")
@@ -5042,6 +5102,7 @@ export function useSfuChatRoom(
     connectMediaSession,
     clearRemoteTrackBindings,
     enabled,
+    invalidateFreshAdmissionWaits,
     nickName,
     reconnectMedia,
     roomName,

@@ -93,38 +93,114 @@ describe("RoomLifecycleDiagnosticTrace", () => {
     remove.mockRestore()
   })
 
+  it("captures normalized navigation and resolves first-pageshow waiters from its lifecycle listener", async () => {
+    const navigation = vi
+      .spyOn(window.performance, "getEntriesByType")
+      .mockReturnValue([
+        { type: "back_forward" } as PerformanceNavigationTiming,
+      ])
+    const add = vi.spyOn(window, "addEventListener")
+    const trace = new RoomLifecycleDiagnosticTrace({ window, storage: null })
+
+    expect(trace.navigationType()).toBe("back_forward")
+    expect(trace.hasSeenPageShow()).toBe(false)
+    const firstWait = trace.waitForFirstPageShow()
+    const secondWait = trace.waitForFirstPageShow()
+    expect(
+      add.mock.calls.filter(([name]) => String(name) === "pageshow")
+    ).toHaveLength(1)
+
+    window.dispatchEvent(
+      new PageTransitionEvent("pageshow", { persisted: false })
+    )
+    await expect(firstWait).resolves.toBe(true)
+    await expect(secondWait).resolves.toBe(true)
+    expect(trace.hasSeenPageShow()).toBe(true)
+    await expect(trace.waitForFirstPageShow()).resolves.toBe(true)
+
+    trace.dispose()
+    add.mockRestore()
+    navigation.mockRestore()
+  })
+
+  it("cancels first-pageshow waiters on abort and teardown", async () => {
+    const trace = new RoomLifecycleDiagnosticTrace({ window, storage: null })
+    const abortController = new AbortController()
+    const abortedWait = trace.waitForFirstPageShow(abortController.signal)
+    abortController.abort()
+    await expect(abortedWait).resolves.toBe(false)
+
+    const disposedWait = trace.waitForFirstPageShow()
+    trace.dispose()
+    await expect(disposedWait).resolves.toBe(false)
+    expect(trace.hasSeenPageShow()).toBe(false)
+  })
+
   it("normalizes known exact codes and generic retryable families", () => {
     expect(normalizeTurnstileErrorCode(200500)).toEqual({
       family: "200",
       code: "200500",
+      inputKind: "number",
+    })
+    expect(normalizeTurnstileErrorCode("200500")).toEqual({
+      family: "200",
+      code: "200500",
+      inputKind: "numeric_string",
     })
     expect(normalizeTurnstileErrorCode(110600)).toEqual({
       family: "110",
       code: "110600",
+      inputKind: "number",
     })
     expect(normalizeTurnstileErrorCode(110620)).toEqual({
       family: "110",
       code: "110620",
+      inputKind: "number",
     })
     expect(normalizeTurnstileErrorCode(300123)).toEqual({
       family: "300",
       code: "300xxx",
+      inputKind: "number",
+    })
+    expect(normalizeTurnstileErrorCode("300123")).toEqual({
+      family: "300",
+      code: "300xxx",
+      inputKind: "numeric_string",
     })
     expect(normalizeTurnstileErrorCode(600123)).toEqual({
       family: "600",
       code: "600xxx",
+      inputKind: "number",
+    })
+    expect(normalizeTurnstileErrorCode("600123")).toEqual({
+      family: "600",
+      code: "600xxx",
+      inputKind: "numeric_string",
     })
     expect(normalizeTurnstileErrorCode("200500")).toEqual({
-      family: "unknown",
-      code: "unknown",
+      family: "200",
+      code: "200500",
+      inputKind: "numeric_string",
     })
     expect(normalizeTurnstileErrorCode(200501)).toEqual({
       family: "unknown",
       code: "unknown",
+      inputKind: "number",
+    })
+    expect(normalizeTurnstileErrorCode(undefined)).toEqual({
+      family: "unknown",
+      code: "unknown",
+      inputKind: "missing",
+    })
+    expect(normalizeTurnstileErrorCode("challenge failed")).toEqual({
+      family: "unknown",
+      code: "unknown",
+      inputKind: "other",
     })
     expect(normalizeTurnstileErrorCode({ secret: "must-not-escape" })).toEqual({
       family: "unknown",
       code: "unknown",
+      inputKind: "other",
     })
   })
 
