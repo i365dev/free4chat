@@ -2,16 +2,18 @@ import { act, renderHook, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { useTurnstile } from "./useTurnstile"
+import { roomLifecycleDiagnostics } from "../common/roomLifecycleDiagnostics"
 
 interface RenderOptions {
   callback: (token: string) => void
-  "error-callback": () => boolean | void
+  "error-callback": (errorCode?: unknown) => boolean | void
   "expired-callback": () => void
   "timeout-callback": () => void
   appearance: string
   execution: string
   sitekey: string
   action: string
+  retry: string
 }
 
 function installMockTurnstile() {
@@ -36,7 +38,8 @@ function installMockTurnstile() {
     reset,
     remove,
     fireSuccess: (token: string) => lastOptions?.callback(token),
-    fireError: () => lastOptions?.["error-callback"](),
+    fireError: (errorCode?: unknown) =>
+      lastOptions?.["error-callback"](errorCode),
     fireExpired: () => lastOptions?.["expired-callback"](),
     fireTimeout: () => lastOptions?.["timeout-callback"](),
     getLastOptions: () => lastOptions,
@@ -64,6 +67,7 @@ describe("useTurnstile", () => {
   }
 
   it("renders an interaction-only, execute-mode widget and resolves with the token from the callback", async () => {
+    const stages = vi.spyOn(roomLifecycleDiagnostics, "recordTurnstileStage")
     const { result } = renderHook(() => useTurnstile())
     attachContainer(result)
 
@@ -79,12 +83,18 @@ describe("useTurnstile", () => {
     // #406: the Worker requires Siteverify to echo this action back.
     expect(mock.getLastOptions()?.action).toBe("sfu-session")
     expect(mock.reset).toHaveBeenCalledTimes(1)
+    expect(stages.mock.calls.map(([stage]) => stage)).toEqual([
+      "turnstile_script_ready",
+      "turnstile_widget_rendered",
+      "turnstile_execute",
+    ])
 
     act(() => {
       mock.fireSuccess("token-1")
     })
 
     await expect(tokenPromise).resolves.toBe("token-1")
+    expect(stages).toHaveBeenLastCalledWith("turnstile_success")
   })
 
   it("never reuses a token: every requestToken() call renders a fresh widget and returns a fresh value", async () => {
@@ -187,7 +197,32 @@ describe("useTurnstile", () => {
     await expect(retry).resolves.toBe("token-after-retry")
   })
 
+  it("records the normalized Cloudflare error callback input without changing the generic product error", async () => {
+    const diagnostic = vi.spyOn(
+      roomLifecycleDiagnostics,
+      "recordTurnstileError"
+    )
+    const { result } = renderHook(() => useTurnstile())
+    attachContainer(result)
+
+    let failing: Promise<string> | undefined
+    act(() => {
+      failing = result.current.requestToken()
+    })
+    await waitFor(() => expect(mock.execute).toHaveBeenCalledTimes(1))
+
+    act(() => {
+      mock.fireError(200500)
+    })
+
+    await expect(failing).rejects.toThrow("turnstile_error")
+    expect(diagnostic).toHaveBeenCalledWith(200500)
+    expect(mock.getLastOptions()?.retry).toBe("never")
+    expect(mock.execute).toHaveBeenCalledTimes(1)
+  })
+
   it("rejects on expired-callback and on timeout-callback, each renders a fresh widget next time", async () => {
+    const stages = vi.spyOn(roomLifecycleDiagnostics, "recordTurnstileStage")
     const { result } = renderHook(() => useTurnstile())
     attachContainer(result)
 
@@ -213,6 +248,10 @@ describe("useTurnstile", () => {
     })
     await expect(timedOut).rejects.toThrow()
     expect(mock.remove).toHaveBeenCalledTimes(2)
+    expect(stages.mock.calls.map(([stage]) => stage)).toContain(
+      "turnstile_expired"
+    )
+    expect(stages).toHaveBeenLastCalledWith("turnstile_timeout")
   })
 
   it("dedupes concurrent requestToken() calls into a single in-flight challenge", async () => {
@@ -255,6 +294,7 @@ describe("useTurnstile — script load retry", () => {
   }
 
   it("removes a failed script element, starts a genuinely fresh load on retry, and can still succeed", async () => {
+    const stages = vi.spyOn(roomLifecycleDiagnostics, "recordTurnstileStage")
     const { result } = renderHook(() => useTurnstile())
     attachContainer(result)
 
@@ -273,6 +313,7 @@ describe("useTurnstile — script load retry", () => {
     act(() => {
       firstScript!.dispatchEvent(new Event("error"))
     })
+    expect(stages).toHaveBeenCalledWith("turnstile_script_error")
     await expect(failing).rejects.toThrow()
 
     // The failed element must not linger in the DOM — a stale element has
@@ -299,6 +340,7 @@ describe("useTurnstile — script load retry", () => {
     act(() => {
       secondScript!.dispatchEvent(new Event("load"))
     })
+    expect(stages).toHaveBeenCalledWith("turnstile_script_ready")
 
     await waitFor(() => expect(mock.execute).toHaveBeenCalledTimes(1))
     act(() => {

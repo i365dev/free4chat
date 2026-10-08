@@ -55,6 +55,7 @@ import {
   writeRecentRoomAppIds,
 } from "../common/roomAppRecents"
 import { browserRepeatUse } from "../common/roomHistory"
+import { roomLifecycleDiagnostics } from "../common/roomLifecycleDiagnostics"
 import { taskExecutionLabel } from "../common/taskExecution"
 import {
   isLargeTaskPaste,
@@ -489,6 +490,9 @@ export default function RoomContent({
     requestToken,
     status: turnstileStatus,
   } = useTurnstile()
+  const [diagnosticsCopyStatus, setDiagnosticsCopyStatus] = useState<
+    "idle" | "copied" | "failed"
+  >("idle")
 
   const {
     participants,
@@ -551,6 +555,45 @@ export default function RoomContent({
   } = useSfuChatRoom(roomName, nickName, roomType, {
     getTurnstileToken: requestToken,
   })
+  useEffect(() => {
+    if (connectionStatus === "verification_failed")
+      roomLifecycleDiagnostics.markVerificationFailed()
+    else setDiagnosticsCopyStatus("idle")
+  }, [connectionStatus])
+
+  const copyLifecycleDiagnostics = useCallback(async () => {
+    const text = roomLifecycleDiagnostics.copyText()
+    let copied = false
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text)
+        copied = true
+      }
+    } catch {
+      // Older iOS Safari may reject the async clipboard API in this context.
+    }
+
+    if (!copied) {
+      let textarea: HTMLTextAreaElement | null = null
+      try {
+        textarea = document.createElement("textarea")
+        textarea.value = text
+        textarea.setAttribute("readonly", "")
+        textarea.style.position = "fixed"
+        textarea.style.opacity = "0"
+        document.body.appendChild(textarea)
+        textarea.focus()
+        textarea.select()
+        textarea.setSelectionRange(0, textarea.value.length)
+        copied = document.execCommand("copy")
+      } catch {
+        copied = false
+      } finally {
+        textarea?.remove()
+      }
+    }
+    setDiagnosticsCopyStatus(copied ? "copied" : "failed")
+  }, [])
   const generatedAppsRef = useRef(generatedApps)
   generatedAppsRef.current = generatedApps
   // #346: the canonical Room generation id is stable for this Room page, so
@@ -2452,13 +2495,27 @@ export default function RoomContent({
               </>
             )}
             {hasVerificationFailed && (
-              <button
-                type="button"
-                onClick={retryVerification}
-                className="rounded-md bg-rose-600 px-6 py-2 text-sm font-medium text-white hover:bg-rose-500 focus:outline-none focus:ring focus:ring-yellow-400"
-              >
-                Try again
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={retryVerification}
+                  className="rounded-md bg-rose-600 px-6 py-2 text-sm font-medium text-white hover:bg-rose-500 focus:outline-none focus:ring focus:ring-yellow-400"
+                >
+                  Try again
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void copyLifecycleDiagnostics()}
+                  className="text-xs text-gray-500 underline underline-offset-4 hover:text-gray-300 focus:outline-none focus:ring focus:ring-yellow-400"
+                  aria-live="polite"
+                >
+                  {diagnosticsCopyStatus === "copied"
+                    ? "Copied"
+                    : diagnosticsCopyStatus === "failed"
+                    ? "Copy failed"
+                    : "Copy diagnostics"}
+                </button>
+              </>
             )}
           </div>
         )}
@@ -2540,6 +2597,40 @@ export default function RoomContent({
             className="mt-2 rounded-md bg-yellow-500 px-6 py-2 text-sm font-medium text-gray-950 hover:bg-yellow-400 focus:outline-none focus:ring focus:ring-yellow-300"
           >
             Try again
+          </button>
+        </div>
+      )}
+      {connectionStatus === "verification_failed" && (
+        <div
+          data-testid="live-verification-failed-guard"
+          role="alert"
+          aria-live="assertive"
+          className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-gray-950/95 px-4 text-center"
+        >
+          <p className="text-lg font-semibold text-gray-200">
+            Verification failed
+          </p>
+          <p className="max-w-sm text-sm text-gray-500">
+            {error || "We couldn't verify you're human. Please try again."}
+          </p>
+          <button
+            type="button"
+            onClick={retryVerification}
+            className="rounded-md bg-rose-600 px-6 py-2 text-sm font-medium text-white hover:bg-rose-500 focus:outline-none focus:ring focus:ring-yellow-400"
+          >
+            Try again
+          </button>
+          <button
+            type="button"
+            onClick={() => void copyLifecycleDiagnostics()}
+            className="text-xs text-gray-500 underline underline-offset-4 hover:text-gray-300 focus:outline-none focus:ring focus:ring-yellow-400"
+            aria-live="polite"
+          >
+            {diagnosticsCopyStatus === "copied"
+              ? "Copied"
+              : diagnosticsCopyStatus === "failed"
+              ? "Copy failed"
+              : "Copy diagnostics"}
           </button>
         </div>
       )}

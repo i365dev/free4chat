@@ -217,6 +217,25 @@ tokens, credentials, SFU session IDs, or DataChannel IDs. Existing local trace
 fields can include participant IDs; remove those before sharing issue evidence.
 Do not paste a full browser console or raw network capture into an issue.
 
+## Local Room lifecycle diagnostics (#620)
+
+When verification fails, the Room page offers a secondary **Copy diagnostics**
+control beneath **Try again**. It copies the bounded lifecycle and Turnstile
+trace so physical-device evidence can be pasted without Safari Web Inspector.
+The trace keeps at most 32 fixed-schema events in memory and one sanitized
+last-failed snapshot in `sessionStorage`; a later failure replaces that
+snapshot. It is local-only and is not sent to analytics or a server. If
+`sessionStorage` or the clipboard API is unavailable, verification remains
+unchanged and the page uses an in-memory trace and a small selection-based copy
+fallback where supported.
+
+The trace contains only navigation type, `pageshow`/`pagehide` persistence
+booleans, visibility state, fixed Turnstile lifecycle stages, and normalized
+Cloudflare error family/code. It never includes Room or participant identity,
+credentials, URL, token, Ray ID, User-Agent, or arbitrary callback data.
+Lifecycle values are observations only: they do not prove Safari discarded a
+tab or that memory pressure caused a reload.
+
 ## SFU architecture
 
 The browser connects directly to Cloudflare Realtime SFU for audio and screen sharing. `RoomSession` is a hibernating Durable Object for presence, mute state, text, reactions, resync, Room-wide Live Transcript, bounded artifacts and published surfaces, Generated Task Room App bundle/state, and room expiry. A room has no fixed total lifetime while it holds at least one participant (human or agent); it's cleaned up automatically once it has held zero participants for `EMPTY_ROOM_TIMEOUT_MS` (30 minutes). Expiry explicitly cancels the alarm and clears all Durable Object storage after taking the exact media-close snapshot, so a recycled Room name starts with no prior-generation keys. Human browser-to-browser files and images use chunked, reliable DataChannels and are not persisted by the application. This is distinct from a bounded temporary Agent-readable copy of a Human-shared image and explicit bounded Room attachments (jpeg/png/webp or plain/markdown/csv/json/yaml, ≤768KB), which live in Room state/chunks only until eviction or room expiry.
