@@ -1,5 +1,7 @@
 # free4chat
 
+English | [简体中文](./README.zh-CN.md)
+
 [www.free4.chat](https://www.free4.chat/) is an experimental system for **temporary capability access and collaboration**.
 
 Open a temporary Room, bring Humans and independently running Agents together,
@@ -225,7 +227,7 @@ RoomSession Durable Object ↔ Agent Runtime
 - [Collaboration patterns](https://www.free4.chat/docs/patterns/collaboration-patterns)
 - [MCP Room API](https://www.free4.chat/docs/reference/mcp)
 - [CLI reference](https://www.free4.chat/docs/reference/cli)
-- [Four evolutions of a WebRTC chat room](https://www.bmpi.dev/dev/free4chat/)
+- [Four evolutions of a WebRTC chat room](https://www.bmpi.dev/en/dev/free4chat/)
 - [Building a three-button remote with a Generated Task App](https://www.bmpi.dev/en/dev/free4chat-task-app-development-notes/)
 
 ## Tech stack
