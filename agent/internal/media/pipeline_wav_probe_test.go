@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pion/opus"
 	"github.com/pion/webrtc/v4"
+	opus "github.com/skrashevich/go-opus"
 
 	"github.com/i365dev/free4chat/agent/internal/speech/doubao"
 	"github.com/i365dev/free4chat/agent/internal/voice"

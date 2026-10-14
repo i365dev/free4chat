@@ -15,9 +15,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pion/opus"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
+	opus "github.com/skrashevich/go-opus"
 )
 
 const (

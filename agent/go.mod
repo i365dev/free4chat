@@ -5,8 +5,8 @@ go 1.27.0
 require (
 	github.com/coder/websocket v1.8.13
 	github.com/keybase/go-keychain v0.0.1
-	github.com/pion/opus v0.1.1-0.20260806214105-56fe97fcac80
 	github.com/pion/webrtc/v4 v4.2.18
+	github.com/skrashevich/go-opus v0.1.1
 	golang.org/x/net v0.55.0
 )
 

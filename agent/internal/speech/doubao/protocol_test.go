@@ -125,23 +125,32 @@ func TestOpusDecoderRoundTrip(t *testing.T) {
 	// A non-zero mono RAMP catches channel-misread garbage (pure silence
 	// cannot: zero interleaved garbage is still zero).
 	ramp := make([]byte, opusFrameSamples*2)
-	for i := 0; i < opusFrameSamples; i++ {
+	for i := range opusFrameSamples {
 		value := int16((i%32767)*2 - 32767)
 		binary.LittleEndian.PutUint16(ramp[i*2:], uint16(value))
 	}
-	encoded := encoder.encodeFrame(ramp)
 	decoder, err := NewOpusDecoder()
 	if err != nil {
 		t.Fatalf("decoder: %v", err)
 	}
 	defer decoder.Close()
-	pcm, err := decoder.DecodeFrame(encoded)
-	if err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	// 20 ms @ 16 kHz = 320 samples = 640 bytes.
-	if len(pcm) != 640 {
-		t.Fatalf("decoded PCM length = %d, want 640", len(pcm))
+	// Decode both the startup frame and a steady-state frame. Opus encoders
+	// can have different lookahead, so the first frame may contain valid
+	// leading silence; the second must still catch channel-misread garbage.
+	var pcm []byte
+	for frame := range 2 {
+		encoded := encoder.encodeFrame(ramp)
+		if len(encoded) == 0 {
+			t.Fatalf("encode frame %d: empty packet", frame)
+		}
+		pcm, err = decoder.DecodeFrame(encoded)
+		if err != nil {
+			t.Fatalf("decode frame %d: %v", frame, err)
+		}
+		// 20 ms @ 16 kHz = 320 samples = 640 bytes.
+		if len(pcm) != 640 {
+			t.Fatalf("decoded frame %d PCM length = %d, want 640", frame, len(pcm))
+		}
 	}
 	nonZero := 0
 	for i := 0; i+1 < len(pcm); i += 2 {

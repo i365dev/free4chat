@@ -3,10 +3,10 @@ package doubao
 import (
 	"testing"
 
-	"github.com/pion/opus"
+	opus "github.com/skrashevich/go-opus"
 )
 
-// testEncoder wraps the pion encoder for silence-frame fixtures.
+// testEncoder wraps the Opus encoder for silence-frame fixtures.
 type testEncoder struct {
 	encoder *opus.Encoder
 }

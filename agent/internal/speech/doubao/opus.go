@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 
-	"github.com/pion/opus"
+	opus "github.com/skrashevich/go-opus"
 )
 
 const (

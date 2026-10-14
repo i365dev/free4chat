@@ -7,7 +7,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/pion/opus"
+	opus "github.com/skrashevich/go-opus"
 
 	"github.com/i365dev/free4chat/agent/internal/speech"
 	"github.com/i365dev/free4chat/agent/internal/speech/doubao"
