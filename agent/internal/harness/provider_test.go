@@ -157,24 +157,12 @@ func TestProviderRegistryReturnsIndependentCopies(t *testing.T) {
 	}
 }
 
-func TestCodexAdvertisesModelCompatibilityFallbacks(t *testing.T) {
+func TestCodexDoesNotPinModelIDsForCompatibility(t *testing.T) {
 	provider, err := ProviderByID("codex")
 	if err != nil {
 		t.Fatalf("codex provider: %v", err)
 	}
-	want := []types.LauncherSessionConfigFallback{
-		{ConfigID: "model", CurrentValue: "gpt-6-luna", ReplacementValue: "gpt-5.6-sol"},
-		{ConfigID: "model", CurrentValue: "gpt-6.1-sol", ReplacementValue: "gpt-5.6-sol"},
-	}
-	if !reflect.DeepEqual(provider.SessionConfigFallbacks, want) {
-		t.Fatalf("Codex compatibility fallback = %+v, want %+v", provider.SessionConfigFallbacks, want)
-	}
-	provider.SessionConfigFallbacks[1].ReplacementValue = "mutated"
-	again, err := ProviderByID("codex")
-	if err != nil {
-		t.Fatalf("codex provider copy: %v", err)
-	}
-	if again.SessionConfigFallbacks[1].ReplacementValue != "gpt-5.6-sol" {
-		t.Fatal("provider fallback mutation leaked into the registry")
+	if len(provider.SessionConfigFallbacks) != 0 {
+		t.Fatalf("Codex still pins model compatibility values: %+v", provider.SessionConfigFallbacks)
 	}
 }

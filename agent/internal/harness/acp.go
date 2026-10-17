@@ -170,13 +170,14 @@ type ACPConfigOptionValue struct {
 // bounded select options with finite advertised values are retained by
 // parseSessionControls.
 type ACPConfigOption struct {
-	ID           string                 `json:"id"`
-	Name         string                 `json:"name,omitempty"`
-	Description  string                 `json:"description,omitempty"`
-	Category     string                 `json:"category,omitempty"`
-	Type         string                 `json:"type,omitempty"`
-	CurrentValue string                 `json:"currentValue,omitempty"`
-	Options      []ACPConfigOptionValue `json:"options,omitempty"`
+	ID               string                 `json:"id"`
+	Name             string                 `json:"name,omitempty"`
+	Description      string                 `json:"description,omitempty"`
+	Category         string                 `json:"category,omitempty"`
+	Type             string                 `json:"type,omitempty"`
+	CurrentValue     string                 `json:"currentValue,omitempty"`
+	RecommendedValue string                 `json:"recommendedValue,omitempty"`
+	Options          []ACPConfigOptionValue `json:"options,omitempty"`
 }
 
 // ACPSessionControls contains only native ACP controls retained for a
@@ -515,18 +516,23 @@ func (a *ACPAdapter) SessionControls() *ACPSessionControls {
 }
 
 func (a *ACPAdapter) SessionControlsFor(scope string) *types.HarnessSessionControls {
+	return projectHarnessSessionControls(a.sessionControlsSnapshotFor(scope))
+}
+
+func (a *ACPAdapter) sessionControlsSnapshotFor(scope string) *ACPSessionControls {
 	scope = normalizeScopeName(scope)
 	a.mu.Lock()
-	var controls *ACPSessionControls
+	defer a.mu.Unlock()
 	if scope == "room" {
 		if a.caps != nil {
-			controls = cloneSessionControls(a.caps.SessionControls)
+			return cloneSessionControls(a.caps.SessionControls)
 		}
-	} else if session := a.sessions[scope]; session != nil && session.caps != nil {
-		controls = cloneSessionControls(session.caps.SessionControls)
+		return nil
 	}
-	a.mu.Unlock()
-	return projectHarnessSessionControls(controls)
+	if session := a.sessions[scope]; session != nil && session.caps != nil {
+		return cloneSessionControls(session.caps.SessionControls)
+	}
+	return nil
 }
 
 // ApplySessionConfigFallbacksFor applies provider-owned compatibility rules
@@ -568,7 +574,46 @@ func (a *ACPAdapter) ApplySessionConfigFallbacksFor(scope string, humanSelection
 			break
 		}
 	}
+	controls := a.sessionControlsSnapshotFor(scope)
+	if controls != nil {
+		for _, option := range controls.ConfigOptions {
+			selectedValue, selected := humanSelections[option.ID]
+			if selected && selectedValue != option.CurrentValue {
+				continue
+			}
+			if !isUnknownRecommendedModel(option) {
+				continue
+			}
+			if err := a.SetConfigOptionFor(scope, option.ID, option.RecommendedValue); err != nil {
+				return applied, errors.New("failed to apply advertised model recommendation")
+			}
+			applied = append(applied, types.AppliedSessionConfigFallback{
+				ConfigID: option.ID, PreviousValue: option.CurrentValue, EffectiveValue: option.RecommendedValue,
+			})
+		}
+	}
 	return applied, nil
+}
+
+// isUnknownRecommendedModel identifies a model selector whose current value
+// the provider synthesized because it is absent from its available model
+// list. Runtime may then apply only the provider's advertised recommendation.
+func isUnknownRecommendedModel(option ACPConfigOption) bool {
+	if !strings.EqualFold(option.Type, "select") || !strings.EqualFold(option.Category, "model") ||
+		option.RecommendedValue == "" || option.RecommendedValue == option.CurrentValue {
+		return false
+	}
+	recommendedAdvertised := false
+	currentHasDescription := false
+	for _, candidate := range option.Options {
+		if candidate.Value == option.RecommendedValue {
+			recommendedAdvertised = true
+		}
+		if candidate.Value == option.CurrentValue && candidate.Description != "" {
+			currentHasDescription = true
+		}
+	}
+	return recommendedAdvertised && !currentHasDescription
 }
 
 func projectHarnessSessionControls(source *ACPSessionControls) *types.HarnessSessionControls {
@@ -1360,7 +1405,7 @@ func (a *ACPAdapter) handshakeWithRetained(retained map[string]retainedACPSessio
 		// Deliberately advertise no filesystem, terminal, MCP, or other host
 		// capabilities. Without an explicitly installed local responder,
 		// permission requests remain fail-closed and are cancelled.
-		"clientCapabilities": map[string]any{"_meta": map[string]any{"jetbrains": map[string]any{"air": map[string]any{"version": 1, "capabilities": []string{"sessionFailure"}}}}},
+		"clientCapabilities": map[string]any{"_meta": map[string]any{"jetbrains": map[string]any{"air": map[string]any{"version": 1, "capabilities": []string{"sessionFailure", "recommendedValue"}}}}},
 	})
 	raw, err := a.request("initialize", initializeParams)
 	if err != nil {
@@ -1500,7 +1545,15 @@ func parseSessionControls(raw []byte) *ACPSessionControls {
 			Category     string `json:"category"`
 			Type         string `json:"type"`
 			CurrentValue string `json:"currentValue"`
-			Options      []struct {
+			Meta         struct {
+				JetBrains struct {
+					Air struct {
+						Version          int    `json:"version"`
+						RecommendedValue string `json:"recommendedValue"`
+					} `json:"air"`
+				} `json:"jetbrains"`
+			} `json:"_meta"`
+			Options []struct {
 				Value       string `json:"value"`
 				Name        string `json:"name"`
 				Description string `json:"description"`
@@ -1572,6 +1625,10 @@ func parseSessionControls(raw []byte) *ACPSessionControls {
 			Type:         "select",
 			CurrentValue: option.CurrentValue,
 			Options:      values,
+		}
+		if option.Meta.JetBrains.Air.Version >= 1 &&
+			validACPControlIdentity(option.Meta.JetBrains.Air.RecommendedValue, maxACPSessionConfigValueLength) {
+			projected.RecommendedValue = option.Meta.JetBrains.Air.RecommendedValue
 		}
 		controls.ConfigOptions = append(controls.ConfigOptions, projected)
 	}

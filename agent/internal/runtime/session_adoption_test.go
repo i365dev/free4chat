@@ -560,18 +560,11 @@ func TestEnsureHarnessSessionAppliesProviderFallbackToUnconfiguredProjectTask(t 
 
 func TestProviderFallbackUpdatesExplicitTaskIdentityAndAllowsFollowup(t *testing.T) {
 	const scope = "task:provider-fallback"
-	launcher, err := harness.GetLauncher("codex")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(launcher.SessionConfigFallbacks) != 2 {
-		t.Fatalf("Codex registry fallback metadata = %+v", launcher.SessionConfigFallbacks)
-	}
-	fallback := launcher.SessionConfigFallbacks[0]
+	fallback := types.LauncherSessionConfigFallback{ConfigID: "model", CurrentValue: "unsupported", ReplacementValue: "supported"}
 	base := newAdoptionAdapter("codex")
 	base.modelValues = []string{fallback.CurrentValue, fallback.ReplacementValue}
 	base.allowedModelValues = append([]string(nil), base.modelValues...)
-	adapter := &fallbackRecordingAdapter{adoptionAdapter: base, fallbacks: launcher.SessionConfigFallbacks}
+	adapter := &fallbackRecordingAdapter{adoptionAdapter: base, fallbacks: []types.LauncherSessionConfigFallback{fallback}}
 	rt := &ResidentRuntime{
 		options: Options{Adapter: adapter},
 		taskIdentities: map[string]*taskIdentity{
@@ -610,46 +603,13 @@ func TestProviderFallbackUpdatesExplicitTaskIdentityAndAllowsFollowup(t *testing
 	}
 }
 
-func TestProviderFallbackAppliesUnsupportedChatGPTModel(t *testing.T) {
-	const scope = "task:provider-fallback-chatgpt-model"
-	launcher, err := harness.GetLauncher("codex")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(launcher.SessionConfigFallbacks) < 2 {
-		t.Fatalf("Codex registry fallback metadata = %+v", launcher.SessionConfigFallbacks)
-	}
-	fallback := launcher.SessionConfigFallbacks[1]
-	base := newAdoptionAdapter("codex")
-	base.modelValues = []string{fallback.CurrentValue, fallback.ReplacementValue}
-	base.allowedModelValues = append([]string(nil), base.modelValues...)
-	adapter := &fallbackRecordingAdapter{adoptionAdapter: base, fallbacks: launcher.SessionConfigFallbacks}
-	rt := &ResidentRuntime{
-		options: Options{Adapter: adapter},
-		taskIdentities: map[string]*taskIdentity{
-			scope: {configOptions: map[string]string{fallback.ConfigID: fallback.CurrentValue}},
-		},
-	}
-
-	if err := rt.ensureHarnessSession(scope); err != nil {
-		t.Fatalf("first Task admission: %v", err)
-	}
-	if got := rt.taskIdentities[scope].configOptions[fallback.ConfigID]; got != fallback.ReplacementValue {
-		t.Fatalf("effective Task model = %q, want %q", got, fallback.ReplacementValue)
-	}
-}
-
 func TestProviderFallbackPreservesKeepCurrentTaskIdentity(t *testing.T) {
 	const scope = "task:provider-fallback-keep-current"
-	launcher, err := harness.GetLauncher("codex")
-	if err != nil {
-		t.Fatal(err)
-	}
-	fallback := launcher.SessionConfigFallbacks[0]
+	fallback := types.LauncherSessionConfigFallback{ConfigID: "model", CurrentValue: "unsupported", ReplacementValue: "supported"}
 	base := newAdoptionAdapter("codex")
 	base.modelValues = []string{fallback.CurrentValue, fallback.ReplacementValue}
 	base.allowedModelValues = append([]string(nil), base.modelValues...)
-	adapter := &fallbackRecordingAdapter{adoptionAdapter: base, fallbacks: launcher.SessionConfigFallbacks}
+	adapter := &fallbackRecordingAdapter{adoptionAdapter: base, fallbacks: []types.LauncherSessionConfigFallback{fallback}}
 	rt := &ResidentRuntime{
 		options:        Options{Adapter: adapter},
 		taskIdentities: map[string]*taskIdentity{scope: {}},

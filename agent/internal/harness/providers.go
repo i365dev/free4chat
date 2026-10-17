@@ -83,21 +83,7 @@ var builtInProviders = []Provider{
 		Maturity:      types.MaturityBridge,
 		Security:      types.SecurityTrustedRoom,
 		Environment:   map[string]string{"INITIAL_AGENT_MODE": "read-only"},
-		SessionConfigFallbacks: []types.LauncherSessionConfigFallback{
-			{
-				ConfigID:         "model",
-				CurrentValue:     "gpt-6-luna",
-				ReplacementValue: "gpt-5.6-sol",
-			},
-			// Codex 0.154 rejects gpt-6.1-sol for ChatGPT-authenticated
-			// sessions. Keep the correction scoped to that exact current value.
-			{
-				ConfigID:         "model",
-				CurrentValue:     "gpt-6.1-sol",
-				ReplacementValue: "gpt-5.6-sol",
-			},
-		},
-		Notes: "Official ACP bridge for Codex in explicit read-only mode; ambient CODEX_CONFIG and INITIAL_AGENT_MODE are ignored.",
+		Notes:         "Official ACP bridge for Codex in explicit read-only mode; ambient CODEX_CONFIG and INITIAL_AGENT_MODE are ignored.",
 		Capabilities: Capabilities{
 			// #440 real native CLI -> pinned ACP certification: the standard
 			// session/list returned the seeded `exec` thread (25 sessions), an
