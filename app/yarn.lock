@@ -2226,10 +2226,10 @@
   resolved "https://registry.yarnpkg.com/@nolyfill/is-core-module/-/is-core-module-1.0.39.tgz#3dc35ba0f1e66b403c00b39344f870298ebb1c8e"
   integrity sha512-nn5ozdjYQpUCZlWGuxcJY/KpxkWQs4DcbMCmKojjyrYDEAGy4Ce19NN4v5MduafTwJlbKc99UA8YhSVqq9yPZA==
 
-"@opennextjs/aws@4.0.2":
-  version "4.0.2"
-  resolved "https://registry.yarnpkg.com/@opennextjs/aws/-/aws-4.0.2.tgz#c675de907d1c6ce2566e45b33b13ce6b09a76d8c"
-  integrity sha512-nXQPT8GZDV+NWMJV9mD/Ywxyo+tCZfFvrR6jpEOYNcxK/AqiEDlJzPybGOrHUDWAYdR1b6tmh+MoR3VbqIao3w==
+"@opennextjs/aws@4.1.0":
+  version "4.1.0"
+  resolved "https://registry.yarnpkg.com/@opennextjs/aws/-/aws-4.1.0.tgz#2dfd754660cd460b77bcf1c403c02e8c9187d30a"
+  integrity sha512-GuKkdUbnJhLvtwTiJlytNtWIcSYN3+Dzi+OusUlRgf+Ur7dGoXdzBopd+VFiSdTBduPOvr9lPFDg6BYNjEV3wQ==
   dependencies:
     "@ast-grep/napi" "^0.40.5"
     "@aws-sdk/client-cloudfront" "3.984.0"
@@ -2249,14 +2249,14 @@
     urlpattern-polyfill "^10.1.0"
     yaml "^2.8.1"
 
-"@opennextjs/cloudflare@^1.19.1":
-  version "1.19.10"
-  resolved "https://registry.yarnpkg.com/@opennextjs/cloudflare/-/cloudflare-1.19.10.tgz#62d502941bf1bc8b937b970346a4c81f04e91775"
-  integrity sha512-rTVugmBI2q9PCc/XV7qQlCNFL1cCfhLvaOeyPu/TU8z4K1VcsDMVHDlABYeRB2kGmH7RnFNFeQAK+1YdQWk7tA==
+"@opennextjs/cloudflare@^1.20.2":
+  version "1.20.2"
+  resolved "https://registry.yarnpkg.com/@opennextjs/cloudflare/-/cloudflare-1.20.2.tgz#87df72fd827be38a700b1645c4f58192566ef301"
+  integrity sha512-iFBjABnaDk3be27F5EpxyMLMGPbVnnArFx5I3Y8Rf6BSx5nBV8h0UuJiMKrx3+whDU5ahIy4d8sfbvWvMiF1Kg==
   dependencies:
     "@ast-grep/napi" "^0.40.5"
     "@dotenvx/dotenvx" "1.31.0"
-    "@opennextjs/aws" "4.0.2"
+    "@opennextjs/aws" "4.1.0"
     ci-info "^4.2.0"
     cloudflare "^4.4.1"
     comment-json "^4.5.1"
