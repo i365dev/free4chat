@@ -161,9 +161,10 @@ type ACPModeState struct {
 // ACPConfigOptionValue is one Harness-native value offered by a session
 // config option.
 type ACPConfigOptionValue struct {
-	Value       string `json:"value"`
-	Name        string `json:"name,omitempty"`
-	Description string `json:"description,omitempty"`
+	Value           string `json:"value"`
+	Name            string `json:"name,omitempty"`
+	Description     string `json:"description,omitempty"`
+	descriptionNull bool
 }
 
 // ACPConfigOption is a sanitized native ACP session config option. Only
@@ -577,8 +578,7 @@ func (a *ACPAdapter) ApplySessionConfigFallbacksFor(scope string, humanSelection
 	controls := a.sessionControlsSnapshotFor(scope)
 	if controls != nil {
 		for _, option := range controls.ConfigOptions {
-			selectedValue, selected := humanSelections[option.ID]
-			if selected && selectedValue != option.CurrentValue {
+			if _, selected := humanSelections[option.ID]; selected {
 				continue
 			}
 			if !isUnknownRecommendedModel(option) {
@@ -604,16 +604,16 @@ func isUnknownRecommendedModel(option ACPConfigOption) bool {
 		return false
 	}
 	recommendedAdvertised := false
-	currentHasDescription := false
+	currentIsSynthesized := false
 	for _, candidate := range option.Options {
 		if candidate.Value == option.RecommendedValue {
 			recommendedAdvertised = true
 		}
-		if candidate.Value == option.CurrentValue && candidate.Description != "" {
-			currentHasDescription = true
+		if candidate.Value == option.CurrentValue && candidate.descriptionNull {
+			currentIsSynthesized = true
 		}
 	}
-	return recommendedAdvertised && !currentHasDescription
+	return recommendedAdvertised && currentIsSynthesized
 }
 
 func projectHarnessSessionControls(source *ACPSessionControls) *types.HarnessSessionControls {
@@ -1554,9 +1554,9 @@ func parseSessionControls(raw []byte) *ACPSessionControls {
 				} `json:"jetbrains"`
 			} `json:"_meta"`
 			Options []struct {
-				Value       string `json:"value"`
-				Name        string `json:"name"`
-				Description string `json:"description"`
+				Value           string          `json:"value"`
+				Name            string          `json:"name"`
+				DescriptionWire json.RawMessage `json:"description"`
 			} `json:"options"`
 		} `json:"configOptions"`
 	}
@@ -1607,10 +1607,19 @@ func parseSessionControls(raw []byte) *ACPSessionControls {
 				break
 			}
 			seenValues[value.Value] = struct{}{}
+			descriptionNull := strings.TrimSpace(string(value.DescriptionWire)) == "null"
+			description := ""
+			if len(value.DescriptionWire) > 0 && !descriptionNull {
+				if err := json.Unmarshal(value.DescriptionWire, &description); err != nil {
+					valid = false
+					break
+				}
+			}
 			values = append(values, ACPConfigOptionValue{
-				Value:       value.Value,
-				Name:        boundedACPText(value.Name),
-				Description: boundedACPText(value.Description),
+				Value:           value.Value,
+				Name:            boundedACPText(value.Name),
+				Description:     boundedACPText(description),
+				descriptionNull: descriptionNull,
 			})
 		}
 		if !valid || (option.CurrentValue != "" && !validACPControlIdentity(option.CurrentValue, maxACPSessionConfigValueLength)) {

@@ -716,17 +716,26 @@ func fakeConfigOptions(current map[string]string) []any {
 		map[string]any{"value": "gpt-a", "name": "A", "description": "Supported model A"},
 		map[string]any{"value": "gpt-b", "name": "B", "description": "Supported model B"},
 	}
+	if os.Getenv("FAKE_MODEL_CURRENT_EMPTY_DESCRIPTION") == "1" && current["model"] == "gpt-a" {
+		modelOptions[0] = map[string]any{"value": "gpt-a", "name": "A", "description": ""}
+	}
 	if current["model"] != "gpt-a" && current["model"] != "gpt-b" {
-		modelOptions = append([]any{map[string]any{"value": current["model"], "name": current["model"]}}, modelOptions...)
+		modelOptions = append([]any{map[string]any{"value": current["model"], "name": current["model"], "description": nil}}, modelOptions...)
 	}
 	modelOption := map[string]any{
 		"id": "model", "name": "Model", "category": "model", "type": "select",
 		"currentValue": current["model"], "options": modelOptions,
 	}
 	if recommended := os.Getenv("FAKE_MODEL_RECOMMENDED"); recommended != "" {
-		modelOption["_meta"] = map[string]any{"jetbrains": map[string]any{"air": map[string]any{
-			"version": 1, "recommendedValue": recommended,
-		}}}
+		if os.Getenv("FAKE_MODEL_RECOMMENDED_MALFORMED") == "1" {
+			modelOption["_meta"] = map[string]any{"jetbrains": map[string]any{"air": map[string]any{
+				"version": 1, "recommendedValue": 42,
+			}}}
+		} else {
+			modelOption["_meta"] = map[string]any{"jetbrains": map[string]any{"air": map[string]any{
+				"version": 1, "recommendedValue": recommended,
+			}}}
+		}
 	}
 	return []any{
 		map[string]any{

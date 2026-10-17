@@ -743,6 +743,87 @@ func TestACPRecommendedModelFallbackUsesAdvertisedUnknownModel(t *testing.T) {
 		}
 	})
 
+	t.Run("explicit selection equal to current model is preserved", func(t *testing.T) {
+		launcher := scriptLauncher("normal", map[string]string{
+			"FAKE_POLICY_CAP": "1", "FAKE_MODEL_CURRENT": "new-model-unknown-to-bridge", "FAKE_MODEL_RECOMMENDED": "gpt-b",
+		})
+		adapter, _ := newTestAdapter(t, launcher, AdapterOptions{})
+		if err := adapter.EnsureSession(); err != nil {
+			t.Fatalf("ensure session: %v", err)
+		}
+		t.Cleanup(func() { _ = adapter.Close() })
+		applied, err := adapter.ApplySessionConfigFallbacksFor("room", map[string]string{"model": "new-model-unknown-to-bridge"})
+		if err != nil || len(applied) != 0 {
+			t.Fatalf("fallback = %+v, err = %v; expected no change", applied, err)
+		}
+		if got := findCurrentConfigValue(t, adapter.SessionControls(), "model"); got != "new-model-unknown-to-bridge" {
+			t.Fatalf("explicitly selected current model changed to %q", got)
+		}
+	})
+
+	t.Run("catalog model with empty description is preserved", func(t *testing.T) {
+		launcher := scriptLauncher("normal", map[string]string{
+			"FAKE_POLICY_CAP": "1", "FAKE_MODEL_CURRENT": "gpt-a", "FAKE_MODEL_CURRENT_EMPTY_DESCRIPTION": "1", "FAKE_MODEL_RECOMMENDED": "gpt-b",
+		})
+		adapter, _ := newTestAdapter(t, launcher, AdapterOptions{})
+		if err := adapter.EnsureSession(); err != nil {
+			t.Fatalf("ensure session: %v", err)
+		}
+		t.Cleanup(func() { _ = adapter.Close() })
+		applied, err := adapter.ApplySessionConfigFallbacksFor("room", nil)
+		if err != nil || len(applied) != 0 {
+			t.Fatalf("fallback = %+v, err = %v; expected no change", applied, err)
+		}
+		controls := adapter.SessionControls()
+		option, ok := findConfigOption(controls.ConfigOptions, "model")
+		if !ok {
+			t.Fatal("model config option missing")
+		}
+		var currentDescription string
+		for _, candidate := range option.Options {
+			if candidate.Value == option.CurrentValue {
+				currentDescription = candidate.Description
+			}
+		}
+		if currentDescription != "" || findCurrentConfigValue(t, controls, "model") != "gpt-a" {
+			t.Fatalf("catalog model with empty description was not preserved: %+v", option)
+		}
+	})
+
+	t.Run("missing recommendation metadata is ignored", func(t *testing.T) {
+		launcher := scriptLauncher("normal", map[string]string{
+			"FAKE_POLICY_CAP": "1", "FAKE_MODEL_CURRENT": "new-model-unknown-to-bridge",
+		})
+		adapter, _ := newTestAdapter(t, launcher, AdapterOptions{})
+		if err := adapter.EnsureSession(); err != nil {
+			t.Fatalf("ensure session: %v", err)
+		}
+		t.Cleanup(func() { _ = adapter.Close() })
+		applied, err := adapter.ApplySessionConfigFallbacksFor("room", nil)
+		if err != nil || len(applied) != 0 {
+			t.Fatalf("fallback = %+v, err = %v; expected no change", applied, err)
+		}
+		if got := findCurrentConfigValue(t, adapter.SessionControls(), "model"); got != "new-model-unknown-to-bridge" {
+			t.Fatalf("model changed without recommendation metadata: %q", got)
+		}
+	})
+
+	t.Run("malformed recommendation metadata is ignored", func(t *testing.T) {
+		launcher := scriptLauncher("normal", map[string]string{
+			"FAKE_POLICY_CAP": "1", "FAKE_MODEL_CURRENT": "new-model-unknown-to-bridge", "FAKE_MODEL_RECOMMENDED": "gpt-b",
+			"FAKE_MODEL_RECOMMENDED_MALFORMED": "1",
+		})
+		adapter, _ := newTestAdapter(t, launcher, AdapterOptions{})
+		if err := adapter.EnsureSession(); err != nil {
+			t.Fatalf("ensure session: %v", err)
+		}
+		t.Cleanup(func() { _ = adapter.Close() })
+		applied, err := adapter.ApplySessionConfigFallbacksFor("room", nil)
+		if err != nil || len(applied) != 0 {
+			t.Fatalf("fallback = %+v, err = %v; expected no change", applied, err)
+		}
+	})
+
 	t.Run("unadvertised recommendation is ignored", func(t *testing.T) {
 		launcher := scriptLauncher("normal", map[string]string{
 			"FAKE_POLICY_CAP": "1", "FAKE_MODEL_CURRENT": "new-model-unknown-to-bridge", "FAKE_MODEL_RECOMMENDED": "not-advertised",
