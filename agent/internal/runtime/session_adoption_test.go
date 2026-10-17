@@ -564,7 +564,7 @@ func TestProviderFallbackUpdatesExplicitTaskIdentityAndAllowsFollowup(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(launcher.SessionConfigFallbacks) != 1 {
+	if len(launcher.SessionConfigFallbacks) != 2 {
 		t.Fatalf("Codex registry fallback metadata = %+v", launcher.SessionConfigFallbacks)
 	}
 	fallback := launcher.SessionConfigFallbacks[0]
@@ -607,6 +607,35 @@ func TestProviderFallbackUpdatesExplicitTaskIdentityAndAllowsFollowup(t *testing
 	}
 	if got := rt.taskIdentities[scope].configOptions[fallback.ConfigID]; got != fallback.ReplacementValue {
 		t.Fatalf("follow-up changed effective Task selection to %q", got)
+	}
+}
+
+func TestProviderFallbackAppliesUnsupportedChatGPTModel(t *testing.T) {
+	const scope = "task:provider-fallback-chatgpt-model"
+	launcher, err := harness.GetLauncher("codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(launcher.SessionConfigFallbacks) < 2 {
+		t.Fatalf("Codex registry fallback metadata = %+v", launcher.SessionConfigFallbacks)
+	}
+	fallback := launcher.SessionConfigFallbacks[1]
+	base := newAdoptionAdapter("codex")
+	base.modelValues = []string{fallback.CurrentValue, fallback.ReplacementValue}
+	base.allowedModelValues = append([]string(nil), base.modelValues...)
+	adapter := &fallbackRecordingAdapter{adoptionAdapter: base, fallbacks: launcher.SessionConfigFallbacks}
+	rt := &ResidentRuntime{
+		options: Options{Adapter: adapter},
+		taskIdentities: map[string]*taskIdentity{
+			scope: {configOptions: map[string]string{fallback.ConfigID: fallback.CurrentValue}},
+		},
+	}
+
+	if err := rt.ensureHarnessSession(scope); err != nil {
+		t.Fatalf("first Task admission: %v", err)
+	}
+	if got := rt.taskIdentities[scope].configOptions[fallback.ConfigID]; got != fallback.ReplacementValue {
+		t.Fatalf("effective Task model = %q, want %q", got, fallback.ReplacementValue)
 	}
 }
 
