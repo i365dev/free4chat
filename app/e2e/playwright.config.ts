@@ -18,7 +18,7 @@ export default defineConfig({
   // `next build && next start` server, exactly like the investigation that
   // produced the evidence in the PR description — not dev mode.
   webServer: {
-    command: "yarn next build && yarn start -p 3780",
+    command: "yarn build && yarn start -p 3780",
     url: "http://127.0.0.1:3780",
     reuseExistingServer: true,
     timeout: 300_000,

@@ -15,7 +15,7 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   webServer: {
-    command: "yarn next build && yarn start -p 3781",
+    command: "yarn build && yarn start -p 3781",
     url: "http://127.0.0.1:3781",
     reuseExistingServer: !process.env.CI,
     timeout: 300_000,

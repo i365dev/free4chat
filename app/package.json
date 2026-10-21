@@ -5,9 +5,9 @@
   "version": "2.0.0",
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "next build --webpack",
     "start": "next start",
-    "cf-build": "opennextjs-cloudflare build --dangerouslyUseUnsupportedNextVersion",
+    "cf-build": "opennextjs-cloudflare build",
     "cf-deploy": "wrangler deploy",
     "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
     "type-check": "tsc --pretty --noEmit",
@@ -19,24 +19,25 @@
     "prepare": "husky",
     "e2e:homepage": "playwright test e2e/signal-collapse.spec.ts --config=e2e/playwright.config.ts",
     "e2e:homepage-ui": "playwright test e2e/homepage-ui-regression.spec.ts --config=e2e/homepage-ui.playwright.config.ts",
-    "e2e:room": "playwright test e2e/room/room.spec.ts --config=e2e/room/playwright.config.ts",
-    "e2e:room-app-host": "playwright test e2e/room-app-host/room-app-host.spec.ts --config=e2e/room-app-host/playwright.config.ts"
+    "e2e:room": "playwright test --config=e2e/room/playwright.config.ts",
+    "e2e:room-app-host": "playwright test e2e/room-app-host/room-app-host.spec.ts --config=e2e/room-app-host/playwright.config.ts",
+    "e2e:worker": "NEXT_PUBLIC_TURNSTILE_DISABLED=1 yarn cf-build && opennextjs-cloudflare populateCache local && node e2e/room/run-local-worker.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.3.0",
     "agents": "0.21.0",
-    "next": "15.5.27",
+    "next": "16.4.2",
     "planet-avatar": "0.1.0",
-    "react": "19",
-    "react-dom": "19",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
     "zod": "4.4.3"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260811.1",
-    "@opennextjs/cloudflare": "^1.19.1",
-    "@playwright/test": "1.48.2",
+    "@opennextjs/cloudflare": "1.20.12",
+    "@playwright/test": "1.64.1",
     "@tailwindcss/aspect-ratio": "^0.4.0",
     "@tailwindcss/forms": "^0.5.0",
     "@tailwindcss/typography": "^0.5.2",
@@ -48,11 +49,11 @@
     "@types/react-dom": "19",
     "@vitejs/plugin-react": "^4",
     "autoprefixer": "^10.4.2",
-    "eslint": "^8.12.0",
-    "eslint-config-next": "15.5.24",
+    "eslint": "9.39.5",
+    "eslint-config-next": "16.4.2",
     "eslint-config-prettier": "^8.5.0",
     "eslint-plugin-prettier": "^4.0.0",
-    "eslint-plugin-unused-imports": "^2.0.0",
+    "eslint-plugin-unused-imports": "4.4.1",
     "husky": "^9.1.7",
     "jsdom": "^25",
     "lint-staged": "15",
@@ -63,12 +64,12 @@
     "typescript": "^5.5.2",
     "vite-tsconfig-paths": "^5",
     "vitest": "^4",
-    "wrangler": "^4.122.0"
+    "wrangler": "4.151.3"
   },
   "resolutions": {
-    "path-to-regexp": "^8.0.0",
     "cookie": "^0.7.0",
-    "postcss": "^8.4.31"
+    "postcss": "^8.4.31",
+    "**/@node-minify/core/glob": "^10.5.0"
   },
   "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e"
 }

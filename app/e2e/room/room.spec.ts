@@ -35,6 +35,17 @@ test("two browsers exchange a text message through the real local DO", async ({
   const pageA = await contextA.newPage()
   const pageB = await contextB.newPage()
 
+  let controlConnections = 0
+  let disconnectControl: (() => void) | undefined
+  await pageA.routeWebSocket(/\/api\/sfu\/ws(?:\?|$)/, (socket) => {
+    const upstream = socket.connectToServer()
+    controlConnections += 1
+    disconnectControl = () => {
+      socket.close({ code: 1012, reason: "migration reconnect probe" })
+      upstream.close({ code: 1012 })
+    }
+  })
+
   const errors: Array<string> = []
   for (const page of [pageA, pageB]) {
     page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`))
@@ -66,6 +77,24 @@ test("two browsers exchange a text message through the real local DO", async ({
 
   // Bob renders Alice's message — it crossed the real WS/DO path.
   await expect(pageB.getByText(MESSAGE).first()).toBeVisible({
+    timeout: 15_000,
+  })
+
+  // Drop the actual control connection without reloading either browser.
+  // Recovery must reconnect to the Worker/DO and preserve normal messaging.
+  expect(disconnectControl).toBeDefined()
+  const reconnectedFrame = pageA
+    .waitForEvent("websocket")
+    .then((socket) => socket.waitForEvent("framereceived"))
+  disconnectControl!()
+  await reconnectedFrame
+  expect(controlConnections).toBeGreaterThan(1)
+  const recoveredMessage = "hello after control reconnect"
+  await pageA
+    .getByPlaceholder("Message the room or @ an Agent…")
+    .fill(recoveredMessage)
+  await pageA.keyboard.press("Enter")
+  await expect(pageB.getByText(recoveredMessage).first()).toBeVisible({
     timeout: 15_000,
   })
 
