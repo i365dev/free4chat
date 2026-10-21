@@ -14,7 +14,7 @@ Rooms are valid.
 - Canonical host: `www.free4.chat`; `free4.chat` redirects here at Cloudflare
 - Production branch: `cf-sfu`
 - Current phase: **OBSERVE / DOGFOOD**. The core Task/Runtime stabilization cycle is complete and the latest released Runtime is the supported configuration; issue #51 is the canonical product north star, and focused core work is opened only when real usage proves a gap. Do not present already-closed planning issues as current gates or blockers.
-- Stack: Next.js 15 → Cloudflare Worker via `@opennextjs/cloudflare`
+- Stack: Next.js 16 → Cloudflare Worker via `@opennextjs/cloudflare`
 - Media: browser WebRTC → Cloudflare Realtime SFU
 - Coordination: Cloudflare Durable Objects
 - Agent Runtime: self-contained Go binary (`agent/`) — canonical; the frozen Node reference (`node-agent-runtime-e2e-2026-08-27` / `archive/node-agent-runtime`) is immutable history only

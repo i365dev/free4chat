@@ -13,6 +13,51 @@ import (
 	"github.com/i365dev/free4chat/agent/internal/types"
 )
 
+func TestMCPProtocolVersionHeaderMatchesEnvelope(t *testing.T) {
+	for _, method := range []string{"tools/list", "tools/call"} {
+		t.Run(method, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Error(err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				params, _ := body["params"].(map[string]any)
+				meta, _ := params["_meta"].(map[string]any)
+				if got := r.Header.Get("MCP-Protocol-Version"); got != modernProtocolVersion ||
+					got != meta["io.modelcontextprotocol/protocolVersion"] {
+					t.Errorf("MCP protocol header %q must match modern envelope %v", got, meta)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				if body["method"] != method || r.Header.Get("Mcp-Method") != method {
+					t.Errorf("unexpected method: body=%v header=%q", body["method"], r.Header.Get("Mcp-Method"))
+				}
+				if method == "tools/list" {
+					respondToolsList(w)
+				} else {
+					if got := r.Header.Get("Mcp-Name"); got != "room_info" {
+						t.Errorf("unexpected tool header: %q", got)
+					}
+					writeJSON(w, callResult(map[string]any{"exists": true}))
+				}
+			}))
+			t.Cleanup(server.Close)
+			client := New(server.URL)
+			var err error
+			if method == "tools/list" {
+				_, err = client.ListTools()
+			} else {
+				_, err = client.RoomInfo("room-a")
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func TestRoomInfoParsesLiveTranscriptStrictly(t *testing.T) {
 	client, _ := newTestClient(t, func(w http.ResponseWriter, body map[string]any) {
 		if toolNameOf(body) != "room_info" {

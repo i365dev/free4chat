@@ -22,8 +22,7 @@ export default defineConfig({
     video: "off",
   },
   webServer: {
-    command:
-      "cd ../.. && NEXT_PUBLIC_TURNSTILE_DISABLED=1 yarn cf-build && node e2e/room/run-local-worker.mjs",
+    command: "cd ../.. && yarn e2e:worker",
     url: "http://localhost:3000",
     reuseExistingServer: false,
     timeout: 600_000,

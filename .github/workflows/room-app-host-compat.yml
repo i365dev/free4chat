@@ -48,6 +48,11 @@ jobs:
         run: yarn install --frozen-lockfile
         working-directory: app
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.x"
+          cache-dependency-path: agent/go.sum
+
       # One browser install for the whole matrix (Chromium + WebKit).
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium webkit
@@ -57,6 +62,10 @@ jobs:
       # starts the local harness once and all five projects share it).
       - name: Room App host compatibility matrix
         run: yarn e2e:room-app-host
+        working-directory: app
+
+      - name: Worker framework and Go MCP contract
+        run: yarn e2e:room
         working-directory: app
 
       - name: Upload failure artifacts

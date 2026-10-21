@@ -13,7 +13,7 @@ export default defineConfig({
   // same way they do for the homepage suite; the testMatch keeps this config
   // scoped to the Room spec only.
   testDir: "../..",
-  testMatch: "**/room.spec.ts",
+  testMatch: ["**/room.spec.ts", "**/framework-migration.spec.ts"],
   timeout: 60_000,
   workers: 1,
   fullyParallel: false,
@@ -23,8 +23,7 @@ export default defineConfig({
   webServer: {
     // config lives in e2e/room; run from the app root so yarn/node_modules
     // resolve normally.
-    command:
-      "cd ../.. && NEXT_PUBLIC_TURNSTILE_DISABLED=1 yarn cf-build && node e2e/room/run-local-worker.mjs",
+    command: "cd ../.. && yarn e2e:worker",
     url: "http://localhost:3000",
     reuseExistingServer: false,
     timeout: 600_000,
