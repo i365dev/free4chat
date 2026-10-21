@@ -198,6 +198,7 @@ func (c *Client) post(body any, extraHeaders map[string]string) (any, error) {
 	request.Header.Set("Content-Type", headerContentType)
 	request.Header.Set("Accept", headerAccept)
 	request.Header.Set("User-Agent", defaultUserAgent)
+	request.Header.Set("MCP-Protocol-Version", modernProtocolVersion)
 	for key, value := range extraHeaders {
 		request.Header.Set(key, value)
 	}
