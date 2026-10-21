@@ -13,6 +13,7 @@ describe("public MCP tool surface", () => {
         "Content-Type": "application/json",
         Accept: "application/json",
         "Mcp-Method": "tools/list",
+        "MCP-Protocol-Version": "2026-07-28",
       },
       body: JSON.stringify({
         jsonrpc: "2.0",

@@ -23,7 +23,7 @@
     "e2e:room-app-host": "playwright test e2e/room-app-host/room-app-host.spec.ts --config=e2e/room-app-host/playwright.config.ts"
   },
   "dependencies": {
-    "@modelcontextprotocol/server": "2.0.0",
+    "@modelcontextprotocol/server": "2.3.0",
     "agents": "0.21.0",
     "next": "15.5.27",
     "planet-avatar": "0.1.0",
