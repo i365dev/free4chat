@@ -3,6 +3,21 @@ import prettierConfig from "eslint-config-prettier"
 import prettier from "eslint-plugin-prettier"
 import unusedImports from "eslint-plugin-unused-imports"
 
+// Next 16 enables React Compiler diagnostics even when compilation is off.
+// Preserve the previous runtime Hooks checks without adopting compiler policy.
+const compilerRules = Object.fromEntries(
+  nextVitals.flatMap(({ rules = {} }) =>
+    Object.keys(rules)
+      .filter(
+        (rule) =>
+          rule.startsWith("react-hooks/") &&
+          rule !== "react-hooks/rules-of-hooks" &&
+          rule !== "react-hooks/exhaustive-deps"
+      )
+      .map((rule) => [rule, "off"])
+  )
+)
+
 export default [
   {
     ignores: [
@@ -18,10 +33,7 @@ export default [
   {
     plugins: { "unused-imports": unusedImports, prettier },
     rules: {
-      // Keep the pre-migration Hooks contract. React Compiler is not enabled;
-      // adopting its new ref/effect recommendations is a separate UI change.
-      "react-hooks/refs": "off",
-      "react-hooks/set-state-in-effect": "off",
+      ...compilerRules,
       "no-unused-vars": "off",
       "react/require-default-props": 0,
       "unused-imports/no-unused-imports": "error",
