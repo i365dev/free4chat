@@ -47,11 +47,42 @@ test("two browsers exchange a text message through the real local DO", async ({
   })
 
   const errors: Array<string> = []
+  const httpFailures: Array<{ path: string; status: number; phase: string }> =
+    []
+  let phase = "join"
+  let releaseCleanup!: () => void
+  const cleanupGate = new Promise<void>((resolve) => {
+    releaseCleanup = resolve
+  })
+  // Hold best-effort unmount cleanup until the Room has revoked Bob.
+  // A 401 for this deliberately late request is the correct security result.
+  await pageB.route("**/api/sfu/datachannels/close", async (route) => {
+    if (phase === "leave") await cleanupGate
+    await route.continue()
+  })
   for (const page of [pageA, pageB]) {
+    page.on("response", (response) => {
+      if (response.status() >= 400)
+        httpFailures.push({
+          path: new URL(response.url()).pathname,
+          status: response.status(),
+          phase,
+        })
+    })
     page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`))
     page.on("console", (message) => {
-      if (message.type() === "error")
-        errors.push(`console.error: ${message.text()}`)
+      if (message.type() !== "error") return
+      const resource = message.location().url
+      const pathname = resource ? new URL(resource).pathname : ""
+      if (
+        page === pageB &&
+        phase === "leave" &&
+        pathname === "/api/sfu/datachannels/close" &&
+        message.text() ===
+          "Failed to load resource: the server responded with a status of 401 (Unauthorized)"
+      )
+        return
+      errors.push(`console.error: ${message.text()}`)
     })
   }
 
@@ -83,6 +114,7 @@ test("two browsers exchange a text message through the real local DO", async ({
   // Drop the actual control connection without reloading either browser.
   // Recovery must reconnect to the Worker/DO and preserve normal messaging.
   expect(disconnectControl).toBeDefined()
+  phase = "reconnect"
   const reconnectedFrame = pageA
     .waitForEvent("websocket")
     .then((socket) => socket.waitForEvent("framereceived"))
@@ -99,12 +131,20 @@ test("two browsers exchange a text message through the real local DO", async ({
   })
 
   // Cheap roster-propagates check: Bob leaves, Alice's roster drops to one.
+  phase = "leave"
+  const revokedCleanup = pageB.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/sfu/datachannels/close" &&
+      response.request().method() === "PUT"
+  )
   await pageB.getByRole("button", { name: "Leave" }).first().click()
   await expect(pageA.getByText("Bob").first()).toBeHidden({
     timeout: 15_000,
   })
+  releaseCleanup()
+  expect((await revokedCleanup).status()).toBe(401)
 
-  expect(errors).toEqual([])
+  expect(errors, JSON.stringify(httpFailures)).toEqual([])
   // Neither page ever asked for microphone permission during the whole session.
   expect(await microphoneRequestCount(pageA)).toBe(0)
   expect(await microphoneRequestCount(pageB)).toBe(0)
@@ -138,10 +178,8 @@ test("two browsers exchange a text message through the real local DO", async ({
     "the fake Realtime must have served the Human join path"
   ).toBe(true)
 
-  // Leave no harness state behind: the next run starts from a clean dir.
-  // (Playwright's webServer teardown may SIGKILL the harness before its own
-  // SIGTERM cleanup runs; the spec is the last reader of this state.)
-  fs.rmSync(stateDir, { recursive: true, force: true })
+  // The running harness owns its port/pid files and removes them on shutdown;
+  // deleting them here would break a later spec or repeated lifecycle probe.
 
   await contextA.close()
   await contextB.close()
