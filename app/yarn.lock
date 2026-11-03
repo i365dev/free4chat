@@ -1746,19 +1746,19 @@
     "@jridgewell/resolve-uri" "^3.1.0"
     "@jridgewell/sourcemap-codec" "^1.4.14"
 
-"@modelcontextprotocol/core@2.4.0":
-  version "2.4.0"
-  resolved "https://registry.yarnpkg.com/@modelcontextprotocol/core/-/core-2.4.0.tgz#c7f1a505452c3a0ad666d9a6e78a5804d8d8d0d9"
-  integrity sha512-z8QBKqdfXLPzkLQuG4xp8hrVEMm1PZ1IgxMN2sMbJiFiAKOWXnAzogXn2W4aqIBlP1ea6U5yiqVquvUNM1Cj6Q==
+"@modelcontextprotocol/core@2.3.0":
+  version "2.3.0"
+  resolved "https://registry.yarnpkg.com/@modelcontextprotocol/core/-/core-2.3.0.tgz#e16da853964147db06c34e12fab7269a07e10ed6"
+  integrity sha512-09BHFaNVBe5pB2AhzCfLj0cqmsKLERvZQ4FblzP90UMGLaXVqdZPByFjURwsUYCmxonUW2yAwgTTvle+8O2/8w==
   dependencies:
     zod "^4.2.0"
 
-"@modelcontextprotocol/server@2.4.0":
-  version "2.4.0"
-  resolved "https://registry.yarnpkg.com/@modelcontextprotocol/server/-/server-2.4.0.tgz#282a61ccbdc531361f03525a33e33283534d6fc7"
-  integrity sha512-rgR9yxSaAJ+bcsi/XroT/S2AfPiIWloXAnrdfYSCms9ivVju0ishu/wW0J21Ho6+ZOR1r7RyeRbjiRuF87ix5Q==
+"@modelcontextprotocol/server@2.3.0":
+  version "2.3.0"
+  resolved "https://registry.yarnpkg.com/@modelcontextprotocol/server/-/server-2.3.0.tgz#02a721e2614482af6fc94b6ee0083cff13cc18f5"
+  integrity sha512-+6b0LdsQLmHsvS7J6sQJ4weTpzUn61fU1JKS+321/+IyDYoHW5CR2Tgqcs6GgAAQvlesCo6yX3xttgmx+XGtJw==
   dependencies:
-    "@modelcontextprotocol/core" "2.4.0"
+    "@modelcontextprotocol/core" "2.3.0"
     zod "^4.2.0"
 
 "@napi-rs/wasm-runtime@^0.2.11":
@@ -1878,10 +1878,10 @@
   resolved "https://registry.yarnpkg.com/@nolyfill/is-core-module/-/is-core-module-1.0.39.tgz#3dc35ba0f1e66b403c00b39344f870298ebb1c8e"
   integrity sha512-nn5ozdjYQpUCZlWGuxcJY/KpxkWQs4DcbMCmKojjyrYDEAGy4Ce19NN4v5MduafTwJlbKc99UA8YhSVqq9yPZA==
 
-"@opennextjs/aws@4.1.14":
-  version "4.1.14"
-  resolved "https://registry.yarnpkg.com/@opennextjs/aws/-/aws-4.1.14.tgz#7dc59480f1a685a4fcab95b4b430bdc3c16136b1"
-  integrity sha512-jV+rxEi5dNxnQbKBftWuIppVvemMrbfaUj0tXINJMEzX7crk1pkmsMwudgk2kgyak1T03/GSMSEpE8nzOKrkDA==
+"@opennextjs/aws@4.1.11":
+  version "4.1.11"
+  resolved "https://registry.yarnpkg.com/@opennextjs/aws/-/aws-4.1.11.tgz#90c0cb2fe7dc4f804fb4219ee5be30e52cb6a1d7"
+  integrity sha512-cew0cUgGZF/Kr/C+Z1qvmAdKj4Va5cRho+aB6Ci/5ILd+QDdrR2LVaC/6Qm12KVF37vSLDK7lPDd/KdvvCoNEw==
   dependencies:
     "@ast-grep/napi" "^0.45.3"
     "@aws-sdk/client-cloudfront" "3.984.0"
@@ -1901,14 +1901,14 @@
     urlpattern-polyfill "^10.1.0"
     yaml "^2.9.1"
 
-"@opennextjs/cloudflare@1.20.15":
-  version "1.20.15"
-  resolved "https://registry.yarnpkg.com/@opennextjs/cloudflare/-/cloudflare-1.20.15.tgz#36abc287c63085929a813e0b8547820107c6b5d5"
-  integrity sha512-Ft7GdS3oDnZ5cZpAowSqpFsjHuZCZ9zBcTjJwYeJGa7Uq32JG3DOlLXh8GW+gsMVWXTz8YTL20sMxG1u+k4NwQ==
+"@opennextjs/cloudflare@1.20.12":
+  version "1.20.12"
+  resolved "https://registry.yarnpkg.com/@opennextjs/cloudflare/-/cloudflare-1.20.12.tgz#b3e877f8f948fe46ad1d667f5106194786a53b26"
+  integrity sha512-ZU1j7hMuOFaa0RHT/wrPXQKEEqzkkoc3fHaHy0Xrx4K0zZdSXGQbwbSHCnbjPRGXblCuWo+ur6UUkl0o9kVhrg==
   dependencies:
     "@ast-grep/napi" "^0.45.3"
     "@dotenvx/dotenvx" "^2.33.0"
-    "@opennextjs/aws" "4.1.14"
+    "@opennextjs/aws" "4.1.11"
     ci-info "^4.2.0"
     cloudflare "^4.4.1"
     comment-json "^4.5.1"
@@ -8030,7 +8030,19 @@ yargs-parser@^22.0.0:
   resolved "https://registry.yarnpkg.com/yargs-parser/-/yargs-parser-22.0.0.tgz#87b82094051b0567717346ecd00fd14804b357c8"
   integrity sha512-rwu/ClNdSMpkSrUb+d6BRsSkLUq1fmfsY6TOpYzTwvwkg1/NRG85KBy3kq++A8LKQwX6lsu+aWad+2khvuXrqw==
 
-yargs@^18.0.0, yargs@^18.2.0:
+yargs@^18.0.0:
+  version "18.0.0"
+  resolved "https://registry.yarnpkg.com/yargs/-/yargs-18.0.0.tgz#6c84259806273a746b09f579087b68a3c2d25bd1"
+  integrity sha512-4UEqdc2RYGHZc7Doyqkrqiln3p9X2DZVxaGbwhn2pi7MrRagKaOcIKe8L3OxYcbhXLgLFUS3zAYuQjKBQgmuNg==
+  dependencies:
+    cliui "^9.0.1"
+    escalade "^3.1.1"
+    get-caller-file "^2.0.5"
+    string-width "^7.2.0"
+    y18n "^5.0.5"
+    yargs-parser "^22.0.0"
+
+yargs@^18.2.0:
   version "18.2.0"
   resolved "https://registry.yarnpkg.com/yargs/-/yargs-18.2.0.tgz#c258276baa935fe8fb911d986067f6d0733e8608"
   integrity sha512-9OpKOLeaoNFecEp7P6iYbzze/5CqWoH7N3SMs/6y1XF4nMvFMspEGZzJ6uFi9MmQwXhyzqYoSEKO3tvA3Z/o2w==
@@ -8083,12 +8095,7 @@ youch@4.1.0-beta.10:
   resolved "https://registry.yarnpkg.com/zod-validation-error/-/zod-validation-error-4.0.2.tgz#bc605eba49ce0fcd598c127fee1c236be3f22918"
   integrity sha512-Q6/nZLe6jxuU80qb/4uJ4t5v2VEZ44lzQjPDhYJNztRQ4wyWc6VF3D3Kb/fAuPetZQnhS3hnajCf9CsWesghLQ==
 
-zod@4.6.6:
-  version "4.6.6"
-  resolved "https://registry.yarnpkg.com/zod/-/zod-4.6.6.tgz#0bb0cf57b87011a71ec28ed2e1b51f6455563f9a"
-  integrity sha512-4UmzQUF5fxvfcYHlbjBmejU+w+hbDnWFx4aS8kBx7nPBHcO2SqPbpAG8snbdg+Xse4pRefR98hgjFgIMCI/UhA==
-
-"zod@^3.25.0 || ^4.0.0", zod@^4.2.0:
+zod@4.6.7, "zod@^3.25.0 || ^4.0.0", zod@^4.2.0:
   version "4.6.7"
   resolved "https://registry.yarnpkg.com/zod/-/zod-4.6.7.tgz#e806cf64a7f4e37635ce9f2f52c04c3766f75e5b"
   integrity sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==
