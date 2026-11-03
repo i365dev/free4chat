@@ -24,7 +24,7 @@
     "e2e:worker": "NEXT_PUBLIC_TURNSTILE_DISABLED=1 yarn cf-build && opennextjs-cloudflare populateCache local && node e2e/room/run-local-worker.mjs"
   },
   "dependencies": {
-    "@modelcontextprotocol/server": "2.3.0",
+    "@modelcontextprotocol/server": "2.4.0",
     "agents": "0.21.0",
     "next": "16.4.2",
     "planet-avatar": "0.1.0",
@@ -32,11 +32,11 @@
     "react-dom": "19.3.1",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
-    "zod": "4.4.3"
+    "zod": "4.6.6"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260811.1",
-    "@opennextjs/cloudflare": "1.20.12",
+    "@opennextjs/cloudflare": "1.20.15",
     "@playwright/test": "1.64.1",
     "@tailwindcss/aspect-ratio": "^0.4.0",
     "@tailwindcss/forms": "^0.5.0",
