@@ -87,30 +87,16 @@ function CompactTaskIcon() {
 function localMicActionLabel(user: UserCardProps): string {
   switch (user.micState) {
     case "live":
-      return "静音"
+      return "Mute"
     case "muted":
-      return "取消静音"
+      return "Unmute"
     case "requesting":
-      return "正在请求麦克风权限"
+      return "Requesting microphone access"
     case "unavailable":
-      return "重试麦克风权限"
+      return "Retry microphone access"
     case "not_enabled":
     case undefined:
-      return "开启麦克风"
-  }
-}
-
-function localizedAgentActivityLabel(state: UserInfo["activity"]): string {
-  if (!state) return ""
-  switch (agentActivityLabel(state)) {
-    case "Working":
-      return "正在工作"
-    case "Waiting for approval":
-      return "等待批准"
-    case "Queued":
-      return "已排队"
-    default:
-      return agentActivityLabel(state)
+      return "Enable mic"
   }
 }
 
@@ -196,8 +182,8 @@ function UserCard(user: UserCardProps) {
               <span
                 data-testid="agent-activity"
                 role="img"
-                aria-label={localizedAgentActivityLabel(user.activity)}
-                title={localizedAgentActivityLabel(user.activity)}
+                aria-label={agentActivityLabel(user.activity)}
+                title={agentActivityLabel(user.activity)}
                 className="absolute -right-1 -top-1 flex h-3 w-3 items-center justify-center rounded-full bg-gray-900/90"
               >
                 <span className="h-1.5 w-1.5 rounded-full bg-blue-300" />
@@ -232,13 +218,13 @@ function UserCard(user: UserCardProps) {
                     }
                     title={
                       user.voiceEnabled
-                        ? `将 ${user.name} 静音`
-                        : `为 ${user.name} 开启语音`
+                        ? `Mute ${user.name}`
+                        : `Enable voice for ${user.name}`
                     }
                     aria-label={
                       user.voiceEnabled
-                        ? `将 ${user.name} 静音`
-                        : `为 ${user.name} 开启语音`
+                        ? `Mute ${user.name}`
+                        : `Enable voice for ${user.name}`
                     }
                     className="participant-card__voice-button participant-card__voice-button--compact disabled:cursor-not-allowed disabled:opacity-40"
                   >
@@ -249,8 +235,8 @@ function UserCard(user: UserCardProps) {
                   <button
                     type="button"
                     onClick={() => user.onStartTask?.(user.peerId, user.name)}
-                    title={`为 ${user.name} 创建任务`}
-                    aria-label={`为 ${user.name} 创建任务`}
+                    title={`Start task with ${user.name}`}
+                    aria-label={`Start task with ${user.name}`}
                     className="participant-card__task-button participant-card__task-button--compact"
                   >
                     <CompactTaskIcon />
@@ -373,7 +359,7 @@ function UserCard(user: UserCardProps) {
                 type="button"
                 className="participant-card__self-action participant-card__self-action--share absolute -bottom-1 -right-1 rounded-full bg-gray-900 p-0.5 opacity-70 transition-opacity hover:opacity-100"
                 onClick={user.onToggleScreenShare}
-                title="屏幕共享"
+                title="Screen share"
               >
                 <svg
                   className={`h-3 w-3 ${
@@ -435,14 +421,14 @@ function UserCard(user: UserCardProps) {
               }
               className="participant-card__voice-button participant-card__voice-button--full min-h-7 rounded-full border border-gray-500 px-2 text-[10px] text-white hover:bg-black/20 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              {user.voiceEnabled ? "语音 ●" : "语音"}
+              {user.voiceEnabled ? "VOICE ●" : "VOICE"}
             </button>
           )}
           {user.kind === "agent" && !isSelf && user.onStartTask && (
             <button
               type="button"
               onClick={() => user.onStartTask?.(user.peerId, user.name)}
-              aria-label={`为 ${user.name} 创建任务`}
+              aria-label={`Start task with ${user.name}`}
               className="min-h-7 rounded-full border border-blue-400/60 px-2 text-[10px] text-blue-200 hover:bg-blue-500/20"
             >
               Start task

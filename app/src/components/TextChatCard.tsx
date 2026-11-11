@@ -147,35 +147,35 @@ const LEGACY_GAME_CARDS = [
     id: "skribbl",
     emoji: "✏️",
     name: "skribbl.io",
-    desc: "你来画，大家来猜",
+    desc: "You draw, others guess",
     url: "https://skribbl.io",
   },
   {
     id: "gartic",
     emoji: "🖼️",
     name: "Gartic Phone",
-    desc: "绘画传话游戏",
+    desc: "Drawing telephone chaos",
     url: "https://garticphone.com",
   },
   {
     id: "jklm",
     emoji: "💣",
     name: "BombParty",
-    desc: "在炸弹爆炸前输入单词",
+    desc: "Type words before bomb explodes",
     url: "https://jklm.fun",
   },
   {
     id: "codenames",
     emoji: "🕵️",
     name: "Codenames",
-    desc: "团队猜词游戏",
+    desc: "Team word deduction game",
     url: "https://codenames.game",
   },
   {
     id: "bga",
     emoji: "🎲",
     name: "Board Game Arena",
-    desc: "800 多款桌游（需要账号）",
+    desc: "800+ board games (account required)",
     url: "https://boardgamearena.com",
   },
 ]
@@ -215,10 +215,10 @@ function CodeBlock({ language, code }: { language: string; code: string }) {
           type="button"
           onClick={handleCopy}
           className="text-[10px] text-gray-400 transition-colors hover:text-white"
-          title="复制代码"
-          aria-label="复制代码"
+          title="Copy code"
+          aria-label="Copy code"
         >
-          {copied ? "已复制！" : "复制"}
+          {copied ? "Copied!" : "Copy"}
         </button>
       </div>
       <pre className="scrollbar-thin overflow-x-auto p-3 text-xs leading-relaxed text-gray-200">
@@ -329,7 +329,7 @@ function messageRecipientCues(
   }
   if (unresolved > 0)
     cues.push({
-      label: `${unresolved} 位参与者`,
+      label: unresolved === 1 ? "participant" : `${unresolved} participants`,
       isName: false,
     })
   return cues
@@ -410,7 +410,7 @@ export function formatAttachmentSize(bytes: number): string {
  * the local send could not even begin. */
 function attachmentErrorMessage(error: unknown): string {
   const detail = error instanceof Error ? error.message.trim() : ""
-  return detail || "无法发送此附件，请重试或将其移除。"
+  return detail || "Couldn't send this attachment. Try again or remove it."
 }
 
 function PollCard({
@@ -473,7 +473,7 @@ function PollCard({
               <span className="relative text-white">{opt}</span>
               {myVote && (
                 <span className="relative text-white/70">
-                  {count} 票
+                  {count} {count === 1 ? "vote" : "votes"}
                 </span>
               )}
             </button>
@@ -482,7 +482,7 @@ function PollCard({
       </div>
       {myVote && (
         <p className="mt-1.5 text-right text-xs text-white/50">
-          共 {votes.length} 票
+          {votes.length} total
         </p>
       )}
     </div>
@@ -573,7 +573,7 @@ function PermissionCard({
     >
       <p className="flex items-center gap-1.5 font-medium text-white">
         <span>🔐</span>
-        <span>{msg.name} 需要授权</span>
+        <span>{msg.name} needs permission</span>
       </p>
       <div className="mt-2 rounded-lg bg-white/5 px-2.5 py-2">
         <p className="break-words font-medium text-white/90">
@@ -603,14 +603,14 @@ function PermissionCard({
       </div>
       {resolved ? (
         <p data-testid="permission-resolution" className="mt-2 text-white/70">
-          已选择{" "}
+          Selected{" "}
           <span className="font-medium text-white">
             {selectedOption?.name ?? resolved.selectedOptionId}
           </span>{" "}
-          （操作者：{resolved.humanName}）
+          by {resolved.humanName}
         </p>
       ) : lifecycle?.expired ? (
-        <p className="mt-2 text-white/50">已过期，无法继续操作。</p>
+        <p className="mt-2 text-white/50">Expired — no longer actionable.</p>
       ) : null}
       <div className="mt-2 flex flex-wrap gap-1.5">
         {permission.options.map((option) => (
@@ -733,16 +733,8 @@ function ActionCard({
         <p className="flex items-center gap-1.5 font-medium text-white">
           <span>{icons[collab.kind] ?? "🤝"}</span>
           {collab.kind === "request"
-            ? `${msg.name} → 协作请求`
-            : `${msg.name} ${
-                collab.kind === "accepted"
-                  ? "已接受"
-                  : collab.kind === "declined"
-                  ? "已拒绝"
-                  : collab.kind === "completed"
-                  ? "已完成"
-                  : "未能完成"
-              }该请求`}
+            ? `${msg.name} → work request`
+            : `${msg.name} ${collab.kind} the request`}
         </p>
         {collab.summary && (
           <p className="mt-1 break-words text-white/70">{collab.summary}</p>
@@ -767,7 +759,7 @@ function ActionCard({
                 onClick={() => onViewArtifact(attachmentId)}
                 className="w-full truncate rounded-md bg-blue-600/20 px-2 py-1 text-left text-[11px] text-blue-200 hover:bg-blue-600/40"
               >
-                📎 查看附件{" "}
+                📎 View artifact{" "}
                 {collab.attachmentIds!.length > 1 ? index + 1 : ""}
               </button>
             ))}
@@ -776,7 +768,8 @@ function ActionCard({
         {showRespond && (
           <div className="mt-2 border-t border-white/10 pt-1.5">
             <p className="text-[10px] leading-snug text-gray-400">
-              你的回复会与 Agent 共享，但不会授予新的权限。
+              Your response is shared with the Agent and does not grant new
+              permissions.
             </p>
             <div className="mt-1.5 flex gap-1.5">
               <button
@@ -784,14 +777,14 @@ function ActionCard({
                 onClick={() => onCollabRespond?.(collab.requestId, "accepted")}
                 className="rounded-md bg-emerald-600/90 px-2 py-1 text-[11px] font-medium text-white hover:bg-emerald-500"
               >
-                接受
+                Accept
               </button>
               <button
                 type="button"
                 onClick={() => onCollabRespond?.(collab.requestId, "declined")}
                 className="rounded-md border border-gray-600 px-2 py-1 text-[11px] text-gray-300 hover:bg-gray-800"
               >
-                拒绝
+                Decline
               </button>
             </div>
           </div>
@@ -799,7 +792,8 @@ function ActionCard({
         {!showRespond && showResultControls && (
           <div className="mt-2 border-t border-white/10 pt-1.5">
             <p className="text-[10px] leading-snug text-gray-400">
-              你的结果会与 Agent 共享，但不会授予任何工具或权限。
+              Your result is shared with the Agent and does not grant tools or
+              permissions.
             </p>
             <div className="mt-1.5 flex gap-1.5">
               <button
@@ -812,7 +806,7 @@ function ActionCard({
                 }
                 className="rounded-md bg-emerald-600/90 px-2 py-1 text-[11px] font-medium text-white hover:bg-emerald-500"
               >
-                标记为已完成
+                Mark complete
               </button>
               <button
                 type="button"
@@ -824,7 +818,7 @@ function ActionCard({
                 }
                 className="rounded-md border border-gray-600 px-2 py-1 text-[11px] text-gray-300 hover:bg-gray-800"
               >
-                标记为失败
+                Mark failed
               </button>
             </div>
           </div>
@@ -850,7 +844,7 @@ function ActionCard({
           className="flex items-center gap-2 text-white underline-offset-2 hover:underline"
         >
           <span className="text-lg">📋</span>
-          <span className="text-sm font-medium">打开白板</span>
+          <span className="text-sm font-medium">Open Whiteboard</span>
         </a>
       </div>
     )
@@ -909,7 +903,7 @@ function AgentAttachmentCard({
         onClick={() => onPreview(attachment.id)}
         className="mt-1.5 rounded-md bg-blue-600/30 px-2 py-0.5 text-[11px] text-blue-200 hover:bg-blue-600/50"
       >
-        {isImage         ? "预览图片" : "预览"}
+        {isImage ? "Preview image" : "Preview"}
       </button>
     </div>
   )
@@ -1290,7 +1284,7 @@ const RoomTimeline = memo(function RoomTimeline({
     >
       {messages.length === 0 && attachments.length === 0 && (
         <p className="mt-4 text-center text-xs text-gray-500">
-          暂无消息
+          No messages yet
         </p>
       )}
       {timeline.map((item, index) => {
@@ -1377,7 +1371,7 @@ const RoomTimeline = memo(function RoomTimeline({
             >
               {file.error ? (
                 <span className="text-xs text-white/80">
-                  {file.errorMessage ?? "发送失败"}
+                  {file.errorMessage ?? "Failed to send"}
                 </span>
               ) : (
                 <>
@@ -1404,7 +1398,7 @@ const RoomTimeline = memo(function RoomTimeline({
                   <span className="max-w-[140px] truncate text-xs text-white/70">
                     {file.fileName}
                   </span>
-                  <span className="text-xs text-white/40">正在发送…</span>
+                  <span className="text-xs text-white/40">Sending…</span>
                 </>
               )}
             </div>
@@ -1430,11 +1424,11 @@ function PollCreator({
 
   return (
     <div className="mb-2 rounded-xl border border-gray-600 bg-gray-900 p-3">
-      <p className="mb-2 text-xs font-semibold text-gray-300">📊 创建投票</p>
+      <p className="mb-2 text-xs font-semibold text-gray-300">📊 Create Poll</p>
       <input
         autoFocus
         className="mb-2 w-full rounded-lg bg-gray-800 px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500"
-        placeholder="问题…"
+        placeholder="Question..."
         value={question}
         onChange={(e) => setQuestion(e.target.value)}
       />
@@ -1442,7 +1436,7 @@ function PollCreator({
         <input
           key={i}
           className="mb-1.5 w-full rounded-lg bg-gray-800 px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-gray-500"
-          placeholder={`选项 ${i + 1}`}
+          placeholder={`Option ${i + 1}`}
           value={opt}
           onChange={(e) => {
             const next = [...options]
@@ -1457,7 +1451,7 @@ function PollCreator({
           onClick={() => setOptions([...options, ""])}
           className="mb-2 text-xs text-gray-500 hover:text-gray-300"
         >
-          + 添加选项
+          + Add option
         </button>
       )}
       <div className="flex gap-2">
@@ -1472,14 +1466,14 @@ function PollCreator({
           }
           className="flex-1 rounded-lg bg-rose-600 py-1.5 text-xs font-medium text-white hover:bg-rose-500 disabled:opacity-40"
         >
-          发送
+          Send
         </button>
         <button
           type="button"
           onClick={onCancel}
           className="rounded-lg bg-gray-700 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-600"
         >
-          取消
+          Cancel
         </button>
       </div>
     </div>
@@ -1609,7 +1603,7 @@ const TextChatCard = memo(function TextChatCard({
           // transfer: without the task-correlated path the submission fails
           // closed instead.
           if (!onSendTaskFile || !taskRequestId)
-            throw new Error("此任务不支持附件")
+            throw new Error("Attachments aren't available in this task")
           await onSendTaskFile(attachment, taskRequestId, wakeAgent)
         } else {
           await onSendFile(attachment)
@@ -1752,7 +1746,7 @@ const TextChatCard = memo(function TextChatCard({
     {
       icon: "📊",
       label: "/poll",
-      desc: "创建投票",
+      desc: "Create a poll",
       action: () => {
         setMessage("")
         handlePoll()
@@ -1879,7 +1873,7 @@ const TextChatCard = memo(function TextChatCard({
             role="status"
             className="flex-none border-t border-gray-700 px-3 pt-2 text-xs text-amber-200/80"
           >
-            当前没有可参与的 Agent。
+            No participating Agent is currently available.
           </p>
         )}
         {taskScoped && taskRequiresExplicitTarget && (
@@ -1888,7 +1882,7 @@ const TextChatCard = memo(function TextChatCard({
             role="status"
             className="flex-none border-t border-gray-700 px-3 pt-2 text-xs text-amber-200/80"
           >
-            原 Agent 已离开。@ 一位已连接的 Agent 以继续此任务。
+            The original Agent left. @ a connected Agent to continue this Task.
           </p>
         )}
         <div className="room-chat-composer relative flex flex-none flex-col border-t border-gray-700 p-3">
@@ -1912,8 +1906,8 @@ const TextChatCard = memo(function TextChatCard({
                 onClick={handleRemoveDraftAttachment}
                 disabled={sendingDraft}
                 className="flex-none rounded px-1 text-gray-400 hover:text-white disabled:opacity-30"
-                title="移除附件"
-                aria-label="移除附件"
+                title="Remove attachment"
+                aria-label="Remove attachment"
               >
                 ×
               </button>
@@ -1976,8 +1970,8 @@ const TextChatCard = memo(function TextChatCard({
                     setSubmenu((v) => (v === "more" ? null : "more"))
                   }
                   className="rounded-full bg-gray-700 p-2.5 text-gray-300 transition hover:bg-gray-600 hover:text-white"
-                  title="更多操作"
-                  aria-label="更多操作"
+                  title="More actions"
+                  aria-label="More actions"
                   aria-expanded={submenu === "more"}
                 >
                   <svg
@@ -2006,7 +2000,7 @@ const TextChatCard = memo(function TextChatCard({
                       className="fixed bottom-0 left-0 right-0 z-30 rounded-t-xl border-t border-gray-600 bg-gray-800 py-1 shadow-xl md:absolute md:bottom-full md:left-0 md:right-auto md:mb-1 md:w-48 md:rounded-lg md:border md:border-gray-600"
                     >
                       <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-gray-500">
-                        房间操作
+                        Room actions
                       </p>
                       <button
                         type="button"
@@ -2018,14 +2012,14 @@ const TextChatCard = memo(function TextChatCard({
                         }}
                         className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-gray-200 hover:bg-gray-700"
                       >
-                        <span>📎</span> 添加附件
+                        <span>📎</span> Attach file
                       </button>
                       <button
                         type="button"
                         onClick={handlePoll}
                         className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm text-gray-200 hover:bg-gray-700"
                       >
-                        <span>📊</span> 投票
+                        <span>📊</span> Poll
                       </button>
                     </div>
                   </>
@@ -2041,9 +2035,9 @@ const TextChatCard = memo(function TextChatCard({
                   taskUnavailable || sendingDraft || Boolean(draftAttachment)
                 }
                 className="shrink-0 rounded-lg border border-amber-500/50 px-2 py-1 text-[11px] text-amber-200 transition hover:bg-amber-500/10 disabled:opacity-30"
-                title="将此指令加入队列，然后停止当前轮次"
+                title="Queue this instruction, then stop the current turn"
               >
-                中断并发送
+                Interrupt &amp; send
               </button>
             )}
             {taskScoped && onSendTaskFile && (
@@ -2052,8 +2046,8 @@ const TextChatCard = memo(function TextChatCard({
                 onClick={() => fileInputRef.current?.click()}
                 disabled={taskUnavailable || sendingDraft}
                 className="rounded-full bg-gray-700 p-2.5 text-gray-300 transition hover:bg-gray-600 hover:text-white disabled:opacity-30"
-                title="为此任务添加附件"
-                aria-label="为此任务添加附件"
+                title="Attach a file to this task"
+                aria-label="Attach a file to this task"
               >
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
@@ -2098,8 +2092,8 @@ const TextChatCard = memo(function TextChatCard({
               onCompositionEnd={() => {
                 isComposingRef.current = false
               }}
-              placeholder="向房间或 @Agent 发送消息…"
-              aria-label="向房间或 @Agent 发送消息"
+              placeholder="Message the room or @ an Agent…"
+              aria-label="Message the room or @ an Agent"
             />
             <button
               type="button"
@@ -2110,8 +2104,8 @@ const TextChatCard = memo(function TextChatCard({
                 sendingDraft
               }
               className="rounded-lg bg-blue-600 p-2 transition hover:bg-blue-500 disabled:opacity-30"
-              title="发送"
-              aria-label="发送消息"
+              title="Send"
+              aria-label="Send message"
             >
               <svg
                 xmlns="http://www.w3.org/2000/svg"

@@ -23,10 +23,10 @@ const PAGES: Array<{ name: string; Component: () => ReactElement }> = [
 
 describe("Discovery pages — CTA", () => {
   it.each(PAGES)(
-    "$name renders a working room CTA back to the room product",
+    "$name renders a working 'Open a room' CTA back to the room product",
     ({ Component }) => {
       const { unmount } = render(<Component />)
-      const cta = screen.getByRole("link", { name: "开启房间" })
+      const cta = screen.getByRole("link", { name: "Open a room" })
       expect(cta).toHaveAttribute("href", "/")
       unmount()
     }
@@ -47,7 +47,7 @@ describe("Discovery pages — CTA analytics", () => {
         window as unknown as { umami: { track: ReturnType<typeof vi.fn> } }
       ).umami.track
       const { unmount } = render(<Component />)
-      screen.getByRole("link", { name: "开启房间" }).click()
+      screen.getByRole("link", { name: "Open a room" }).click()
 
       expect(track).toHaveBeenCalledTimes(1)
       const [eventName, eventData] = track.mock.calls[0]
@@ -61,25 +61,25 @@ describe("Discovery pages — CTA analytics", () => {
   it.each([
     {
       Component: AiAgentRoomPage,
-      label: "阅读 MCP 文档",
+      label: "Read the MCP docs",
       page: "ai-agent-room",
       target: "mcp-docs",
     },
     {
       Component: MultiAgentCollaborationPage,
-      label: "邀请你的 Agent",
+      label: "Bring your Agent",
       page: "multi-agent-collaboration",
       target: "bring-agent",
     },
     {
       Component: AgentTasksPage,
-      label: "阅读 Agent 任务指南",
+      label: "Read the Agent Tasks guide",
       page: "agent-tasks",
       target: "docs",
     },
     {
       Component: RemoteAgentPage,
-      label: "阅读 Agent 房间快速入门",
+      label: "Read the Agent Room quick start",
       page: "remote-agent",
       target: "docs",
     },
@@ -106,9 +106,9 @@ describe("Room Apps discovery link", () => {
     render(<DiscoveryFooter />)
 
     expect(
-      screen.getByRole("navigation", { name: "了解更多" })
-    ).toContainElement(screen.getByRole("link", { name: "房间应用" }))
-    expect(screen.getByRole("link", { name: "房间应用" })).toHaveAttribute(
+      screen.getByRole("navigation", { name: "Learn more" })
+    ).toContainElement(screen.getByRole("link", { name: "Room Apps" }))
+    expect(screen.getByRole("link", { name: "Room Apps" })).toHaveAttribute(
       "href",
       "/apps"
     )
@@ -117,11 +117,11 @@ describe("Room Apps discovery link", () => {
   it("includes the new scenario pages in the shared discovery footer", () => {
     render(<DiscoveryFooter />)
 
-    expect(screen.getByRole("link", { name: "使用场景" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Use cases" })).toHaveAttribute(
       "href",
       "/use-cases"
     )
-    expect(screen.getByRole("link", { name: "远程监督 Agent" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Remote Agent" })).toHaveAttribute(
       "href",
       "/remote-agent"
     )
@@ -130,19 +130,19 @@ describe("Room Apps discovery link", () => {
   it("includes the Project privacy and community links", () => {
     render(<DiscoveryFooter />)
 
-    expect(screen.getByRole("link", { name: "隐私说明" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Privacy" })).toHaveAttribute(
       "href",
       "/privacy"
     )
-    expect(screen.getByRole("link", { name: "讨论区" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Discussions" })).toHaveAttribute(
       "href",
       "https://github.com/i365dev/free4chat/discussions"
     )
-    expect(screen.getByRole("link", { name: "报告问题" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Report a bug" })).toHaveAttribute(
       "href",
       "https://github.com/i365dev/free4chat/issues"
     )
-    expect(screen.getByRole("link", { name: "联系我们" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Contact" })).toHaveAttribute(
       "href",
       "mailto:hello@free4.chat"
     )
@@ -155,41 +155,37 @@ describe("Use cases discovery links", () => {
 
     expect(
       screen.getByRole("link", {
-        name: "了解跨设备监督",
+        name: "See how cross-device supervision works",
       })
     ).toHaveAttribute("href", "/remote-agent")
-    const agentTaskLinks = screen.getAllByRole("link", {
-      name: "了解 Agent 任务",
-    })
-    expect(agentTaskLinks).toHaveLength(2)
-    for (const link of agentTaskLinks) {
-      expect(link).toHaveAttribute("href", "/agent-tasks")
-    }
     expect(
-      screen.getByRole("link", { name: "探索多 Agent 协作" })
+      screen.getByRole("link", { name: "Learn about Agent Tasks" })
+    ).toHaveAttribute("href", "/agent-tasks")
+    expect(
+      screen.getByRole("link", { name: "Explore multi-Agent collaboration" })
     ).toHaveAttribute("href", "/multi-agent-collaboration")
     expect(
-      screen.getByRole("link", { name: "了解 AI Agent 房间" })
+      screen.getByRole("link", { name: "How AI Agent Rooms work" })
     ).toHaveAttribute("href", "/ai-agent-room")
     expect(
-      screen.getByRole("link", { name: "浏览房间应用" })
+      screen.getByRole("link", { name: "Browse Room Apps" })
     ).toHaveAttribute("href", "/apps")
     expect(
       screen.getByRole("link", {
-        name: "邀请自己的 Agent 使用共享白板",
+        name: "Bring your own Agent to the shared Whiteboard",
       })
     ).toHaveAttribute("href", "/apps/ai-whiteboard")
     expect(
-      screen.getByRole("link", { name: "Agent 如何参与房间应用" })
+      screen.getByRole("link", { name: "Agent participation in Room Apps" })
     ).toHaveAttribute("href", "/docs/concepts/agent-room-app-participation")
     expect(
-      screen.getByRole("link", { name: "免费协作白板" })
+      screen.getByRole("link", { name: "Free collaborative Whiteboard" })
     ).toHaveAttribute("href", "/apps/whiteboard")
     expect(
-      screen.getByRole("link", { name: "交互式任务产出" })
+      screen.getByRole("link", { name: "Interactive Task outputs" })
     ).toHaveAttribute("href", "/docs/guides/interactive-task-outputs")
     expect(
-      screen.getByRole("link", { name: "浏览房间应用目录" })
+      screen.getByRole("link", { name: "Explore the Room App catalog" })
     ).toHaveAttribute("href", "/apps")
   })
 
@@ -198,12 +194,12 @@ describe("Use cases discovery links", () => {
 
     expect(
       screen.getByRole("link", {
-        name: "了解 Agent 如何使用共享白板",
+        name: "See how your Agent works on the shared Whiteboard",
       })
     ).toHaveAttribute("href", "/apps/ai-whiteboard")
     expect(
       screen.getByRole("link", {
-        name: "阅读房间应用协作机制",
+        name: "Read the generic Room App participation concept",
       })
     ).toHaveAttribute("href", "/docs/concepts/agent-room-app-participation")
   })
@@ -212,13 +208,13 @@ describe("Use cases discovery links", () => {
     render(<RemoteAgentPage />)
 
     screen
-      .getAllByRole("link", { name: "Agent 任务" })
+      .getAllByRole("link", { name: "Agent Tasks" })
       .forEach((link) => expect(link).toHaveAttribute("href", "/agent-tasks"))
     expect(
-      screen.getByRole("link", { name: "Agent 房间快速入门" })
+      screen.getByRole("link", { name: "Agent Room quick start" })
     ).toHaveAttribute("href", "/docs/getting-started/agent-room")
     expect(
-      screen.getByRole("link", { name: "Runtime 与 Harness" })
+      screen.getByRole("link", { name: "Runtime and Harness" })
     ).toHaveAttribute("href", "/docs/concepts/runtime-harness")
   })
 })

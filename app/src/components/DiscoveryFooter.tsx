@@ -5,41 +5,41 @@ const GROUPS: Array<{
   links: Array<{ href: string; label: string }>
 }> = [
   {
-    heading: "探索",
+    heading: "Explore",
     links: [
-      { href: "/use-cases", label: "使用场景" },
-      { href: "/remote-agent", label: "远程监督 Agent" },
-      { href: "/temporary-chat-room", label: "临时房间" },
-      { href: "/agent-tasks", label: "Agent 任务" },
-      { href: "/ai-agent-room", label: "AI Agent 房间" },
+      { href: "/use-cases", label: "Use cases" },
+      { href: "/remote-agent", label: "Remote Agent" },
+      { href: "/temporary-chat-room", label: "Temporary rooms" },
+      { href: "/agent-tasks", label: "Agent Tasks" },
+      { href: "/ai-agent-room", label: "AI Agent rooms" },
       {
         href: "/multi-agent-collaboration",
-        label: "多 Agent 协作",
+        label: "Multi-Agent collaboration",
       },
-      { href: "/apps", label: "房间应用" },
+      { href: "/apps", label: "Room Apps" },
     ],
   },
   {
-    heading: "开发者",
+    heading: "Developers",
     links: [
-      { href: "/docs", label: "文档" },
+      { href: "/docs", label: "Documentation" },
       { href: "/docs/reference/mcp", label: "MCP Room API" },
       { href: "https://github.com/i365dev/free4chat", label: "GitHub" },
     ],
   },
   {
-    heading: "项目",
+    heading: "Project",
     links: [
-      { href: "/privacy", label: "隐私说明" },
+      { href: "/privacy", label: "Privacy" },
       {
         href: "https://github.com/i365dev/free4chat/discussions",
-        label: "讨论区",
+        label: "Discussions",
       },
       {
         href: "https://github.com/i365dev/free4chat/issues",
-        label: "报告问题",
+        label: "Report a bug",
       },
-      { href: "mailto:hello@free4.chat", label: "联系我们" },
+      { href: "mailto:hello@free4.chat", label: "Contact" },
     ],
   },
 ]
@@ -51,7 +51,7 @@ const GROUPS: Array<{
 export default function DiscoveryFooter() {
   return (
     <nav
-      aria-label="了解更多"
+      aria-label="Learn more"
       className="mx-auto grid w-full max-w-4xl flex-none grid-cols-2 gap-x-6 gap-y-6 border-t border-emerald-900/50 px-4 py-8 font-mono text-xs sm:grid-cols-3 sm:gap-x-10"
     >
       {GROUPS.map((group) => (

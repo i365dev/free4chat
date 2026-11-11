@@ -51,7 +51,7 @@ export interface TaskSessionPickerProps {
   showSessions?: boolean
 }
 
-const RECENT_LABEL = "最近使用"
+const RECENT_LABEL = "Recent"
 
 /**
  * #421: production dogfood showed that a real local project path such as
@@ -175,10 +175,10 @@ export default function TaskSessionPicker({
             data-testid="task-session-refresh"
             onClick={onRefresh}
             disabled={disabled || refreshing}
-            aria-label="刷新会话"
+            aria-label="Refresh sessions"
             className="shrink-0 rounded border border-gray-700 px-2 py-1 text-[11px] text-gray-200 hover:bg-gray-800 disabled:opacity-50"
           >
-            {refreshing ? "正在刷新…" : "刷新"}
+            {refreshing ? "Refreshing…" : "Refresh"}
           </button>
           <div className="relative min-w-0 flex-1">
             <button
@@ -197,7 +197,7 @@ export default function TaskSessionPicker({
               className="block w-full min-w-0 max-w-full truncate rounded border border-gray-700 px-2 py-1 text-left text-[11px] text-gray-200 hover:bg-gray-800 disabled:opacity-50"
               title={selectedProject?.label}
             >
-              项目：{" "}
+              Project:{" "}
               {selectedProject
                 ? compactProjectLabel(selectedProject.label)
                 : RECENT_LABEL}{" "}
@@ -207,7 +207,7 @@ export default function TaskSessionPicker({
               <div
                 data-testid="task-session-project-menu"
                 role="listbox"
-                aria-label="会话项目"
+                aria-label="Session projects"
                 onKeyDown={handleProjectKeyDown}
                 className="absolute right-0 z-10 mt-1 w-60 max-w-full rounded-lg border border-gray-700 bg-gray-950 p-2 shadow-2xl"
               >
@@ -216,8 +216,8 @@ export default function TaskSessionPicker({
                   type="text"
                   value={projectQuery}
                   onChange={(event) => setProjectQuery(event.target.value)}
-                  placeholder="搜索项目…"
-                  aria-label="搜索项目"
+                  placeholder="Search projects…"
+                  aria-label="Search projects"
                   data-testid="task-session-project-search"
                   autoComplete="off"
                   spellCheck={false}
@@ -275,7 +275,7 @@ export default function TaskSessionPicker({
                   ))}
                   {visibleProjects.length === 0 && (
                     <p className="px-1 py-2 text-[11px] text-gray-400">
-                      没有匹配“{projectQuery.trim()}”的项目。
+                      No projects match “{projectQuery.trim()}”.
                     </p>
                   )}
                 </div>
@@ -290,7 +290,7 @@ export default function TaskSessionPicker({
           data-testid="task-session-loading"
           className="rounded-lg border border-gray-800 bg-gray-950 px-3 py-4 text-xs text-gray-400"
         >
-          正在加载本地会话…
+          Loading local sessions…
         </p>
       )}
 
@@ -306,7 +306,7 @@ export default function TaskSessionPicker({
             onClick={onRefresh}
             className="mt-2 rounded-md border border-gray-700 px-2 py-1 text-[11px] text-gray-200 hover:bg-gray-800"
           >
-            刷新会话
+            Refresh sessions
           </button>
         </div>
       )}
@@ -319,8 +319,8 @@ export default function TaskSessionPicker({
               type="text"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="搜索会话…"
-              aria-label="搜索会话"
+              placeholder="Search sessions…"
+              aria-label="Search sessions"
               data-testid="task-session-search"
               autoComplete="off"
               spellCheck={false}
@@ -331,7 +331,7 @@ export default function TaskSessionPicker({
           {/* ~240px of internal scroll; never hundreds of rows. */}
           <div
             role="listbox"
-            aria-label="最近的本地会话"
+            aria-label="Recent local sessions"
             data-testid="task-session-list"
             className="scrollbar-thin max-h-60 overflow-y-auto rounded-lg border border-gray-800"
           >
@@ -353,7 +353,7 @@ export default function TaskSessionPicker({
                 <span
                   className="min-w-0 text-xs text-white"
                   data-testid="task-session-title"
-                  title={row.title || "未命名会话"}
+                  title={row.title || "Untitled session"}
                   style={{
                     display: "-webkit-box",
                     WebkitBoxOrient: "vertical",
@@ -362,7 +362,7 @@ export default function TaskSessionPicker({
                     overflowWrap: "anywhere",
                   }}
                 >
-                  {row.title || "未命名会话"}
+                  {row.title || "Untitled session"}
                 </span>
                 <span
                   className="min-w-0 truncate text-[11px] text-gray-400"
@@ -382,8 +382,8 @@ export default function TaskSessionPicker({
                 className="px-3 py-4 text-xs text-gray-400"
               >
                 {sessions.length === 0
-                  ? "未找到此 Agent 的本地会话。"
-                  : `没有匹配“${query.trim()}”的会话。`}
+                  ? "No local sessions found for this Agent."
+                  : `No sessions match “${query.trim()}”.`}
               </p>
             )}
           </div>
@@ -398,7 +398,7 @@ export default function TaskSessionPicker({
             disabled={disabled || loadingMore}
             className="rounded-md border border-gray-700 px-3 py-1 text-[11px] text-gray-200 hover:bg-gray-800 disabled:opacity-50"
           >
-            {loadingMore ? "正在加载…" : "加载更多"}
+            {loadingMore ? "Loading…" : "Load more"}
           </button>
         </div>
       )}
@@ -417,9 +417,9 @@ function relativeUpdatedAt(updatedAt: string | undefined): string {
   const elapsed = Date.now() - parsed
   if (elapsed < 0) return ""
   const minutes = Math.floor(elapsed / 60_000)
-  if (minutes < 1) return "刚刚"
-  if (minutes < 60) return `${minutes} 分钟前`
+  if (minutes < 1) return "just now"
+  if (minutes < 60) return `${minutes} min ago`
   const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours} 小时前`
-  return `${Math.floor(hours / 24)} 天前`
+  if (hours < 24) return `${hours} h ago`
+  return `${Math.floor(hours / 24)} d ago`
 }

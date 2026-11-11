@@ -19,7 +19,7 @@ export interface DiscoveryPageLayoutProps {
   ctaId: string
   h1: string
   children: ReactNode
-  /** Optional extra link shown next to the primary room CTA. */
+  /** Optional extra link shown next to the primary "Open a room" CTA. */
   secondaryCta?: {
     href: string
     label: string
@@ -60,7 +60,7 @@ export default function DiscoveryPageLayout({
             href="/"
             className="text-sm text-emerald-500 hover:text-emerald-300"
           >
-            ← 返回 Free4Chat
+            ← Free4Chat
           </Link>
           <h1 className="mt-4 text-3xl font-extrabold uppercase tracking-tight text-emerald-200 sm:text-4xl">
             {h1}
@@ -88,7 +88,7 @@ export default function DiscoveryPageLayout({
                 }
                 className={primaryCtaClassName}
               >
-                开启房间
+                Open a room
               </Link>
             )}
             {secondaryCta && (

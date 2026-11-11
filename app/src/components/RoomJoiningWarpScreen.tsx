@@ -53,8 +53,8 @@ export default function RoomJoiningWarpScreen() {
         <span className="room-warp__loader" />
       </div>
       <div className="room-warp__copy">
-        <p>正在进入房间…</p>
-        <p>正在建立房间连接</p>
+        <p>Warping into room…</p>
+        <p>Establishing room link</p>
       </div>
     </div>
   )

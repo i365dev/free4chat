@@ -1,8 +1,8 @@
 import Head from "next/head"
 
-const TITLE = "Free4Chat — 人与 Agent 的临时协作房间"
+const TITLE = "Free4Chat — Temporary Collaboration Rooms for Humans & Agents"
 const DESCRIPTION =
-  "即时创建语音、文字和屏幕共享房间，邀请独立运行的 Agent 参与，并从任意设备监督专注任务。无需账号、共享工作区或托管式大模型。"
+  "Open an instant temporary room for voice, text, and screen sharing, bring independently running Agents in as participants, and supervise focused Agent Tasks from any device. No account, no shared workspace, no hosted LLM."
 const URL = "https://www.free4.chat/"
 
 export default function Header() {

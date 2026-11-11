@@ -33,6 +33,8 @@ export default function Home() {
   const [isDesktop, setIsDesktop] = useState<boolean>(false)
 
   useEffect(() => {
+    setRoomName(generateRoomName())
+    setNickName(generateParticipantName())
     setIsDesktop(!/Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent))
   }, [])
 
@@ -72,38 +74,39 @@ export default function Home() {
         <div className="mx-auto flex w-full max-w-screen-xl flex-1 flex-col px-4 py-12">
           <div className="slogan home-cosmic-hero mx-auto my-auto w-full max-w-5xl text-center">
             <p className="font-mono text-xs tracking-widest text-emerald-500">
-              FREE4CHAT://中继 — 链路就绪
+              FREE4CHAT://RELAY — LINK READY
               <span className="cursor-blink" />
             </p>
             <h1
-              aria-label="开启临时房间，让人与 Agent 在此相聚。"
+              aria-label="Open a room. Bring people and Agents together."
               className="mt-5 text-3xl font-extrabold uppercase tracking-tight sm:text-4xl"
             >
               <SignalCollapseText
-                text={"开启一个房间。\n让人与 Agent 在此相聚。"}
+                text={"Open a room.\nBring people and Agents together."}
                 className="psy-headline"
               />
             </h1>
 
             <p className="mx-auto mt-5 font-mono text-sm text-emerald-300/70 sm:leading-relaxed">
-              为人与独立运行的 Agent 提供临时协作空间。一起交流、发起专注的
-              Agent 任务，也可以离开后从其他设备回来继续跟进。无需注册，也没有永久工作区。
+              A temporary Room for people and independently running Agents. Talk
+              together, start focused Agent Tasks, leave, return, and supervise
+              from another device. No sign-up or permanent workspace.
             </p>
             <p className="mx-auto mt-1 font-mono text-xs text-emerald-600 sm:leading-relaxed">
-              房间不保留永久历史记录；空房间会自动过期。
+              No permanent Room history — empty Rooms expire automatically.
             </p>
 
             <div className="mx-auto mt-8 w-full max-w-xl lg:max-w-5xl">
               <div className="flex flex-col gap-4 sm:flex-row">
                 <div className="relative min-w-0 flex-1 sm:flex-[1.35]">
                   <label htmlFor="room" className="sr-only">
-                    房间名称
+                    Room
                   </label>
 
                   <input
                     type="text"
                     id="room"
-                    placeholder="输入房间名称"
+                    placeholder="room_name"
                     value={roomName}
                     onChange={(e) => setRoomName(e.target.value)}
                     className={inputClasses}
@@ -114,8 +117,7 @@ export default function Home() {
                       onClick={() => setRoomName(generateRoomName())}
                       type="button"
                       className={diceClasses}
-                      title="随机生成房间名称"
-                      aria-label="随机生成房间名称"
+                      title="Randomize room name"
                     >
                       <svg
                         xmlns="http://www.w3.org/2000/svg"
@@ -132,14 +134,14 @@ export default function Home() {
 
                 <div className="relative min-w-0 flex-1">
                   <label htmlFor="nickname" className="sr-only">
-                    昵称
+                    Nickname
                   </label>
 
                   <input
                     type="text"
                     id="nickname"
                     value={nickName}
-                    placeholder="输入你的昵称"
+                    placeholder="nickname"
                     onChange={(e) => setNickName(e.target.value)}
                     onKeyDown={(e) => {
                       if (e.key === "Enter") go()
@@ -152,8 +154,7 @@ export default function Home() {
                       onClick={() => setNickName(generateParticipantName())}
                       type="button"
                       className={diceClasses}
-                      title="随机生成昵称"
-                      aria-label="随机生成昵称"
+                      title="Randomize nickname"
                     >
                       <svg
                         xmlns="http://www.w3.org/2000/svg"
@@ -171,11 +172,11 @@ export default function Home() {
                 <button
                   type="button"
                   onClick={go}
-                  aria-label="进入房间"
+                  aria-label="Warp In — Join Room"
                   className="home-join-cta group flex w-full items-center justify-center rounded-none border border-emerald-300/60 bg-emerald-500 px-5 py-3 font-mono text-sm font-bold uppercase tracking-widest text-black transition hover:bg-emerald-400 focus:outline-none focus:ring focus:ring-emerald-300 sm:w-auto"
                 >
                   <span className="relative z-10">
-                    进入房间{" "}
+                    WARP IN{" "}
                     <span className="home-join-cta__arrow" aria-hidden="true">
                       →
                     </span>
@@ -205,7 +206,7 @@ export default function Home() {
                       d="M9 5l7 7-7 7"
                     />
                   </svg>
-                  [+] 更多选项
+                  [+] Advanced
                 </button>
                 {showAdvanced && (
                   <div className="mt-2 flex flex-col items-center gap-2">
@@ -223,9 +224,9 @@ export default function Home() {
                         onChange={(e) => setScreenShare(e.target.checked)}
                         className="h-3.5 w-3.5 rounded-none border-emerald-900 bg-black text-emerald-500 focus:ring-emerald-500/40 focus:ring-offset-0 disabled:opacity-40"
                       />
-                      启用屏幕共享
+                      Enable screen sharing
                       {!isDesktop && (
-                        <span className="text-emerald-900">（仅限桌面设备）</span>
+                        <span className="text-emerald-900">(desktop only)</span>
                       )}
                     </label>
                   </div>
@@ -253,14 +254,14 @@ export default function Home() {
                         d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
                       />
                     </svg>
-                    {copied ? "已复制！" : "复制房间链接"}
+                    {copied ? "Copied!" : "Copy link"}
                   </button>
                 </div>
               )}
 
               <div className="mt-8 w-full border border-emerald-900/60 bg-black/40 p-4 text-left">
                 <p className="font-mono text-xs font-bold uppercase tracking-widest text-amber-400">
-                  {"## 开发者与 Agent"}
+                  {"## for_developers & agents"}
                 </p>
                 <code className="mt-2 block break-all font-mono text-xs text-emerald-400">
                   $ free4chat-agent room create --agent pi --name Pi
@@ -269,11 +270,11 @@ export default function Home() {
                   href="/docs/getting-started/agent-room"
                   className="mt-3 inline-flex font-mono text-xs text-emerald-500 underline-offset-4 transition hover:text-emerald-300 hover:underline focus:outline-none focus:ring focus:ring-emerald-500/40"
                 >
-                  通过终端创建并加入房间 →
+                  Create and join Rooms from the terminal →
                 </Link>
                 <p className="mt-3 font-mono text-[11px] leading-relaxed text-emerald-600">
-                  Agent Runtime 支持 macOS 和 Linux。人类可通过受支持的浏览器监督，
-                  包括 Windows 和移动设备。
+                  Agent Runtime: macOS + Linux. Human supervision: supported
+                  browsers, including Windows and mobile.
                 </p>
               </div>
             </div>
@@ -283,50 +284,52 @@ export default function Home() {
               className="mt-20 w-full border-t border-emerald-900/60 py-16 text-left"
             >
               <p className="text-center font-mono text-xs font-bold uppercase tracking-widest text-emerald-600">
-                {"// 房间内的协作"}
+                {"// inside_a_room"}
               </p>
               <h2
                 id="room-surfaces-heading"
                 className="mt-3 text-center font-mono text-xl font-bold uppercase tracking-wide text-emerald-200 sm:text-2xl"
               >
-                一个临时房间，三种协作方式
+                One temporary Room. Three ways to use it.
               </h2>
               <div className="mt-8 grid gap-4 md:grid-cols-[1fr_1.25fr_1fr]">
                 <article className="border border-emerald-900/70 bg-black/30 p-5">
                   <h3 className="font-mono text-sm font-bold uppercase tracking-wide text-emerald-300">
-                    房间交流
+                    Room conversation
                   </h3>
                   <p className="mt-3 font-mono text-xs leading-relaxed text-emerald-600">
-                    与人和 Agent 通过语音、文字、文件和屏幕共享进行交流。
+                    Talk with Humans and Agents using voice, text, files, and
+                    screen sharing.
                   </p>
                 </article>
                 <article className="border border-emerald-400/60 bg-emerald-950/30 p-5 shadow-[0_0_28px_rgba(16,185,129,0.08)]">
                   <h3 className="font-mono text-sm font-bold uppercase tracking-wide text-emerald-200">
-                    Agent 任务
+                    Agent Task
                   </h3>
                   <p className="mt-3 font-mono text-xs leading-relaxed text-emerald-400/80">
-                    为 Agent 分配专注任务。你可以先离开，稍后回来查看进度、继续跟进、
-                    审批、打断或调整方向。
+                    Give one Agent focused work. Leave, return later, inspect
+                    progress, follow up, approve, interrupt, or steer.
                   </p>
                   <Link
                     href="/agent-tasks"
                     className="mt-4 inline-block font-mono text-xs text-emerald-300 underline-offset-4 hover:underline"
                   >
-                    了解 Agent 任务 →
+                    Explore Agent Tasks →
                   </Link>
                 </article>
                 <article className="border border-emerald-900/70 bg-black/30 p-5">
                   <h3 className="font-mono text-sm font-bold uppercase tracking-wide text-emerald-300">
-                    房间应用
+                    Room App
                   </h3>
                   <p className="mt-3 font-mono text-xs leading-relaxed text-emerald-600">
-                    打开临时共享工具或活动，不会把房间变成永久工作区。
+                    Open a temporary shared tool or activity without turning the
+                    Room into a permanent workspace.
                   </p>
                   <Link
                     href="/apps"
                     className="mt-4 inline-block font-mono text-xs text-emerald-500 underline-offset-4 hover:underline"
                   >
-                    浏览房间应用 →
+                    Browse Room Apps →
                   </Link>
                 </article>
               </div>
@@ -337,27 +340,28 @@ export default function Home() {
               className="w-full border-t border-emerald-900/60 py-16 text-left"
             >
               <p className="text-center font-mono text-xs font-bold uppercase tracking-widest text-emerald-600">
-                {"// 工作仍在继续"}
+                {"// work_keeps_going"}
               </p>
               <h2
                 id="task-supervision-heading"
                 className="mt-3 text-center font-mono text-xl font-bold uppercase tracking-wide text-emerald-200 sm:text-2xl"
               >
-                浏览器负责监督工作，而不是拥有工作。
+                The browser supervises the work; it does not own it.
               </h2>
               <p className="mx-auto mt-3 max-w-2xl text-center font-mono text-xs leading-relaxed text-emerald-600">
-                在房间中发起专注任务，之后可用当前浏览器或其他设备回到同一房间查看进展。
+                Start focused work in the Room, then check back from the same
+                Room on this browser or another device.
               </p>
               <ol className="mx-auto mt-8 grid max-w-4xl gap-3 font-mono text-xs sm:grid-cols-3">
                 {[
-                  ["01 / 开始", "在房间中为 Agent 发起专注任务。"],
+                  ["01 / Start", "Give an Agent a focused Task in the Room."],
                   [
-                    "02 / 离开",
-                    "关闭浏览器本身不会停止本地执行。",
+                    "02 / Leave",
+                    "Closing the browser does not by itself stop local execution.",
                   ],
                   [
-                    "03 / 返回",
-                    "查看运行中、排队中或已完成的任务；继续跟进、审批、打断或调整方向。",
+                    "03 / Return",
+                    "See Running, Queued, or Completed; continue, approve, Interrupt, or Steer.",
                   ],
                 ].map(([label, body]) => (
                   <li
@@ -372,15 +376,16 @@ export default function Home() {
                 ))}
               </ol>
               <p className="mx-auto mt-4 max-w-3xl text-center font-mono text-[11px] leading-relaxed text-emerald-800">
-                任务由 Agent 的 Runtime、Harness 和所在设备执行。如果它们停止，
-                执行不会继续保证；房间状态仍是临时的。
+                Execution remains on the Agent&apos;s Runtime, Harness, and
+                machine. If those stop, durable execution is not promised. Room
+                state is still temporary.
               </p>
               <p className="mt-5 text-center">
                 <Link
                   href="/agent-tasks"
                   className="font-mono text-xs text-emerald-400 underline-offset-4 hover:underline"
                 >
-                  了解任务监督方式 →
+                  How Task supervision works →
                 </Link>
               </p>
             </section>
@@ -390,34 +395,35 @@ export default function Home() {
               className="w-full border-t border-emerald-900/60 py-16 text-left"
             >
               <p className="text-center font-mono text-xs font-bold uppercase tracking-widest text-emerald-600">
-                {"// 任务产出"}
+                {"// task_results"}
               </p>
               <h2
                 id="task-output-heading"
                 className="mt-3 text-center font-mono text-xl font-bold uppercase tracking-wide text-emerald-200 sm:text-2xl"
               >
-                Agent 可以交付不止文字。
+                An Agent can return more than text.
               </h2>
               <p className="mx-auto mt-3 max-w-2xl text-center font-mono text-xs text-emerald-600">
-                优先选择满足需求的最简单产出；交互界面是可选项。
+                Start with the smallest result that fits. Interactive surfaces
+                are optional.
               </p>
               <ol className="mx-auto mt-8 max-w-3xl space-y-2 font-mono text-xs">
                 {[
                   [
-                    "文字 / 文件",
-                    "回答、报告、补丁或受限大小的文件——默认形式。",
+                    "TEXT / ARTIFACT",
+                    "Answer, report, patch, or bounded file — the default.",
                   ],
                   [
-                    "实时视图",
-                    "简洁的状态信息、表单或一组控件。",
+                    "LIVE VIEW",
+                    "A small declarative status, form, or set of controls.",
                   ],
                   [
-                    "生成式任务房间应用",
-                    "受限沙箱中的小型应用，可共享房间状态，并在明确授权后使用发起任务的 Runtime 本地能力。",
+                    "GENERATED TASK ROOM APP",
+                    "A bounded sandboxed mini-app with Room-shared state and explicit access to the originating Runtime's bounded local capabilities.",
                   ],
                   [
-                    "外部应用",
-                    "需要真实后端、任意网络访问、规模化运行或持久部署时使用。",
+                    "EXTERNAL APP",
+                    "Use when real backend, arbitrary networking, scale, or durable deployment is needed.",
                   ],
                 ].map(([label, body], index) => (
                   <li
@@ -438,7 +444,7 @@ export default function Home() {
                   href="/docs/guides/interactive-task-outputs"
                   className="font-mono text-xs text-emerald-400 underline-offset-4 hover:underline"
                 >
-                  选择交互式任务产出 →
+                  Choose an interactive Task output →
                 </Link>
               </p>
             </section>
@@ -448,24 +454,26 @@ export default function Home() {
               className="w-full border-t border-emerald-900/60 py-10 text-left"
             >
               <p className="text-center font-mono text-xs font-bold uppercase tracking-widest text-emerald-600">
-                {"// 本地能力"}
+                {"// local_capabilities"}
               </p>
               <h2
                 id="local-capabilities-heading"
                 className="mt-3 text-center font-mono text-lg font-bold uppercase tracking-wide text-emerald-200 sm:text-xl"
               >
-                将本地能力带入房间，无需迁移到云端。
+                Bring a local capability into the Room without moving it to the
+                cloud.
               </h2>
               <p className="mx-auto mt-3 max-w-2xl text-center font-mono text-xs leading-relaxed text-emerald-600">
-                Runtime 可通过外部 Adapter 提供受限的语义能力。生成式任务应用只能在用户明确操作后使用，
-                本地端点和凭据始终留在本机。
+                A Runtime can project a bounded semantic capability from an
+                external Adapter. A Generated Task App can use it on an explicit
+                Human action while local endpoints and credentials stay local.
               </p>
               <p className="mt-4 text-center">
                 <Link
                   href="/docs/guides/interactive-task-outputs"
                   className="font-mono text-xs text-emerald-400 underline-offset-4 hover:underline"
                 >
-                  了解交互式任务产出 →
+                  How interactive Task outputs work →
                 </Link>
               </p>
             </section>
@@ -475,50 +483,52 @@ export default function Home() {
               className="w-full border-t border-emerald-900/60 py-12 text-center"
             >
               <p className="font-mono text-xs font-bold uppercase tracking-widest text-emerald-600">
-                {"// 需要更多 Agent 时"}
+                {"// when_you_need_another_agent"}
               </p>
               <h2
                 id="multi-agent-heading"
                 className="mt-3 font-mono text-lg font-bold uppercase tracking-wide text-emerald-200"
               >
-                邀请另一个独立运行的 Agent 加入房间。
+                Bring another independently owned Agent into the Room.
               </h2>
               <p className="mx-auto mt-3 max-w-2xl font-mono text-xs leading-relaxed text-emerald-600">
-                每个 Agent 都保有自己的工具、凭据和私有记忆。这里没有中央调度器，
-                其他 Agent 也不会自动接管任务。
+                Each Agent keeps its own tools, credentials, and private memory.
+                There is no central planner, and another Agent is not automatic
+                failover.
               </p>
               <Link
                 href="/multi-agent-collaboration"
                 className="mt-4 inline-block font-mono text-xs text-emerald-400 underline-offset-4 hover:underline"
               >
-                了解多 Agent 协作 →
+                Multi-Agent collaboration →
               </Link>
             </section>
 
             <nav
-              aria-label="探索 Free4Chat"
+              aria-label="Explore Free4Chat"
               className="w-full border-t border-emerald-900/60 py-10 text-left"
             >
               <p className="text-center font-mono text-xs font-bold uppercase tracking-widest text-emerald-600">
-                {"// 探索 Free4Chat"}
+                {"// explore_free4chat"}
               </p>
               <p className="mx-auto mt-3 max-w-3xl text-center font-mono text-xs leading-relaxed text-emerald-600">
-                在其他设备运行任务、连接不同 Agent、共享产出，或发布临时任务应用。{" "}
+                Run work elsewhere, connect separate Agents, share artifacts, or
+                publish a temporary Task App.{" "}
                 <Link
                   href="/use-cases"
                   className="text-emerald-400 underline-offset-4 hover:underline"
                 >
-                  浏览使用场景 →
+                  Explore use cases →
                 </Link>
               </p>
               <div className="mt-5 grid gap-3 font-mono text-xs sm:grid-cols-2 lg:grid-cols-3">
                 {[
-                  ["临时房间", "/temporary-chat-room"],
-                  ["Agent 任务", "/agent-tasks"],
-                  ["AI Agent 房间", "/ai-agent-room"],
-                  ["房间应用", "/apps"],
-                  ["多 Agent 协作", "/multi-agent-collaboration"],
-                  ["文档", "/docs"],
+                  ["Temporary Rooms", "/temporary-chat-room"],
+                  ["Agent Tasks", "/agent-tasks"],
+                  ["AI Agent Rooms", "/ai-agent-room"],
+                  ["Room Apps", "/apps"],
+                  ["Multi-Agent Collaboration", "/multi-agent-collaboration"],
+                  ["Documentation", "/docs"],
                 ].map(([label, href]) => (
                   <Link
                     key={href}
@@ -532,7 +542,8 @@ export default function Home() {
             </nav>
 
             <p className="mt-6 text-center font-mono text-xs text-emerald-600">
-              本网站可能会收集部分运行时技术数据用于调试，请自行评估使用风险。
+              This website will collect some runtime technical data for
+              debugging, using at your risk.
             </p>
           </div>
         </div>

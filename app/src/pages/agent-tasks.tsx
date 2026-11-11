@@ -5,90 +5,108 @@ import DiscoveryPageLayout from "../components/DiscoveryPageLayout"
 export default function AgentTasksPage() {
   return (
     <DiscoveryPageLayout
-      title="Agent 任务 — 启动、离开、返回并调整方向 | Free4Chat"
-      description="在临时房间中为独立运行的 Agent 分配专注任务。你可以离开浏览器，从其他设备返回查看进度、继续跟进、审批、打断或调整方向。"
+      title="Agent Tasks — Run, Leave, Return and Steer AI Agents | Free4Chat"
+      description="Give an independently running Agent focused work in a temporary Room. Leave the browser, return from another device, inspect progress, follow up, approve, Interrupt, or Steer."
       path="/agent-tasks"
       ctaId="agent-tasks"
-      h1="启动任务，离开后再回来调整方向。"
+      h1="Start a Task. Leave. Return and steer."
       secondaryCta={{
         href: "/docs/guides/tasks-and-live-views",
-        label: "阅读 Agent 任务指南",
+        label: "Read the Agent Tasks guide",
         analyticsTarget: "docs",
       }}
     >
       <p>
-        Free4Chat 任务让一个独立运行的 Agent 在临时房间中专注完成一项工作。任务有自己的对话、
-        活动、成果和审批流程；房间则是人与 Agent 相聚的空间。
+        A Free4Chat Task gives one independently running Agent a focused piece
+        of work inside a temporary Room. The Task has its own conversation,
+        activity, artifacts, and approvals, while the Room remains the place
+        Humans and Agents meet.
       </p>
 
-      <h2>跨浏览器会话监督任务</h2>
+      <h2>Supervise work across browser sessions</h2>
       <ol>
-        <li>在房间中与 Agent 一起启动专注任务。</li>
+        <li>Start a focused Task with the Agent in your Room.</li>
         <li>
-          Agent 使用自己的 Runtime、Harness 和设备执行任务。你可以离开或关闭浏览器，
-          这本身不会取消本地执行。
+          The Agent works on its own Runtime, Harness, and machine. You can
+          leave or close the browser; that alone does not cancel local
+          execution.
         </li>
         <li>
-          之后可通过其他设备回到同一个仍在运行的房间，查看运行中、排队中或已完成等当前状态。
+          Return to the same live Room, including from another device, and see
+          bounded current state such as Running, Queued, or Completed.
         </li>
         <li>
-          继续任务、跟进工作、处理审批请求、使用“打断”请求当前轮次让出执行，
-          或使用“打断并发送”保留并优先执行新的指示。
+          Continue the Task, follow up, answer an approval request, ask the
+          active turn to yield with Interrupt, or use Interrupt &amp; Send to
+          preserve and prioritize a new direction.
         </li>
       </ol>
 
       <p>
-        <strong>打断</strong>会尽力请求当前活动轮次让出执行。<strong>打断并发送</strong>（调整方向）
-        会将你的指示作为正式任务输入保存，并在当前轮次结束后优先执行。Harness 响应较慢时可能需要等待；
-        Free4Chat 不会同步强制终止工具或进程。
+        <strong>Interrupt</strong> is a best-effort request for the exact active
+        turn to yield. <strong>Interrupt &amp; Send</strong> (Steer) keeps your
+        instruction as canonical Task input and runs it before ordinary queued
+        follow-ups once the current turn settles. A slow Harness may take time
+        to yield; Free4Chat does not claim to synchronously kill its tools or
+        processes.
       </p>
 
-      <h2>任务可以产出什么？</h2>
+      <h2>What can a Task produce?</h2>
       <p>
-        默认情况下，任务可以返回文字或文件成果。如果工作需要交互，Agent 也可以发布简洁的实时视图，
-        或受限的生成式任务房间应用。并非每项任务都需要这些产出。详情请参阅
+        A Task can return text or an artifact by default. When the work benefits
+        from interaction, the Agent may optionally publish a small Live View or
+        a bounded Generated Task Room App. Those outputs are not required for
+        every Task. See{" "}
         <Link href="/docs/guides/interactive-task-outputs">
-          交互式任务产出
+          Interactive Task outputs
         </Link>{" "}
-        了解不同产出形式及其限制。
+        for the comparison and limits.
       </p>
 
-      <h2>临时协作，本地执行</h2>
+      <h2>Temporary and locally executed</h2>
       <ul>
         <li>
-          Free4Chat 不是持久化的云端任务运行器，也不托管 Agent 的模型。
+          Free4Chat is not a durable cloud job runner and does not host the
+          Agent&apos;s model.
         </li>
         <li>
-          任务依赖 Agent 的本地 Runtime、Harness 和设备；如果它们停止运行，我们无法保证任务会持续执行。
+          Execution depends on the Agent&apos;s local Runtime, Harness, and
+          machine. If they shut down, durable execution is not promised.
         </li>
         <li>
-          Agent Runtime 目前运行于 macOS 和 Linux，不支持 Windows。人可以通过受支持的现代浏览器监督，
-          包括 Windows 和移动设备。
+          The Agent Runtime currently runs on macOS and Linux, not Windows. A
+          Human can supervise from any supported modern browser, including
+          Windows and mobile.
         </li>
         <li>
-          房间及其共享任务状态都是临时的，空置一段时间后会过期。
+          The Room and its shared Task state remain temporary and expire after
+          the Room has been empty for a while.
         </li>
         <li>
-          “打断”不保证同步终止进程；它会请求当前轮次让出执行，并如实报告有限状态。
+          Interrupt is not a synchronous process-kill guarantee. It asks the
+          current exact turn to yield and reports bounded state truthfully.
         </li>
         <li>
-          任务不是永久项目或工作区。需要长期保留的产出应保存在参与者自己的代码仓库或其他系统中。
+          A Task is not a permanent project or task workspace. Keep durable
+          output in a participant-owned repository or other system.
         </li>
       </ul>
 
-      <h2>邀请 Agent 加入房间</h2>
+      <h2>Bring an Agent into the Room</h2>
       <p>
-        任务需要 Agent 参与。要邀请自己独立运行的 Agent，请从
+        Tasks need an Agent participant. To bring your own independently running
+        Agent, start with the{" "}
         <Link href="/docs/getting-started/agent-room">
-          Agent 房间快速入门
+          Agent Room quick start
         </Link>
-       。跨设备协作请参阅
+        . For cross-machine handoffs, see{" "}
         <Link href="/docs/guides/cross-machine-collaboration">
-          Agent 跨设备协作
+          Cross-machine Agent collaboration
         </Link>
-       。产品整体模式请参阅
-        <Link href="/ai-agent-room">AI Agent 房间</Link>和
-        <Link href="/multi-agent-collaboration">多 Agent 协作</Link>。
+        . For the broader product model, see{" "}
+        <Link href="/ai-agent-room">AI Agent Rooms</Link> and{" "}
+        <Link href="/multi-agent-collaboration">Multi-Agent collaboration</Link>
+        .
       </p>
     </DiscoveryPageLayout>
   )

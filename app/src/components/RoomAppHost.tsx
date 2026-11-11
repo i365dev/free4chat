@@ -691,7 +691,7 @@ export default function RoomAppHost({
   }, [appInstanceId, participants, post])
 
   if (!appUsable)
-    return <div role="alert">此 Room App 未列入允许列表。</div>
+    return <div role="alert">This Room App is not allowlisted.</div>
 
   return (
     <section
@@ -707,12 +707,12 @@ export default function RoomAppHost({
         <div className="flex flex-none items-center gap-2">
           {showReadyStatus ? (
             <span aria-live="polite">
-              {failed ? "不可用" : ready ? "已就绪" : "正在连接…"}
+              {failed ? "unavailable" : ready ? "ready" : "connecting…"}
             </span>
           ) : (
             (failed || !ready) && (
               <span aria-live="polite">
-                {failed ? "不可用" : "正在连接…"}
+                {failed ? "unavailable" : "connecting…"}
               </span>
             )
           )}
@@ -720,24 +720,24 @@ export default function RoomAppHost({
             <button
               type="button"
               onClick={() => void handleInvite()}
-              aria-label="邀请他人加入此活动"
-              title="复制此活动的邀请链接"
+              aria-label="Invite to this activity"
+              title="Copy an invite link for this activity"
               className="rounded px-2 py-1 text-gray-400 hover:bg-gray-800 hover:text-white"
             >
               <span aria-live="polite">
-                {inviteCopied ? "已复制！" : "邀请"}
+                {inviteCopied ? "Copied!" : "Invite"}
               </span>
             </button>
           )}
           <button
             type="button"
             onClick={onToggleFullscreen}
-            aria-label={isFullscreen ? "退出全屏" : "全屏"}
+            aria-label={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
             aria-pressed={isFullscreen}
-            title={isFullscreen ? "退出全屏" : "全屏"}
+            title={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
             className="rounded px-2 py-1 text-gray-400 hover:bg-gray-800 hover:text-white"
           >
-            {isFullscreen ? "退出全屏" : "全屏"}
+            {isFullscreen ? "Exit fullscreen" : "Fullscreen"}
           </button>
           <button
             type="button"

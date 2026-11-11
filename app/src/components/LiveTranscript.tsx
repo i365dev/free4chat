@@ -130,35 +130,35 @@ export function LiveTranscriptControl({
     <div
       ref={containerRef}
       className="relative"
-      aria-label="实时转录控制"
+      aria-label="Live Transcript controls"
     >
       <button
         type="button"
         onClick={() => setOpen((current) => !current)}
         aria-expanded={open}
-        aria-label="实时转录"
+        aria-label="Live Transcript"
         className={
           active
             ? "flex items-center gap-1 rounded-md border border-emerald-700/60 bg-emerald-900/30 px-3 py-1 text-xs text-emerald-200 hover:bg-emerald-800/50"
             : "rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700"
         }
       >
-        {active ? "● 实时转录" : "实时转录"}
+        {active ? "● Live Transcript" : "Live Transcript"}
       </button>
 
       {open && (
         <div
           role="dialog"
-          aria-label="实时转录"
+          aria-label="Live Transcript"
           className="room-feature-popover absolute right-0 top-full z-20 mt-1 max-h-[65dvh] w-72 max-w-[calc(100vw-2rem)] overflow-y-auto rounded-md border border-gray-700 bg-gray-800 p-3 text-xs text-gray-200 shadow-lg"
         >
           {active ? (
             <>
               <p className="font-medium text-emerald-200">
-                实时转录已开启
+                Live Transcript is on
               </p>
               <p className="mt-1 text-gray-400">
-                使用{" "}
+                Using{" "}
                 {runtimeHostName(
                   liveTranscript.producerRuntimeHostId,
                   participants
@@ -168,49 +168,52 @@ export function LiveTranscriptControl({
                 type="button"
                 onClick={onStop}
                 className="mt-2 rounded-md border border-rose-700/60 bg-rose-900/30 px-3 py-1 text-xs text-rose-200 hover:bg-rose-800/50"
-                title="为此房间中的所有人停止实时转录"
+                title="Stop Live Transcript for everyone in this room"
               >
-                停止
+                Stop
               </button>
             </>
           ) : unavailable ? (
             <>
-              <p className="font-medium text-gray-100">实时转录</p>
+              <p className="font-medium text-gray-100">Live Transcript</p>
               <p className="mt-1 text-gray-400">
-                将房间音频转换为所有人可见的文字。
+                Turn room audio into shared text.
               </p>
               {connectedRuntimeHostIds.size === 0 ? (
                 <p className="mt-1 text-gray-400">
-                  此房间尚未连接 Runtime 主机。加入 Agent Runtime 以启用转录。
+                  No Runtime Host is connected to this Room. Join an Agent
+                  Runtime to enable transcription.
                 </p>
               ) : (
                 <p className="mt-1 text-gray-400">
-                  此房间已连接的 Runtime 主机均未准备好转录。请在 Runtime 中配置 STT 凭据，然后重新连接或刷新就绪状态。
+                  No connected Runtime Host in this Room has transcription
+                  ready. Configure STT credentials on a Runtime, then reconnect
+                  or refresh readiness.
                 </p>
               )}
             </>
           ) : (
             <>
-              <p className="font-medium text-gray-100">实时转录</p>
+              <p className="font-medium text-gray-100">Live Transcript</p>
               {authorizedHosts.length === 0 ? (
                 <p className="mt-1 text-gray-400">
-                  此房间目前无法使用转录功能。
+                  Transcription is unavailable in this room right now.
                 </p>
               ) : authorizedHosts.length === 1 ? (
                 <>
-                  <p className="mt-1 text-emerald-200">已就绪，可以开始。</p>
+                  <p className="mt-1 text-emerald-200">Ready to start.</p>
                   <button
                     type="button"
                     onClick={() => onStart(authorizedHosts[0][0])}
                     className="mt-2 rounded-md border border-emerald-700/60 bg-emerald-900/30 px-3 py-1 text-emerald-200 hover:bg-emerald-800/50"
                   >
-                    开始
+                    Start
                   </button>
                 </>
               ) : (
                 <>
                   <p className="mt-1 text-gray-400">
-                    选择用于转录的 Runtime
+                    Choose a transcription Runtime
                   </p>
                   <div className="mt-1.5 flex flex-col gap-1">
                     {authorizedHosts.map(([runtimeHostId]) => (
@@ -237,7 +240,7 @@ export function LiveTranscriptControl({
                     onClick={() => onStart(selectedHostId)}
                     className="mt-2 rounded-md border border-emerald-700/60 bg-emerald-900/30 px-3 py-1 text-emerald-200 hover:bg-emerald-800/50"
                   >
-                    开始
+                    Start
                   </button>
                 </>
               )}
@@ -302,11 +305,11 @@ export function LiveTranscriptSegments({
   return (
     <section
       className="mx-4 mt-1 flex flex-none flex-col rounded border border-emerald-700/40 bg-emerald-950/20 px-3 py-1.5"
-      aria-label="实时转录"
+      aria-label="Live Transcript"
     >
       <div className="flex items-center justify-between gap-2">
         <h2 className="text-xs font-medium text-emerald-100">
-          实时转录
+          Live Transcript
         </h2>
         <button
           type="button"
@@ -321,7 +324,7 @@ export function LiveTranscriptSegments({
           }}
           className="shrink-0 rounded border border-emerald-700/50 px-2 py-0.5 text-xs text-emerald-200 hover:bg-emerald-900/40"
         >
-          {expanded ? "收起" : "展开"}
+          {expanded ? "Collapse" : "Expand"}
         </button>
       </div>
       <ol

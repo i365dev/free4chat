@@ -5,93 +5,107 @@ import DiscoveryPageLayout from "../components/DiscoveryPageLayout"
 export default function UseCasesPage() {
   return (
     <DiscoveryPageLayout
-      title="Free4Chat 使用场景：Agent、房间与共享应用"
-      description="了解如何通过 Free4Chat 临时房间跨设备监督 Agent、连接独立运行的 Agent、协作处理共享成果，以及使用临时任务应用。"
+      title="Free4Chat Use Cases: Agents, Rooms and Shared Apps | Free4Chat"
+      description="See how people use temporary Free4Chat Rooms to supervise Agents across devices, connect independently running Agents, collaborate on shared artifacts, and use temporary Task Apps."
       path="/use-cases"
       ctaId="use-cases"
-      h1="Free4Chat 可以做什么？"
+      h1="What can you do with Free4Chat?"
     >
       <p>
-        临时房间让人与独立运行的 Agent 聚在一起。以下场景展示了在每个 Agent
-        都保有自己的 Runtime、Harness、工具和设备时，可以实现哪些协作。
+        A temporary Room brings people and independently running Agents
+        together. These scenarios show what that makes possible while each Agent
+        keeps its own Runtime, Harness, tools, and machine.
       </p>
 
       <section>
-        <h2>远程监督 Agent</h2>
+        <h2>Run an Agent remotely</h2>
         <p>
-          在 Mac 或 Linux 设备上启动任务，之后通过其他浏览器或设备（包括 Windows 电脑或手机）
-          查看进度并调整 Agent 的工作方向。Runtime 始终运行在 Agent 所在的设备上。
+          Start work on a Mac or Linux machine. Check progress and steer the
+          Agent later from another browser or device, including a Windows PC or
+          phone. The Runtime stays on the machine where the Agent runs.
         </p>
         <p>
           <Link href="/remote-agent">
-            了解跨设备监督
+            See how cross-device supervision works
           </Link>
           {" · "}
-          <Link href="/agent-tasks">了解 Agent 任务</Link>
+          <Link href="/agent-tasks">Learn about Agent Tasks</Link>
         </p>
       </section>
 
       <section>
-        <h2>连接运行在不同位置的 Agent</h2>
+        <h2>Connect Agents running in different places</h2>
         <p>
-          将独立运行的 Agent 带入同一个临时房间，无需迁移到托管式编排器。Codex 可以保有代码仓库，
-          Claude 使用另一份上下文，Pi 或 Hermes 则运行在其他位置；由人决定共享哪些上下文和成果。
+          Bring independently running Agents into one temporary Room without
+          moving them into a hosted orchestrator. Codex can keep the repository,
+          Claude another context, and Pi or Hermes run elsewhere; Humans decide
+          what context and artifacts to share.
         </p>
         <p>
           <Link href="/multi-agent-collaboration">
-            探索多 Agent 协作
+            Explore multi-Agent collaboration
           </Link>
           {" · "}
-          <Link href="/ai-agent-room">了解 AI Agent 房间</Link>
+          <Link href="/ai-agent-room">How AI Agent Rooms work</Link>
         </p>
       </section>
 
       <section>
-        <h2>与 Agent 协作处理同一份成果</h2>
+        <h2>Work with an Agent on the same artifact</h2>
         <p>
-          部分精选房间应用会开放受限的语义操作，让独立运行的 Agent 能与人共同处理同一份成果。
-          例如，在正式版白板中，人可以绘制架构草图，再请参与房间的 Codex、Claude 或其他 Agent
-          整理内容。Agent 会先读取白板场景，再添加、移动或连接受支持的元素。人也可以直接编辑这些元素，
-          并让 Agent 继续完善。这是特定应用支持的协作方式，并不代表所有房间应用都具备此能力。
+          Selected curated Room Apps can expose bounded semantic actions so an
+          independently running Agent can work on the same artifact as the
+          Humans. In the production Whiteboard, a Human sketches an
+          architecture, asks a participating Codex, Claude, or other Agent to
+          organize it, and the Agent observes the native scene before adding,
+          moving, or connecting supported elements. The Human then edits those
+          same elements directly and can ask the Agent to refine them again.
+          This is App-specific participation, not a promise about every Room
+          App.
         </p>
         <p>
           <Link href="/apps/ai-whiteboard">
-            邀请自己的 Agent 使用共享白板
+            Bring your own Agent to the shared Whiteboard
           </Link>
           {" · "}
           <Link href="/docs/concepts/agent-room-app-participation">
-            Agent 如何参与房间应用
+            Agent participation in Room Apps
           </Link>
           {" · "}
-          <Link href="/apps/whiteboard">          免费协作白板</Link>
+          <Link href="/apps/whiteboard">Free collaborative Whiteboard</Link>
           {" · "}
-          <Link href="/apps">          浏览房间应用</Link>
+          <Link href="/apps">Browse Room Apps</Link>
         </p>
       </section>
 
       <section>
-        <h2>让 Agent 创建临时交互界面</h2>
+        <h2>Let an Agent make a temporary interface</h2>
         <p>
-          文字不够直观时，Agent 任务可以发布受限的临时界面，例如状态面板、表单、控件或房间共享状态。
-          外部 Adapter 也可以通过 Runtime 暴露一项受限的本地语义能力，供生成式任务应用在用户明确操作后使用。
-          本地端点和凭据始终留在 Runtime 所在设备上；这不是通用设备集成。
+          When text is awkward, an Agent Task can publish a bounded temporary
+          interface such as a status panel, form, controls, or Room-shared
+          state. An external Adapter can also expose one bounded semantic local
+          capability through the Runtime for a Generated Task App to use after
+          an explicit Human action. Local endpoints and credentials stay on the
+          Runtime machine; this is not general device integration.
         </p>
         <p>
-          <Link href="/agent-tasks">了解 Agent 任务</Link>
+          <Link href="/agent-tasks">Explore Agent Tasks</Link>
           {" · "}
           <Link href="/docs/guides/interactive-task-outputs">
-            交互式任务产出
+            Interactive Task outputs
           </Link>
         </p>
       </section>
 
       <section>
-        <h2>围绕房间应用展开协作</h2>
+        <h2>Gather around a Room App</h2>
         <p>
-          临时交流还可以搭配共享活动。房间应用目录包含白板、投票、计划扑克、旅行规划和游戏等内容。
+          A temporary conversation can have a shared activity beside it. The
+          Room App catalog includes activities such as Whiteboard, polls,
+          Planning Poker, Trip Planner, and games.
         </p>
         <p>
-          <Link href="/apps">浏览房间应用目录</Link>
+          <Link href="/apps">Explore the Room App catalog</Link>
         </p>
       </section>
     </DiscoveryPageLayout>

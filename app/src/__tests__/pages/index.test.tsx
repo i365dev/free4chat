@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
 vi.mock("next/router", () => ({
@@ -12,7 +12,7 @@ describe("Home page", () => {
     render(<Home />)
 
     const heroHeading = screen.getByRole("heading", {
-      name: "开启临时房间，让人与 Agent 在此相聚。",
+      name: /open a room\. bring people and agents together\./i,
     })
     expect(heroHeading).toBeInTheDocument()
     const pageContent = heroHeading.closest("main")?.firstElementChild
@@ -21,47 +21,51 @@ describe("Home page", () => {
     expect(signalText).toHaveClass("signal-collapse-text", "psy-headline")
     expect(heroHeading).not.toHaveClass("psy-headline")
     expect(
-      screen.getByText("FREE4CHAT://中继 — 链路就绪")
+      screen.getByText("FREE4CHAT://RELAY — LINK READY")
     ).toBeInTheDocument()
     const joinButton = screen.getByRole("button", {
-      name: "进入房间",
+      name: "Warp In — Join Room",
     })
     expect(joinButton).toBeInTheDocument()
-    expect(joinButton).toHaveTextContent("进入房间 →")
-    expect(screen.getByPlaceholderText("输入房间名称")).toBeInTheDocument()
-    expect(screen.getByPlaceholderText("输入你的昵称")).toBeInTheDocument()
+    expect(joinButton).toHaveTextContent("WARP IN →")
+    expect(screen.getByPlaceholderText("room_name")).toBeInTheDocument()
+    expect(screen.getByPlaceholderText("nickname")).toBeInTheDocument()
     expect(
       screen.getByRole("link", {
-        name: "通过终端创建并加入房间 →",
+        name: "Create and join Rooms from the terminal →",
       })
     ).toHaveAttribute("href", "/docs/getting-started/agent-room")
     expect(
       screen.getByText("$ free4chat-agent room create --agent pi --name Pi")
     ).toBeInTheDocument()
-    expect(document.body).toHaveTextContent(/Agent Runtime 支持 macOS 和 Linux/)
-    expect(document.body).toHaveTextContent(/Windows 和移动设备/)
+    expect(
+      screen.getByText(
+        "Agent Runtime: macOS + Linux. Human supervision: supported browsers, including Windows and mobile."
+      )
+    ).toBeInTheDocument()
 
     expect(
       screen.getByText(
-        "受限沙箱中的小型应用，可共享房间状态，并在明确授权后使用发起任务的 Runtime 本地能力。"
+        "A bounded sandboxed mini-app with Room-shared state and explicit access to the originating Runtime's bounded local capabilities."
       )
     ).toBeInTheDocument()
     expect(
       screen.getByRole("heading", {
-        name: "将本地能力带入房间，无需迁移到云端。",
+        name: "Bring a local capability into the Room without moving it to the cloud.",
       })
     ).toBeInTheDocument()
-    expect(document.body).toHaveTextContent(
-      /Runtime 可通过外部 Adapter 提供受限的语义能力/
-    )
-    expect(document.body).toHaveTextContent(/本地端点和凭据始终留在本机/)
+    expect(
+      screen.getByText(
+        "A Runtime can project a bounded semantic capability from an external Adapter. A Generated Task App can use it on an explicit Human action while local endpoints and credentials stay local."
+      )
+    ).toBeInTheDocument()
     expect(
       screen.getByRole("link", {
-        name: "了解交互式任务产出 →",
+        name: "How interactive Task outputs work →",
       })
     ).toHaveAttribute("href", "/docs/guides/interactive-task-outputs")
     expect(
-      screen.getByText("// 需要更多 Agent 时")
+      screen.getByText("// when_you_need_another_agent")
     ).toBeInTheDocument()
     expect(
       screen.queryByText("// when_you_need_another_capability")
@@ -71,23 +75,23 @@ describe("Home page", () => {
     // route to the product pages; docs and API entry points stay in the
     // footer, and the Agent quick start owns the developer card above.
     expect(
-      screen.getByRole("link", { name: "临时房间 →" })
+      screen.getByRole("link", { name: "Temporary Rooms →" })
     ).toHaveAttribute("href", "/temporary-chat-room")
     expect(
-      screen.getByRole("link", { name: "AI Agent 房间 →" })
+      screen.getByRole("link", { name: "AI Agent Rooms →" })
     ).toHaveAttribute("href", "/ai-agent-room")
     expect(
-      screen.getByRole("link", { name: "多 Agent 协作 →" })
+      screen.getByRole("link", { name: "Multi-Agent Collaboration →" })
     ).toHaveAttribute("href", "/multi-agent-collaboration")
-    expect(screen.getByRole("link", { name: "房间应用 →" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Room Apps →" })).toHaveAttribute(
       "href",
       "/apps"
     )
     expect(
-      screen.getByRole("link", { name: "浏览使用场景 →" })
+      screen.getByRole("link", { name: "Explore use cases →" })
     ).toHaveAttribute("href", "/use-cases")
     expect(
-      screen.getByRole("link", { name: "文档 →" })
+      screen.getByRole("link", { name: "Documentation →" })
     ).toHaveAttribute("href", "/docs")
 
     // The stale immediate-expiry wording must not come back.
@@ -101,21 +105,23 @@ describe("Home page", () => {
     ).not.toBeInTheDocument()
   })
 
-  it("leaves names blank by default and keeps both dice controls wired", async () => {
+  it("prefills separate cosmic defaults and keeps both dice controls wired", async () => {
     render(<Home />)
 
-    const room = screen.getByLabelText("房间名称") as HTMLInputElement
-    const nickname = screen.getByLabelText("昵称") as HTMLInputElement
-    expect(room.value).toBe("")
-    expect(nickname.value).toBe("")
+    await waitFor(() => {
+      const room = screen.getByLabelText("Room") as HTMLInputElement
+      const nickname = screen.getByLabelText("Nickname") as HTMLInputElement
+      expect(room.value).toMatch(/^[a-z]+-[a-z]+-[a-z0-9]+$/)
+      expect(nickname.value).toMatch(/^[A-Z][a-z]+$/)
+    })
 
-    fireEvent.click(screen.getByTitle("随机生成房间名称"))
-    fireEvent.click(screen.getByTitle("随机生成昵称"))
-    expect((screen.getByLabelText("房间名称") as HTMLInputElement).value).toMatch(
+    fireEvent.click(screen.getByTitle("Randomize room name"))
+    fireEvent.click(screen.getByTitle("Randomize nickname"))
+    expect((screen.getByLabelText("Room") as HTMLInputElement).value).toMatch(
       /^[a-z]+-[a-z]+-[a-z0-9]+$/
     )
     expect(
-      (screen.getByLabelText("昵称") as HTMLInputElement).value
+      (screen.getByLabelText("Nickname") as HTMLInputElement).value
     ).toMatch(/^[A-Z][a-z]+$/)
   })
 })

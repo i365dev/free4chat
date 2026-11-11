@@ -61,7 +61,7 @@ export default function AgentInviteControl({
     // Direct user activation only (Firefox/Safari require it for clipboard).
     if (!navigator.clipboard?.writeText) {
       setError(
-        "无法访问剪贴板，因此无法在此处复制邀请内容。"
+        "Clipboard access is unavailable. Copy invite is not supported here."
       )
       return
     }
@@ -78,7 +78,7 @@ export default function AgentInviteControl({
         setCopied(true)
       })
       .catch(() => {
-        setError("剪贴板访问被阻止，请重试。")
+        setError("Clipboard access was blocked. Try again.")
       })
   }
 
@@ -88,33 +88,36 @@ export default function AgentInviteControl({
         type="button"
         onClick={() => onOpenChange(!open)}
         aria-expanded={open}
-        aria-label="邀请 Agent"
-        title="复制邀请提示词，发送给你正在使用的 Agent"
+        aria-label="Invite Agent"
+        title="Copy an invite prompt for the Agent you already use"
         className="rounded-md border border-blue-700/70 bg-blue-900/30 px-3 py-1 text-xs text-blue-200 hover:bg-blue-800/50"
       >
-        邀请 Agent
+        Invite Agent
       </button>
 
       {open && (
         <div
           role="dialog"
-          aria-label="邀请 Agent"
+          aria-label="Invite an Agent"
           className="room-feature-popover absolute left-1/2 top-full z-20 mt-1 max-h-[65dvh] w-80 max-w-[calc(100vw-2rem)] -translate-x-1/2 overflow-y-auto rounded-md border border-gray-700 bg-gray-800 p-3 text-xs text-gray-200 shadow-lg lg:left-auto lg:right-0 lg:translate-x-0"
         >
-          <p className="font-medium text-gray-100">邀请 Agent</p>
+          <p className="font-medium text-gray-100">Invite an Agent</p>
           <p className="mt-1 text-gray-400">
-            邀请你正在使用的 Agent 加入此房间。
+            Bring an Agent you&apos;re already using into this Room.
           </p>
           <ol className="mt-1.5 list-decimal space-y-0.5 pl-4 text-gray-300">
-            <li>打开你的 Agent。</li>
-            <li>复制下面的邀请提示词。</li>
-            <li>将提示词粘贴到 Agent 中。</li>
+            <li>Open your Agent.</li>
+            <li>Copy the invite prompt below.</li>
+            <li>Paste it into the Agent.</li>
           </ol>
           <p className="mt-1.5 text-gray-400">
-            如有需要，Agent 会在本地安装 Free4Chat，然后自行加入此房间。通常你无需手动安装或配置任何内容。
+            The Agent will set up Free4Chat locally if needed and join this Room
+            itself. You normally do not need to install or configure anything
+            manually.
           </p>
           <p className="mt-1 text-gray-400">
-            配置语音后，同一本地 Free4Chat 环境还可提供实时转录等房间功能。
+            The same local Free4Chat setup can also provide Room features such
+            as Live Transcript when speech is configured.
           </p>
 
           <pre className="mt-2 max-h-40 overflow-y-auto whitespace-pre-wrap break-all rounded-md border border-gray-700 bg-gray-950 p-2 font-mono text-[11px] leading-relaxed text-gray-300">
@@ -126,11 +129,11 @@ export default function AgentInviteControl({
             onClick={copyInvite}
             className="mt-2 rounded-md border border-blue-700/70 bg-blue-900/30 px-3 py-1 text-blue-200 hover:bg-blue-800/50"
           >
-            复制邀请提示词
+            Copy invite prompt
           </button>
           {copied && (
             <p role="status" className="mt-2 text-emerald-300">
-              ✓ 已复制邀请提示词。请将其粘贴到 Agent 中。
+              ✓ Invite prompt copied. Paste it into your Agent.
             </p>
           )}
           {error && (
