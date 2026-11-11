@@ -26,7 +26,7 @@ function SidebarNav({
   activeHref: string
 }) {
   return (
-    <nav aria-label="Documentation" className="space-y-6 font-mono text-sm">
+    <nav aria-label="文档导航" className="space-y-6 font-mono text-sm">
       <Link
         href={DOCS_ROOT_PATH}
         className={
@@ -66,7 +66,7 @@ function SidebarNav({
       ))}
       <div>
         <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-emerald-600">
-          Machine contracts
+          机器接口规范
         </p>
         <ul className="space-y-1">
           {sidebar.external.map((link) => (
@@ -145,7 +145,7 @@ export default function DocsLayout(props: DocsPageProps) {
   return (
     <div className="flex min-h-screen flex-col font-mono text-emerald-100">
       <SeoHead
-        title={`${title} — Free4Chat Docs`}
+        title={`${title} — Free4Chat 文档`}
         description={description}
         path={canonicalPath}
       />
@@ -163,7 +163,7 @@ export default function DocsLayout(props: DocsPageProps) {
               href={DOCS_ROOT_PATH}
               className="text-emerald-500 hover:text-emerald-300"
             >
-              Docs
+              文档
             </Link>
           </div>
           <button
@@ -172,7 +172,7 @@ export default function DocsLayout(props: DocsPageProps) {
             className="rounded-none border border-emerald-900 px-2 py-1 text-xs text-emerald-500 md:hidden"
             aria-expanded={menuOpen}
           >
-            Menu
+            菜单
           </button>
           <a
             href={GITHUB_REPO}
@@ -223,7 +223,7 @@ export default function DocsLayout(props: DocsPageProps) {
           </div>
           <div className="mt-6 font-mono text-xs text-emerald-500">
             <a href={githubEditUrl} target="_blank" rel="noopener noreferrer">
-              Edit this page on GitHub
+              在 GitHub 上编辑此页
             </a>
           </div>
         </main>

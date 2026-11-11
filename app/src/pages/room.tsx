@@ -71,11 +71,11 @@ export default function Room() {
           setNickName(room.nickName)
           setReady(true)
         } else {
-          setNickName(generateParticipantName())
+          setNickName("")
           setShowNickNamePop(true)
         }
       } catch {
-        setNickName(generateParticipantName())
+        setNickName("")
         setShowNickNamePop(true)
       }
     }
@@ -105,16 +105,16 @@ export default function Room() {
       {showNickNamePop && (
         <main className="center h-screen w-auto bg-gray-900 text-center text-white">
           <div className="m-auto max-w-md rounded-lg bg-gray-800 p-8 shadow-2xl">
-            <h2 className="text-lg font-bold">Input Your Nick Name</h2>
+            <h2 className="text-lg font-bold">输入你的昵称</h2>
             <div className="relative mb-4 mt-4">
               <label htmlFor="nickname" className="sr-only">
-                Nickname
+                昵称
               </label>
               <input
                 type="text"
                 id="nickname"
                 value={nickName}
-                placeholder="Nick Name"
+                placeholder="请输入昵称"
                 onChange={(e) => setNickName(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") dismissNickNamePop()
@@ -126,6 +126,8 @@ export default function Room() {
                   onClick={() => setNickName(generateParticipantName())}
                   type="button"
                   className="text-black hover:bg-red-400"
+                  title="随机生成昵称"
+                  aria-label="随机生成昵称"
                 >
                   <svg
                     xmlns="http://www.w3.org/2000/svg"
@@ -145,7 +147,7 @@ export default function Room() {
               disabled={!nickName.trim()}
               className="group mt-4 flex w-full items-center justify-center rounded-md bg-rose-600 px-5 py-3 text-white transition focus:outline-none focus:ring focus:ring-yellow-400 disabled:cursor-not-allowed disabled:opacity-50 sm:mt-0 sm:w-auto"
             >
-              <span className="text-sm font-medium"> Go </span>
+              <span className="text-sm font-medium">进入房间</span>
               <svg
                 className="ml-3 h-5 w-5"
                 xmlns="http://www.w3.org/2000/svg"

@@ -315,7 +315,7 @@ export default function RoomAppLauncher({
         ref={launcherRef}
         role="dialog"
         aria-modal="false"
-        aria-label="Apps"
+        aria-label="应用"
         data-testid="room-app-launcher"
         style={{
           left: `${geometry.left}px`,
@@ -327,18 +327,18 @@ export default function RoomAppLauncher({
         className="fixed z-40 flex flex-col overflow-hidden rounded-lg border border-gray-700 bg-gray-800 p-2 text-xs text-gray-200 shadow-2xl"
       >
         <div className="flex flex-none items-center justify-between gap-2 px-1">
-          <p className="font-medium text-gray-100">Apps</p>
+          <p className="font-medium text-gray-100">应用</p>
           <button
             type="button"
             data-testid="room-app-launcher-close"
             onClick={onClose}
             className="rounded px-2 py-1 text-gray-400 hover:bg-gray-700 hover:text-white"
           >
-            Close
+            关闭
           </button>
         </div>
         <label htmlFor="room-app-search" className="sr-only">
-          Search Apps
+          搜索应用
         </label>
         <input
           id="room-app-search"
@@ -352,7 +352,7 @@ export default function RoomAppLauncher({
           autoComplete="off"
           spellCheck={false}
           value={query}
-          placeholder="Search apps…"
+          placeholder="搜索应用…"
           data-testid="room-app-search"
           onChange={(event) => {
             setQuery(event.target.value)
@@ -364,7 +364,7 @@ export default function RoomAppLauncher({
         <div
           id="room-app-search-results"
           role="menu"
-          aria-label="Apps"
+          aria-label="应用"
           data-testid="room-app-search-results"
           className="scrollbar-thin mt-2 min-h-0 flex-1 overflow-y-auto"
         >
@@ -373,14 +373,14 @@ export default function RoomAppLauncher({
               data-testid="room-app-search-empty"
               className="px-1 py-2 text-gray-400"
             >
-              No Apps match “{query.trim()}”.
+              没有匹配“{query.trim()}”的应用。
             </p>
           ) : (
             <>
               {recentResults.length > 0 && (
                 <div data-testid="room-app-launcher-recent">
                   <p className="px-1 pb-1 pt-0.5 text-[10px] uppercase tracking-wide text-gray-500">
-                    Recent in this Room
+                    此房间最近使用
                   </p>
                   <ul>{recentResults.map(renderOption)}</ul>
                 </div>
@@ -388,7 +388,7 @@ export default function RoomAppLauncher({
               {allResults.length > 0 && (
                 <div data-testid="room-app-launcher-all">
                   <p className="px-1 pb-1 pt-2 text-[10px] uppercase tracking-wide text-gray-500">
-                    All apps
+                    所有应用
                   </p>
                   <ul>{allResults.map(renderOption)}</ul>
                 </div>
@@ -403,7 +403,7 @@ export default function RoomAppLauncher({
             rel="noreferrer"
             className="text-[11px] text-gray-400 underline hover:text-gray-200"
           >
-            Explore all apps →
+            浏览所有应用 →
           </a>
         </div>
       </div>

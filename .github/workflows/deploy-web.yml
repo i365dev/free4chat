@@ -2,6 +2,12 @@ name: CI / Deploy
 
 on:
   workflow_dispatch:
+    inputs:
+      deploy_without_checks:
+        description: Deploy without running lint, type-check, or App tests
+        required: false
+        type: boolean
+        default: false
   push:
     paths:
       - "app/**"
@@ -16,6 +22,7 @@ on:
 jobs:
   lint:
     name: Lint & Type Check
+    if: ${{ !inputs.deploy_without_checks }}
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -62,6 +69,7 @@ jobs:
 
   app-tests:
     name: App Tests
+    if: ${{ !inputs.deploy_without_checks }}
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -86,8 +94,18 @@ jobs:
     name: Build & Deploy
     needs: [lint, app-tests]
     if: >-
+      always() &&
       github.ref == 'refs/heads/cf-sfu' &&
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      (
+        (needs.lint.result == 'success' && needs.app-tests.result == 'success') ||
+        (
+          github.event_name == 'workflow_dispatch' &&
+          inputs.deploy_without_checks &&
+          needs.lint.result == 'skipped' &&
+          needs.app-tests.result == 'skipped'
+        )
+      )
     runs-on: ubuntu-latest
     concurrency:
       group: cf-sfu-deploy

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import SignalCollapseText from "./SignalCollapseText"
 
-const SLOGAN = "Open a room.\nBring people and Agents together."
+const SLOGAN = "开启一个房间。\n让人与 Agent 在此相聚。"
 
 // jsdom has no requestAnimationFrame; drive the rAF loop manually so the
 // convergence state machine is tested deterministically in real time.

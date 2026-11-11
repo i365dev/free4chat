@@ -12,31 +12,26 @@ function read(relativePath: string): string {
 describe("Privacy copy accuracy", () => {
   const source = read("src/pages/privacy.tsx")
 
-  it("does not make an unqualified 'no database of files or images' claim — the Agent-image exception must be acknowledged in the same breath", () => {
-    // The old, inaccurate wording had no "exception"/"Agent" language
-    // anywhere near the "never written to server storage" claim.
-    const noDatabaseClaim = source.match(/No database of[^.]*\./)?.[0]
-    expect(
-      noDatabaseClaim,
-      "expected a 'No database of...' sentence"
-    ).toBeTruthy()
-    expect(noDatabaseClaim!.toLowerCase()).toMatch(/human-to-human/)
+  it("distinguishes browser-to-browser file transfers from the Agent-readable copy", () => {
+    expect(source).toMatch(/不建立人与人之间传输的文件或图片数据库/)
+    expect(source).toMatch(/Agent/)
+    expect(source).toMatch(/受限临时副本/)
   })
 
   it("distinguishes bounded Agent-readable images from explicit text-like Room artifacts", () => {
     expect(source.toLowerCase()).toMatch(/agent/)
     expect(source).toMatch(/Durable Object/)
-    expect(source.toLowerCase()).toMatch(/bounded/)
+    expect(source).toMatch(/受限/)
     expect(source).toMatch(/Markdown/)
     expect(source).toMatch(/JSON/)
     expect(source).not.toMatch(/never any other file type/i)
   })
 
-  it("discloses that BOTH room name and nickname are saved in localStorage, until manually cleared", () => {
-    expect(source).toMatch(/room name/i)
-    expect(source).toMatch(/nickname/i)
+  it("discloses that BOTH room name and nickname are saved in localStorage until manually cleared", () => {
+    expect(source).toMatch(/房间名称/)
+    expect(source).toMatch(/昵称/)
     expect(source).toMatch(/localStorage/)
-    expect(source).toMatch(/clear/i)
+    expect(source).toMatch(/清除/)
   })
 })
 
@@ -52,10 +47,8 @@ describe("Homepage and /temporary-chat-room copy accuracy", () => {
   })
 
   it("scopes 'no history' claims to Free4Chat's servers, not an absolute guarantee", () => {
-    expect(homepage).toMatch(/no permanent room history/i)
-    expect(temporaryRoom).toMatch(
-      /no permanent (room )?history on our servers/i
-    )
+    expect(homepage).toMatch(/不保留永久历史记录/)
+    expect(temporaryRoom).toMatch(/服务器不保留永久房间历史记录/)
   })
 })
 
@@ -63,11 +56,11 @@ describe("/ai-agent-room copy accuracy", () => {
   const source = read("src/pages/ai-agent-room.tsx")
 
   it("does not claim every Agent necessarily joins through the local Agent Runtime", () => {
-    expect(source).toMatch(/direct/i)
+    expect(source).toMatch(/直接连接/)
     expect(source).toMatch(/MCP/)
     // The old wording asserted the Runtime step unconditionally; the fixed
     // copy must present it as one of (at least) two paths.
-    expect(source).toMatch(/resident/i)
+    expect(source).toMatch(/常驻 Agent/)
   })
 })
 
@@ -85,18 +78,16 @@ describe("Runtime host and Human supervision platform copy", () => {
       expect(source).toMatch(/Linux/)
       expect(source).toMatch(/Windows/)
     }
-    expect(publicSources[3]).toMatch(/mobile/)
-    expect(publicSources[3]).toMatch(/not a cloud job runner/)
-    expect(publicSources[3]).toMatch(
-      /Windows does not currently host the Agent Runtime/
-    )
+    expect(publicSources[3]).toMatch(/移动设备/)
+    expect(publicSources[3]).toMatch(/不是云端任务运行器/)
+    expect(publicSources[3]).toMatch(/Windows 不能作为 Agent Runtime 的运行主机/)
   })
 
   it("keeps Agent-enabled Room App claims limited to selected Apps and Whiteboard", () => {
     const useCases = read("src/pages/use-cases.tsx").replace(/\s+/g, " ")
-    expect(useCases).toMatch(/Selected curated Room Apps/)
-    expect(useCases).toMatch(/production Whiteboard/)
-    expect(useCases).toMatch(/not a promise about every Room App/)
+    expect(useCases).toMatch(/部分精选房间应用/)
+    expect(useCases).toMatch(/正式版白板/)
+    expect(useCases).toMatch(/并不代表所有房间应用都具备此能力/)
     expect(useCases).not.toMatch(
       /\bHome Assistant\b|\bBLE\b|\bserial[- ]device\b/i
     )
