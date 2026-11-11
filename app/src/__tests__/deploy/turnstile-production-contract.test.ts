@@ -30,9 +30,7 @@ describe("production deploy disables Turnstile admission", () => {
   )
 
   it("disables the browser challenge in the production build", () => {
-    expect(deployWorkflow).toContain(
-      'NEXT_PUBLIC_TURNSTILE_DISABLED: "1"'
-    )
+    expect(deployWorkflow).toContain('NEXT_PUBLIC_TURNSTILE_DISABLED: "1"')
   })
 
   it("disables Worker Siteverify for fresh sessions", () => {
