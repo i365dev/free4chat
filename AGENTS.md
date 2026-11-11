@@ -64,7 +64,7 @@ All `/api/sfu/*` requests require an `Origin` of `https://free4.chat` or `https:
 
 ## SFU session flow
 
-1. `/api/sfu/session` validates the origin, rate limit, Turnstile token, room, and name.
+1. `/api/sfu/session` validates the origin, rate limit, room, and name. Production intentionally bypasses the optional fresh-Human Turnstile check.
 2. The Worker creates a Cloudflare Realtime session and registers the participant in `RoomSession`.
 3. The browser establishes the server-events and file DataChannels.
 4. The browser publishes microphone and optional screen-share tracks.
@@ -87,7 +87,7 @@ to Room state. A Cloudflare 2xx, answer, or MID alone is not enough; if answer
 application fails, do not expose a phantom Room track, and recover by
 replacing the media session/PeerConnection when needed.
 
-The SFU App ID is a deployment variable. `SFU_APP_SECRET` and `TURNSTILE_SECRET_KEY` are Worker secrets and must never be committed or sent to the browser.
+The SFU App ID is a deployment variable. `SFU_APP_SECRET` is a Worker secret and must never be committed or sent to the browser. Production currently disables Turnstile; its secret is not required for deployment.
 
 ## Agent room protocol
 

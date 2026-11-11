@@ -23,12 +23,12 @@ Required local values are documented in `app/.dev.vars.example`:
 | `SFU_APP_ID`     | Cloudflare Realtime SFU App ID     |
 | `SFU_APP_SECRET` | Cloudflare Realtime SFU App Secret |
 
-Turnstile is optional locally, but the server no longer fails open. Without `NEXT_PUBLIC_TURNSTILE_SITE_KEY` set, the client falls back to Cloudflare's public "always passes" test sitekey, so the just-in-time challenge (triggered when joining a room, not on page load) resolves instantly — the server still requires a matching `TURNSTILE_SECRET_KEY` for every fresh Human session. Pick one:
+For local development, Turnstile can be exercised or explicitly bypassed. Without `NEXT_PUBLIC_TURNSTILE_SITE_KEY` set, the client falls back to Cloudflare's public "always passes" test sitekey; use the matching test secret below to exercise Siteverify:
 
-- set `TURNSTILE_SECRET_KEY` to Cloudflare's "always passes" test secret (`1x0000000000000000000000000000000AA`) to exercise the real Siteverify path;
-- set `TURNSTILE_DISABLED=true` (and build with `NEXT_PUBLIC_TURNSTILE_DISABLED=1`) for a fully offline stack.
+- set `TURNSTILE_SECRET_KEY` to Cloudflare's "always passes" test secret (`1x0000000000000000000000000000000AA`);
+- set `TURNSTILE_DISABLED=true` (and build with `NEXT_PUBLIC_TURNSTILE_DISABLED=1`) to bypass the local challenge.
 
-Without either, `/api/sfu/session` fails closed with `503 turnstile_not_configured` for fresh Human sessions — a server misconfiguration is never reported as a Human verification failure. Reconnects use the existing participant/session capability and never require Turnstile.
+Production deploys intentionally bypass Turnstile as described below. Reconnects use the existing participant/session capability and never require a fresh challenge.
 
 The text-only Agent protocol does not require OAuth, an account, or another secret. The local endpoint is `http://localhost:3000/mcp`; native MCP clients may omit `Origin`, while browser clients are restricted to the production and local allowlists. See [`app/public/agent.md`](./app/public/agent.md) for the tool contract.
 
@@ -134,14 +134,12 @@ Required GitHub Actions secrets:
 | `CLOUDFLARE_API_TOKEN`           | Cloudflare deployment token                  |
 | `CLOUDFLARE_ACCOUNT_ID`          | Cloudflare account ID                        |
 | `SFU_APP_ID`                     | Cloudflare Realtime SFU App ID               |
-| `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | Public Turnstile site key used at build time |
 
 Worker runtime secrets are stored in Cloudflare, not git:
 
 ```bash
 cd app
 npx wrangler secret put SFU_APP_SECRET
-npx wrangler secret put TURNSTILE_SECRET_KEY
 ```
 
 Every MCP tool call now passes a Workers Rate Limiting guard before the
@@ -149,14 +147,11 @@ Worker resolves a Room, so a forged or random `participantHandle` cannot wake
 arbitrary `RoomSession` instances beyond that budget. `room_info` stays
 unauthenticated by design and is guarded separately.
 
-`TURNSTILE_SECRET_KEY` is required in production: fresh Human sessions fail closed with `503 turnstile_not_configured` while it is missing, and the deploy workflow deliberately sets neither the client-side (`NEXT_PUBLIC_TURNSTILE_DISABLED`) nor the Worker-side (`TURNSTILE_DISABLED`) disable switch. Confirm the secret exists before deploying:
-
-```bash
-cd app
-npx wrangler secret list
-```
-
-A deliberate temporary bypass is an explicit, visible workflow change — never a checked-in production default.
+Production deploys intentionally disable Turnstile for fresh Human sessions.
+The deployment workflow sets both `NEXT_PUBLIC_TURNSTILE_DISABLED=1` for the
+browser build and `TURNSTILE_DISABLED=true` for the Worker. Origin validation
+and SFU admission rate limiting remain enabled. The Turnstile site key and
+secret are no longer required.
 
 Manual deployment (recovery only — see note below):
 
@@ -167,14 +162,9 @@ npx wrangler deploy \
   --var "SFU_APP_ID:$SFU_APP_ID"
 ```
 
-**Production deploys should go through CI, not this manual path.** A local
-`wrangler deploy` builds with whatever's in your own environment/`.dev.vars`
-— pairing a local dev value (e.g. `NEXT_PUBLIC_TURNSTILE_SITE_KEY`) with the
-real production `TURNSTILE_SECRET_KEY` (a Cloudflare Worker secret, unaffected
-by any deploy) silently breaks verification. If a deployment needs retrying,
-re-run the `CI / Deploy` workflow run in GitHub Actions instead of deploying
-locally, unless you're deliberately reproducing the full production build-time
-configuration.
+**Production deploys should go through CI, not this manual path.** The
+workflow keeps the browser and Worker Turnstile bypass settings paired; a
+manual deployment must do the same if used for recovery.
 
 ## Local Browser Room App transport diagnostics
 

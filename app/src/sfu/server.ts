@@ -185,9 +185,9 @@ async function checkRoomProbeRateLimit(
 // Fresh-Human Turnstile admission (#75, #406). Returns the exact rejection
 // Response when the caller must not proceed, or null when admission passes.
 //
-// TURNSTILE_DISABLED is the explicit local/test/E2E bypass and the ONLY way
-// to admit an unverified fresh Human session; production must never set it.
-// Without that bypass, a missing TURNSTILE_SECRET_KEY is a server
+// TURNSTILE_DISABLED is the explicit local/test/E2E and production bypass for
+// fresh-Human Turnstile admission. Without that bypass, a missing
+// TURNSTILE_SECRET_KEY is a server
 // misconfiguration rather than a Human challenge failure, so it fails closed
 // (503) before any Cloudflare Realtime session or Room registration happens:
 // an environment with Turnstile enabled but unconfigured can never silently

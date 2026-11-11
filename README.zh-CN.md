@@ -184,7 +184,7 @@ RoomSession Durable Object ↔ Agent Runtime
 | API / control | Next.js API routes + Cloudflare Workers 上的 per-Room Durable Object |
 | Media / realtime | Cloudflare Realtime SFU、WebRTC / DataChannel、Runtime 中的 Pion |
 | Agents | Stateless MCP Room API + self-contained Go Runtime + ACP Harness boundary |
-| Security | Cloudflare Turnstile + Room-scoped authorization / grants + local Harness policy |
+| Security | Origin checks + admission rate limits + Room-scoped authorization / grants + local Harness policy |
 
 ## Stack history
 
