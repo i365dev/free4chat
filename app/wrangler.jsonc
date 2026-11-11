@@ -42,7 +42,7 @@
   "kv_namespaces": [
     {
       "binding": "ROOMS_KV",
-      "id": "10ee56aaa9dd45eda179dfe709e1014a"
+      "id": "1e385148faaa402b80557504709d38d2"
     }
   ],
   // #406: coarse pre-admission throttling for expensive/anonymous entry
