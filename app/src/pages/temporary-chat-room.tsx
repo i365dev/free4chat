@@ -12,7 +12,8 @@ export default function TemporaryChatRoomPage() {
       h1="支持语音、文字和屏幕共享的临时房间"
     >
       <p>
-        Free4Chat 房间用于一次性交流，交流结束后便会消失。无需创建账号或安装软件；
+        Free4Chat
+        房间用于一次性交流，交流结束后便会消失。无需创建账号或安装软件；
         开启房间、分享链接，即可开始交流。
       </p>
 
@@ -28,9 +29,7 @@ export default function TemporaryChatRoomPage() {
       <h2>为什么是临时房间</h2>
       <ul>
         <li>无需注册、账号或管理用户身份。</li>
-        <li>
-          服务器不保留永久房间历史记录；空房间会自动过期。
-        </li>
+        <li>服务器不保留永久房间历史记录；空房间会自动过期。</li>
         <li>
           房间没有固定倒计时：有人在房间时它会保持开放，空置一段时间后才会过期。
         </li>
@@ -38,8 +37,10 @@ export default function TemporaryChatRoomPage() {
 
       <h2>请注意</h2>
       <p>
-        Free4Chat 并非端到端加密的通讯工具：媒体会经过中继，以便参与者彼此收听和观看；你的房间名称和昵称
-        会保存在浏览器的 <code>localStorage</code> 中，直到你清除相关数据。详情请查看
+        Free4Chat
+        并非端到端加密的通讯工具：媒体会经过中继，以便参与者彼此收听和观看；你的房间名称和昵称
+        会保存在浏览器的 <code>localStorage</code>{" "}
+        中，直到你清除相关数据。详情请查看
         <Link href="/privacy">隐私说明</Link>。
       </p>
 
@@ -52,7 +53,8 @@ export default function TemporaryChatRoomPage() {
           — 逐步了解如何创建并分享房间。
         </li>
         <li>
-          <Link href="/docs/concepts/room">房间与数据归属</Link> — 了解房间管理哪些内容，以及参与者如何保留隐私。
+          <Link href="/docs/concepts/room">房间与数据归属</Link> —
+          了解房间管理哪些内容，以及参与者如何保留隐私。
         </li>
         <li>
           想邀请 Agent 加入房间？请查看

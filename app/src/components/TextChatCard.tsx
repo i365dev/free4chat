@@ -472,9 +472,7 @@ function PollCard({
               )}
               <span className="relative text-white">{opt}</span>
               {myVote && (
-                <span className="relative text-white/70">
-                  {count} 票
-                </span>
+                <span className="relative text-white/70">{count} 票</span>
               )}
             </button>
           )
@@ -767,8 +765,7 @@ function ActionCard({
                 onClick={() => onViewArtifact(attachmentId)}
                 className="w-full truncate rounded-md bg-blue-600/20 px-2 py-1 text-left text-[11px] text-blue-200 hover:bg-blue-600/40"
               >
-                📎 查看附件{" "}
-                {collab.attachmentIds!.length > 1 ? index + 1 : ""}
+                📎 查看附件 {collab.attachmentIds!.length > 1 ? index + 1 : ""}
               </button>
             ))}
           </div>
@@ -909,7 +906,7 @@ function AgentAttachmentCard({
         onClick={() => onPreview(attachment.id)}
         className="mt-1.5 rounded-md bg-blue-600/30 px-2 py-0.5 text-[11px] text-blue-200 hover:bg-blue-600/50"
       >
-        {isImage         ? "预览图片" : "预览"}
+        {isImage ? "预览图片" : "预览"}
       </button>
     </div>
   )
@@ -1289,9 +1286,7 @@ const RoomTimeline = memo(function RoomTimeline({
       className="scrollbar-thin min-h-0 flex-1 overflow-y-auto p-4 text-sm"
     >
       {messages.length === 0 && attachments.length === 0 && (
-        <p className="mt-4 text-center text-xs text-gray-500">
-          暂无消息
-        </p>
+        <p className="mt-4 text-center text-xs text-gray-500">暂无消息</p>
       )}
       {timeline.map((item, index) => {
         const key = timelineKeys[index]

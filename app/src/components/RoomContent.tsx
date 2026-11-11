@@ -105,7 +105,8 @@ function localizedTaskSessionError(message: string): string {
   const translations: Record<string, string> = {
     "This local session is no longer available. Refresh sessions and try again.":
       "此本地会话已不可用。请刷新会话后重试。",
-    "This Agent cannot continue a local session.": "此 Agent 无法继续本地会话。",
+    "This Agent cannot continue a local session.":
+      "此 Agent 无法继续本地会话。",
     "Another session request is still in progress. Try again in a moment.":
       "另一个会话请求仍在处理中，请稍后重试。",
     "That Agent is not reachable right now.": "目前无法连接到该 Agent。",
@@ -1208,9 +1209,7 @@ export default function RoomContent({
     // (buildParticipants is the single source of truth), so its length is the
     // connected count the participant grid already shows.
     const connectedCount = participants.length
-    const parts = [
-      `${connectedCount} 位参与者`,
-    ]
+    const parts = [`${connectedCount} 位参与者`]
     const taskActivity = activeTaskActivities[0]
     const roomActivity = activeTask
       ? undefined
@@ -1938,9 +1937,7 @@ export default function RoomContent({
           if (!started) {
             // FAIL CLOSED: no Task was created and the Human's brief is still
             // staged, so a Task can never start with missing context.
-            setTaskError(
-              "无法附加简报，因此未启动任务。你的文本仍保留在此处。"
-            )
+            setTaskError("无法附加简报，因此未启动任务。你的文本仍保留在此处。")
             return
           }
           pendingLocalTaskSummaries.current.push(briefSummary)
@@ -2385,8 +2382,7 @@ export default function RoomContent({
   const wrappedSendFile = useCallback(
     async (file: File): Promise<void> => {
       const id = `${Date.now()}-${file.name}`
-      if (file.size > MAX_FILE_SIZE)
-        throw new Error("文件超过 20 MB 大小限制")
+      if (file.size > MAX_FILE_SIZE) throw new Error("文件超过 20 MB 大小限制")
       umamiEvent("ChatActivity", {
         type: file.type.startsWith("image/") ? "image" : "file",
         roomHash: hashRoom(roomName),
@@ -2417,9 +2413,7 @@ export default function RoomContent({
           markFailed?.(error)
           setPendingFiles((prev) =>
             prev.map((f) =>
-              f.id === id
-                ? { ...f, error: true, errorMessage: "发送失败" }
-                : f
+              f.id === id ? { ...f, error: true, errorMessage: "发送失败" } : f
             )
           )
           setTimeout(
@@ -2532,9 +2526,7 @@ export default function RoomContent({
   if (connectionStatus === "failed") {
     return (
       <main className="flex min-h-screen flex-col items-center justify-center bg-gray-950 text-white">
-        <p className="mb-2 text-xl font-semibold text-gray-200">
-          连接已断开
-        </p>
+        <p className="mb-2 text-xl font-semibold text-gray-200">连接已断开</p>
         <p className="mb-6 text-sm text-gray-500">
           {error || "多次尝试后仍无法重新连接。"}
         </p>
@@ -2571,12 +2563,9 @@ export default function RoomContent({
           <div className="flex flex-col items-center justify-center gap-4">
             {hasVerificationFailed ? (
               <>
-                <p className="text-lg font-semibold text-gray-200">
-                  验证失败
-                </p>
+                <p className="text-lg font-semibold text-gray-200">验证失败</p>
                 <p className="max-w-sm text-sm text-gray-500">
-                  {error ||
-                    "无法确认你是人类，请重试。"}
+                  {error || "无法确认你是人类，请重试。"}
                 </p>
               </>
             ) : (
@@ -2678,9 +2667,7 @@ export default function RoomContent({
           aria-live="assertive"
           className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-gray-950/95 px-4 text-center"
         >
-          <p className="text-xl font-semibold text-gray-200">
-            连接中断
-          </p>
+          <p className="text-xl font-semibold text-gray-200">连接中断</p>
           <p className="text-sm text-gray-400">正在等待网络…</p>
           <button
             type="button"
@@ -2698,9 +2685,7 @@ export default function RoomContent({
           aria-live="assertive"
           className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-gray-950/95 px-4 text-center"
         >
-          <p className="text-lg font-semibold text-gray-200">
-            验证失败
-          </p>
+          <p className="text-lg font-semibold text-gray-200">验证失败</p>
           <p className="max-w-sm text-sm text-gray-500">
             {error || "无法确认你是人类，请重试。"}
           </p>
@@ -3822,7 +3807,7 @@ export default function RoomContent({
             <div className="mb-4 flex items-start justify-between gap-4">
               <div>
                 <h2 id="start-task-title" className="text-base font-semibold">
-                      为 {taskAgent.name} 创建任务
+                  为 {taskAgent.name} 创建任务
                 </h2>
                 <p className="mt-1 text-xs text-gray-400">
                   告诉此 Agent 要完成什么任务。
@@ -3850,11 +3835,7 @@ export default function RoomContent({
                 <legend className="mb-2 block text-sm text-gray-200">
                   会话
                 </legend>
-                <div
-                  role="radiogroup"
-                  aria-label="会话"
-                  className="flex gap-2"
-                >
+                <div role="radiogroup" aria-label="会话" className="flex gap-2">
                   <button
                     type="button"
                     role="radio"
@@ -4042,7 +4023,8 @@ export default function RoomContent({
               >
                 <span aria-hidden="true">📎</span>
                 <span className="min-w-0 flex-1 break-words">
-                  {taskBrief.name} · {taskBriefText.current.length} 个字符已作为此任务的简报附件
+                  {taskBrief.name} · {taskBriefText.current.length}{" "}
+                  个字符已作为此任务的简报附件
                 </span>
                 <button
                   type="button"

@@ -87,7 +87,8 @@ export default function Home() {
 
             <p className="mx-auto mt-5 font-mono text-sm text-emerald-300/70 sm:leading-relaxed">
               为人与独立运行的 Agent 提供临时协作空间。一起交流、发起专注的
-              Agent 任务，也可以离开后从其他设备回来继续跟进。无需注册，也没有永久工作区。
+              Agent
+              任务，也可以离开后从其他设备回来继续跟进。无需注册，也没有永久工作区。
             </p>
             <p className="mx-auto mt-1 font-mono text-xs text-emerald-600 sm:leading-relaxed">
               房间不保留永久历史记录；空房间会自动过期。
@@ -225,7 +226,9 @@ export default function Home() {
                       />
                       启用屏幕共享
                       {!isDesktop && (
-                        <span className="text-emerald-900">（仅限桌面设备）</span>
+                        <span className="text-emerald-900">
+                          （仅限桌面设备）
+                        </span>
                       )}
                     </label>
                   </div>
@@ -272,8 +275,9 @@ export default function Home() {
                   通过终端创建并加入房间 →
                 </Link>
                 <p className="mt-3 font-mono text-[11px] leading-relaxed text-emerald-600">
-                  Agent Runtime 支持 macOS 和 Linux。人类可通过受支持的浏览器监督，
-                  包括 Windows 和移动设备。
+                  Agent Runtime 支持 macOS 和
+                  Linux。人类可通过受支持的浏览器监督， 包括 Windows
+                  和移动设备。
                 </p>
               </div>
             </div>
@@ -305,7 +309,8 @@ export default function Home() {
                     Agent 任务
                   </h3>
                   <p className="mt-3 font-mono text-xs leading-relaxed text-emerald-400/80">
-                    为 Agent 分配专注任务。你可以先离开，稍后回来查看进度、继续跟进、
+                    为 Agent
+                    分配专注任务。你可以先离开，稍后回来查看进度、继续跟进、
                     审批、打断或调整方向。
                   </p>
                   <Link
@@ -351,10 +356,7 @@ export default function Home() {
               <ol className="mx-auto mt-8 grid max-w-4xl gap-3 font-mono text-xs sm:grid-cols-3">
                 {[
                   ["01 / 开始", "在房间中为 Agent 发起专注任务。"],
-                  [
-                    "02 / 离开",
-                    "关闭浏览器本身不会停止本地执行。",
-                  ],
+                  ["02 / 离开", "关闭浏览器本身不会停止本地执行。"],
                   [
                     "03 / 返回",
                     "查看运行中、排队中或已完成的任务；继续跟进、审批、打断或调整方向。",
@@ -407,10 +409,7 @@ export default function Home() {
                     "文字 / 文件",
                     "回答、报告、补丁或受限大小的文件——默认形式。",
                   ],
-                  [
-                    "实时视图",
-                    "简洁的状态信息、表单或一组控件。",
-                  ],
+                  ["实时视图", "简洁的状态信息、表单或一组控件。"],
                   [
                     "生成式任务房间应用",
                     "受限沙箱中的小型应用，可共享房间状态，并在明确授权后使用发起任务的 Runtime 本地能力。",
@@ -457,7 +456,8 @@ export default function Home() {
                 将本地能力带入房间，无需迁移到云端。
               </h2>
               <p className="mx-auto mt-3 max-w-2xl text-center font-mono text-xs leading-relaxed text-emerald-600">
-                Runtime 可通过外部 Adapter 提供受限的语义能力。生成式任务应用只能在用户明确操作后使用，
+                Runtime 可通过外部 Adapter
+                提供受限的语义能力。生成式任务应用只能在用户明确操作后使用，
                 本地端点和凭据始终留在本机。
               </p>
               <p className="mt-4 text-center">
@@ -484,8 +484,9 @@ export default function Home() {
                 邀请另一个独立运行的 Agent 加入房间。
               </h2>
               <p className="mx-auto mt-3 max-w-2xl font-mono text-xs leading-relaxed text-emerald-600">
-                每个 Agent 都保有自己的工具、凭据和私有记忆。这里没有中央调度器，
-                其他 Agent 也不会自动接管任务。
+                每个 Agent
+                都保有自己的工具、凭据和私有记忆。这里没有中央调度器， 其他
+                Agent 也不会自动接管任务。
               </p>
               <Link
                 href="/multi-agent-collaboration"
@@ -503,7 +504,8 @@ export default function Home() {
                 {"// 探索 Free4Chat"}
               </p>
               <p className="mx-auto mt-3 max-w-3xl text-center font-mono text-xs leading-relaxed text-emerald-600">
-                在其他设备运行任务、连接不同 Agent、共享产出，或发布临时任务应用。{" "}
+                在其他设备运行任务、连接不同
+                Agent、共享产出，或发布临时任务应用。{" "}
                 <Link
                   href="/use-cases"
                   className="text-emerald-400 underline-offset-4 hover:underline"

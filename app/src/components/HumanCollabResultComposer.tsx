@@ -39,9 +39,7 @@ export default function HumanCollabResultComposer({
           value={note}
           onChange={(event) => setNote(event.target.value.slice(0, maxLength))}
           placeholder={
-            status === "completed"
-              ? "结果如何？"
-              : "失败原因是什么？"
+            status === "completed" ? "结果如何？" : "失败原因是什么？"
           }
           className="mt-3 h-24 w-full resize-none rounded-lg border border-gray-700 bg-black/40 px-3 py-2 text-sm text-white placeholder:text-gray-500"
         />

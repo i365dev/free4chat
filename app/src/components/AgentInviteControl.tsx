@@ -60,9 +60,7 @@ export default function AgentInviteControl({
   const copyInvite = () => {
     // Direct user activation only (Firefox/Safari require it for clipboard).
     if (!navigator.clipboard?.writeText) {
-      setError(
-        "无法访问剪贴板，因此无法在此处复制邀请内容。"
-      )
+      setError("无法访问剪贴板，因此无法在此处复制邀请内容。")
       return
     }
     setError("")
@@ -111,7 +109,8 @@ export default function AgentInviteControl({
             <li>将提示词粘贴到 Agent 中。</li>
           </ol>
           <p className="mt-1.5 text-gray-400">
-            如有需要，Agent 会在本地安装 Free4Chat，然后自行加入此房间。通常你无需手动安装或配置任何内容。
+            如有需要，Agent 会在本地安装
+            Free4Chat，然后自行加入此房间。通常你无需手动安装或配置任何内容。
           </p>
           <p className="mt-1 text-gray-400">
             配置语音后，同一本地 Free4Chat 环境还可提供实时转录等房间功能。

@@ -690,8 +690,7 @@ export default function RoomAppHost({
     previousParticipantsRef.current = next
   }, [appInstanceId, participants, post])
 
-  if (!appUsable)
-    return <div role="alert">此 Room App 未列入允许列表。</div>
+  if (!appUsable) return <div role="alert">此 Room App 未列入允许列表。</div>
 
   return (
     <section
@@ -711,9 +710,7 @@ export default function RoomAppHost({
             </span>
           ) : (
             (failed || !ready) && (
-              <span aria-live="polite">
-                {failed ? "不可用" : "正在连接…"}
-              </span>
+              <span aria-live="polite">{failed ? "不可用" : "正在连接…"}</span>
             )
           )}
           {onInvite && (

@@ -127,11 +127,7 @@ export function LiveTranscriptControl({
   const active = liveTranscript.active
 
   return (
-    <div
-      ref={containerRef}
-      className="relative"
-      aria-label="实时转录控制"
-    >
+    <div ref={containerRef} className="relative" aria-label="实时转录控制">
       <button
         type="button"
         onClick={() => setOpen((current) => !current)}
@@ -154,9 +150,7 @@ export function LiveTranscriptControl({
         >
           {active ? (
             <>
-              <p className="font-medium text-emerald-200">
-                实时转录已开启
-              </p>
+              <p className="font-medium text-emerald-200">实时转录已开启</p>
               <p className="mt-1 text-gray-400">
                 使用{" "}
                 {runtimeHostName(
@@ -185,7 +179,8 @@ export function LiveTranscriptControl({
                 </p>
               ) : (
                 <p className="mt-1 text-gray-400">
-                  此房间已连接的 Runtime 主机均未准备好转录。请在 Runtime 中配置 STT 凭据，然后重新连接或刷新就绪状态。
+                  此房间已连接的 Runtime 主机均未准备好转录。请在 Runtime 中配置
+                  STT 凭据，然后重新连接或刷新就绪状态。
                 </p>
               )}
             </>
@@ -209,9 +204,7 @@ export function LiveTranscriptControl({
                 </>
               ) : (
                 <>
-                  <p className="mt-1 text-gray-400">
-                    选择用于转录的 Runtime
-                  </p>
+                  <p className="mt-1 text-gray-400">选择用于转录的 Runtime</p>
                   <div className="mt-1.5 flex flex-col gap-1">
                     {authorizedHosts.map(([runtimeHostId]) => (
                       <label
@@ -305,9 +298,7 @@ export function LiveTranscriptSegments({
       aria-label="实时转录"
     >
       <div className="flex items-center justify-between gap-2">
-        <h2 className="text-xs font-medium text-emerald-100">
-          实时转录
-        </h2>
+        <h2 className="text-xs font-medium text-emerald-100">实时转录</h2>
         <button
           type="button"
           aria-expanded={expanded}

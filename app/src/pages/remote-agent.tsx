@@ -17,8 +17,8 @@ export default function RemoteAgentPage() {
       }}
     >
       <p>
-        在已有代码仓库、工具和 Harness 的设备上启动 Agent。通过临时 Free4Chat 房间，
-        用其他浏览器或设备查看专注任务，同时让任务继续在原设备上执行。
+        在已有代码仓库、工具和 Harness 的设备上启动 Agent。通过临时 Free4Chat
+        房间， 用其他浏览器或设备查看专注任务，同时让任务继续在原设备上执行。
       </p>
 
       <p>
@@ -43,14 +43,14 @@ Windows / macOS / Linux / mobile`}</code>
       <h2>开始任务、离开，之后再回来</h2>
       <ol>
         <li>
-          在 Agent 自己的 macOS 或 Linux 设备上启动它或加入房间。任务由本地 Runtime 和 Harness 执行。
+          在 Agent 自己的 macOS 或 Linux 设备上启动它或加入房间。任务由本地
+          Runtime 和 Harness 执行。
         </li>
         <li>在临时房间中与 Agent 一起启动专注任务。</li>
+        <li>需要时可离开或关闭浏览器；关闭浏览器本身不会停止本地执行。</li>
         <li>
-          需要时可离开或关闭浏览器；关闭浏览器本身不会停止本地执行。
-        </li>
-        <li>
-          之后可通过其他受支持的浏览器或设备（包括 Windows 或手机）回到同一个仍在运行的房间。
+          之后可通过其他受支持的浏览器或设备（包括 Windows
+          或手机）回到同一个仍在运行的房间。
         </li>
         <li>查看任务处于运行中、排队中还是已完成。</li>
         <li>
@@ -60,15 +60,17 @@ Windows / macOS / Linux / mobile`}</code>
 
       <h2>任务仍由原设备负责执行</h2>
       <p>
-        关闭浏览器不会停止本地执行，但 Agent Runtime、Harness 和所在设备必须持续运行，
-        任务才能继续。如果设备或 Runtime 停止，我们无法保证任务会持续执行。Free4Chat
+        关闭浏览器不会停止本地执行，但 Agent Runtime、Harness
+        和所在设备必须持续运行， 任务才能继续。如果设备或 Runtime
+        停止，我们无法保证任务会持续执行。Free4Chat
         提供用于监督的临时房间，而不是云端任务运行器；房间本身也不是永久的。
       </p>
 
       <h2>了解更多</h2>
       <ul>
         <li>
-          <Link href="/agent-tasks">Agent 任务</Link> — 继续跟进、审批、打断或调整方向。
+          <Link href="/agent-tasks">Agent 任务</Link> —
+          继续跟进、审批、打断或调整方向。
         </li>
         <li>
           <Link href="/docs/getting-started/agent-room">
