@@ -16,7 +16,7 @@
     // authority uses this binding for bounded catalog validation.
     {
       "binding": "ROOM_APP_CONTROL_PLANE",
-      "service": "free4chat-room-app-control-plane"
+      "service": "free4chat-realtime"
     }
   ],
   // Observability stays on, but request URLs are persisted without their query
