@@ -81,7 +81,7 @@ export default function CollabArtifactViewer({
         if (!cancelled)
           setState({
             phase: "error",
-            message: "Artifact is no longer available.",
+            message: "此附件已不可用。",
           })
       })
     return () => {
@@ -112,19 +112,19 @@ export default function CollabArtifactViewer({
       <div className="max-h-[85vh] w-full max-w-2xl overflow-hidden rounded-xl border border-gray-700 bg-gray-900">
         <div className="flex items-center justify-between border-b border-gray-700 px-4 py-2">
           <p className="truncate text-sm font-medium text-white">
-            {state.phase === "ready" ? state.fileName : "Attachment"}
+            {state.phase === "ready" ? state.fileName : "附件"}
           </p>
           <button
             type="button"
             onClick={onClose}
             className="rounded px-2 py-1 text-xs text-gray-300 hover:bg-gray-800"
           >
-            Close
+            关闭
           </button>
         </div>
         <div className="max-h-[70vh] overflow-auto p-4">
           {state.phase === "loading" && (
-            <p className="text-xs text-gray-400">Loading artifact…</p>
+            <p className="text-xs text-gray-400">正在加载附件…</p>
           )}
           {state.phase === "error" && (
             <p className="text-xs text-red-300">{state.message}</p>
@@ -145,8 +145,7 @@ export default function CollabArtifactViewer({
             </pre>
           )}
           <p className="mt-3 text-[10px] text-gray-500">
-            Ephemeral room artifact — not live, not stored, not an
-            authorization.
+            临时房间附件——非实时内容，不会存储，也不代表已获授权。
           </p>
         </div>
       </div>

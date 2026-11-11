@@ -161,7 +161,7 @@ export default function TaskLiveView({
 
   return (
     <section
-      aria-label="Task Live View"
+      aria-label="任务实时视图"
       data-testid="task-live-view"
       className="room-task-live-view flex min-h-0 flex-1 flex-col overflow-auto bg-gray-950 p-4 text-gray-100"
     >

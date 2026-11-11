@@ -29,7 +29,7 @@ export default function HumanCollabResultComposer({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
       <div className="w-full max-w-md rounded-xl border border-gray-700 bg-gray-900 p-4">
         <h3 className="text-sm font-medium text-white">
-          {status === "completed" ? "Completed" : "Failed"} — request{" "}
+          {status === "completed" ? "已完成" : "失败"} — 请求{" "}
           <span className="font-mono text-[11px] text-gray-400">
             {requestId.slice(0, 8)}
           </span>
@@ -40,8 +40,8 @@ export default function HumanCollabResultComposer({
           onChange={(event) => setNote(event.target.value.slice(0, maxLength))}
           placeholder={
             status === "completed"
-              ? "What was the outcome?"
-              : "Why did this fail?"
+              ? "结果如何？"
+              : "失败原因是什么？"
           }
           className="mt-3 h-24 w-full resize-none rounded-lg border border-gray-700 bg-black/40 px-3 py-2 text-sm text-white placeholder:text-gray-500"
         />
@@ -49,8 +49,7 @@ export default function HumanCollabResultComposer({
           {note.length}/{maxLength}
         </p>
         <p className="mt-2 text-[11px] leading-snug text-gray-400">
-          Your result is shared with the Agent. It does not grant tools or
-          permissions.
+          你的结果会与 Agent 共享，但不会授予任何工具或权限。
         </p>
         <div className="mt-3 flex justify-end gap-2">
           <button
@@ -58,7 +57,7 @@ export default function HumanCollabResultComposer({
             onClick={onCancel}
             className="rounded-lg border border-gray-600 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-800"
           >
-            Cancel
+            取消
           </button>
           <button
             type="button"
@@ -71,7 +70,7 @@ export default function HumanCollabResultComposer({
                 : "cursor-not-allowed bg-gray-700 text-gray-400"
             }`}
           >
-            Send result
+            发送结果
           </button>
         </div>
       </div>

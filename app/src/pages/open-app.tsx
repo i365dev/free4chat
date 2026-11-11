@@ -100,21 +100,21 @@ export default function OpenApp() {
   return (
     <main className="flex min-h-screen items-center justify-center bg-gray-950 p-6 text-emerald-100">
       <Head>
-        <title>Open Room App - Free4Chat</title>
+        <title>打开房间应用 - Free4Chat</title>
         <meta name="robots" content="noindex, nofollow" />
       </Head>
       <section className="max-w-lg text-center">
         {state === "unavailable" ? (
           <>
-            <h1 className="text-xl font-semibold">This App is unavailable</h1>
+            <h1 className="text-xl font-semibold">此应用不可用</h1>
             <p className="mt-3 text-emerald-200/70">
-              The App may have been retired or the link may be invalid.
+              此应用可能已下架，或链接无效。
             </p>
             <Link
               className="mt-6 inline-block text-emerald-300 underline"
               href="/"
             >
-              Return to Free4Chat
+              返回 Free4Chat
             </Link>
           </>
         ) : (

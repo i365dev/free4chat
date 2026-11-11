@@ -101,6 +101,89 @@ function taskSessionConfigLabel(
   return collisionCount > 1 ? `${label} (${option.id})` : label
 }
 
+function localizedTaskSessionError(message: string): string {
+  const translations: Record<string, string> = {
+    "This local session is no longer available. Refresh sessions and try again.":
+      "此本地会话已不可用。请刷新会话后重试。",
+    "This Agent cannot continue a local session.": "此 Agent 无法继续本地会话。",
+    "Another session request is still in progress. Try again in a moment.":
+      "另一个会话请求仍在处理中，请稍后重试。",
+    "That Agent is not reachable right now.": "目前无法连接到该 Agent。",
+    "The session request expired. Refresh sessions and try again.":
+      "会话请求已过期。请刷新会话后重试。",
+    "That Task request is already in use. Start a new request.":
+      "此任务请求已在使用中。请发起新请求。",
+    "That local project is no longer available. Refresh projects and try again.":
+      "此本地项目已不可用。请刷新项目后重试。",
+    "That Harness control is no longer available. Refresh and choose another option.":
+      "此 Harness 控件已不可用。请刷新并选择其他选项。",
+    "Could not continue that local session. Your instruction was not sent.":
+      "无法继续此本地会话，指令尚未发送。",
+  }
+  return translations[message] ?? message
+}
+
+function localizedAgentActivityStatus(status: string): string {
+  switch (status) {
+    case "Working…":
+      return "正在工作…"
+    case "Working":
+      return "正在工作"
+    case "Waiting for approval":
+      return "等待批准"
+    case "Queued":
+      return "已排队"
+    default:
+      return status
+  }
+}
+
+function localizedTaskExecutionText(text: string): string {
+  const labels: Record<string, string> = {
+    Interrupting: "正在中断",
+    Running: "正在运行",
+    "Session lost": "会话已丢失",
+    "Needs attention": "需要处理",
+    Queued: "已排队",
+    Retrying: "正在重试",
+    Interrupted: "已中断",
+    "Recent instructions may not have reached the Agent":
+      "最近的指令可能尚未送达 Agent",
+  }
+  if (labels[text]) return labels[text]
+  const queued = /^(\d+) queued$/.exec(text)
+  if (queued) return `${queued[1]} 项待处理`
+  const retained = /^(\d+) retained instructions?$/.exec(text)
+  if (retained) return `保留的指令：${retained[1]} 条`
+  return text
+    .replace("waiting for an execution lane", "等待执行资源")
+    .replace(/(\d+) queued/g, "$1 项待处理")
+}
+
+function localizedTaskControlNotice(message: string): string {
+  switch (message) {
+    case "Current turn already finished; instruction sent.":
+      return "当前轮次已结束；指令已发送。"
+    case "This turn has already finished.":
+      return "当前轮次已结束。"
+    default:
+      return message
+  }
+}
+
+function localizedTaskStatus(status: TaskProjection["status"]): string {
+  switch (status) {
+    case "Starting":
+      return "正在启动"
+    case "Working":
+      return "进行中"
+    case "Completed":
+      return "已完成"
+    case "Failed":
+      return "失败"
+  }
+}
+
 const MAX_FILE_SIZE = 20 * 1024 * 1024
 
 type TaskAgent = { peerId: string; name: string }
@@ -130,26 +213,26 @@ function RoomMicControl({
     micState === "requesting"
       ? fullscreen
         ? "…"
-        : "Enabling…"
+        : "正在开启…"
       : micState === "live"
       ? fullscreen
-        ? "Mic"
-        : "Mic on"
+        ? "麦克风"
+        : "麦克风已开启"
       : micState === "muted"
-      ? "Muted"
+      ? "已静音"
       : micState === "unavailable"
-      ? "Retry mic"
-      : "Enable mic"
+      ? "重试麦克风"
+      : "开启麦克风"
   const action =
     micState === "live"
-      ? "Mute microphone"
+      ? "静音麦克风"
       : micState === "muted"
-      ? "Unmute microphone"
+      ? "取消麦克风静音"
       : micState === "requesting"
-      ? "Requesting microphone access"
+      ? "正在请求麦克风权限"
       : micState === "unavailable"
-      ? "Retry microphone access"
-      : "Enable microphone"
+      ? "重试麦克风权限"
+      : "开启麦克风"
   const tone =
     micState === "live"
       ? "border-emerald-600/60 text-emerald-200"
@@ -275,7 +358,7 @@ function ScreenShareViewer({
       <button
         className="absolute bottom-2 right-2 rounded bg-black/60 p-1 text-white hover:bg-black/80"
         onClick={enterFullscreen}
-        title="Fullscreen"
+        title="全屏"
       >
         <svg
           xmlns="http://www.w3.org/2000/svg"
@@ -1126,7 +1209,7 @@ export default function RoomContent({
     // connected count the participant grid already shows.
     const connectedCount = participants.length
     const parts = [
-      `${connectedCount} participant${connectedCount === 1 ? "" : "s"}`,
+      `${connectedCount} 位参与者`,
     ]
     const taskActivity = activeTaskActivities[0]
     const roomActivity = activeTask
@@ -1142,9 +1225,9 @@ export default function RoomContent({
         )
     const activity = activeTask ? taskActivity : roomActivity
     const state = activity
-      ? agentActivityStatus(activity.state)
+      ? localizedAgentActivityStatus(agentActivityStatus(activity.state))
       : activeTask
-      ? activeTaskExecutionLabel?.label ?? ""
+      ? localizedTaskExecutionText(activeTaskExecutionLabel?.label ?? "")
       : ""
     if (state === "") return parts.join(" · ")
     const agentParticipantId =
@@ -1672,14 +1755,18 @@ export default function RoomContent({
       if (result.ok === false) {
         if (options.append) {
           // A failed Load more keeps the rows already shown.
-          setTaskSessionError(taskSessionErrorMessage(result.error))
+          setTaskSessionError(
+            localizedTaskSessionError(taskSessionErrorMessage(result.error))
+          )
           setTaskSessionStatus(
             taskSessionsRef.current.length > 0 ? "ready" : "error"
           )
           return
         }
         setTaskSessionStatus("error")
-        setTaskSessionError(taskSessionErrorMessage(result.error))
+        setTaskSessionError(
+          localizedTaskSessionError(taskSessionErrorMessage(result.error))
+        )
         return
       }
       setTaskSessionControls(result.page.controls ?? null)
@@ -1812,7 +1899,7 @@ export default function RoomContent({
     if (!isLargeTaskPaste(pasted)) return
     if (!taskPasteFitsAttachment(pasted)) {
       setTaskBriefNotice(
-        "That paste is larger than a task brief can hold (768 KB). Split it, or attach it inside the task."
+        "粘贴内容超过任务简报的大小限制（768 KB）。请拆分内容，或在任务中添加附件。"
       )
       return
     }
@@ -1852,7 +1939,7 @@ export default function RoomContent({
             // FAIL CLOSED: no Task was created and the Human's brief is still
             // staged, so a Task can never start with missing context.
             setTaskError(
-              "Could not attach the brief, so the task was not started. Your text is still here."
+              "无法附加简报，因此未启动任务。你的文本仍保留在此处。"
             )
             return
           }
@@ -1874,7 +1961,9 @@ export default function RoomContent({
           )
           setTaskStarting(false)
           if (result.ok === false) {
-            setTaskError(taskSessionErrorMessage(result.error))
+            setTaskError(
+              localizedTaskSessionError(taskSessionErrorMessage(result.error))
+            )
             return
           }
           pendingLocalTaskSummaries.current.push(taskSummary)
@@ -1884,7 +1973,7 @@ export default function RoomContent({
         // The New session path is structurally unchanged.
         const sent = sendCollabRequest(taskAgent.peerId, taskInstruction)
         if (!sent) {
-          setTaskError("Could not start the task. Check your connection.")
+          setTaskError("无法启动任务，请检查网络连接。")
           return
         }
         pendingLocalTaskSummaries.current.push(taskInstruction.trim())
@@ -1893,7 +1982,7 @@ export default function RoomContent({
       }
       const selection = taskSessionSelection
       if (!selection) {
-        setTaskError("Choose a local session to continue.")
+        setTaskError("请选择一个本地会话以继续。")
         return
       }
       setTaskError("")
@@ -1912,7 +2001,9 @@ export default function RoomContent({
         // The modal stays OPEN and the typed instruction is preserved: a
         // failed preparation created no Task, and Free4Chat never silently
         // falls back to a new session.
-        setTaskError(taskSessionErrorMessage(result.error))
+        setTaskError(
+          localizedTaskSessionError(taskSessionErrorMessage(result.error))
+        )
         return
       }
       pendingLocalTaskSummaries.current.push(taskSummary)
@@ -2295,7 +2386,7 @@ export default function RoomContent({
     async (file: File): Promise<void> => {
       const id = `${Date.now()}-${file.name}`
       if (file.size > MAX_FILE_SIZE)
-        throw new Error("File exceeds the 20 MB limit")
+        throw new Error("文件超过 20 MB 大小限制")
       umamiEvent("ChatActivity", {
         type: file.type.startsWith("image/") ? "image" : "file",
         roomHash: hashRoom(roomName),
@@ -2327,7 +2418,7 @@ export default function RoomContent({
           setPendingFiles((prev) =>
             prev.map((f) =>
               f.id === id
-                ? { ...f, error: true, errorMessage: "Failed to send" }
+                ? { ...f, error: true, errorMessage: "发送失败" }
                 : f
             )
           )
@@ -2355,7 +2446,7 @@ export default function RoomContent({
       wakeAgent: boolean
     ): Promise<void> => {
       if (!activeTaskRequestId || activeTaskRequestId !== taskRequestId)
-        throw new Error("This task is no longer active")
+        throw new Error("此任务已不再处于活动状态")
       await sendTaskAttachment(file, taskRequestId, wakeAgent)
     },
     [activeTaskRequestId, sendTaskAttachment]
@@ -2372,7 +2463,7 @@ export default function RoomContent({
         (p) => p.screenShareEnabled
       ).length
       if (sharingCount >= 3) {
-        setScreenShareWarning("Max 3 screen shares allowed at once.")
+        setScreenShareWarning("最多只能同时共享 3 个屏幕。")
         setTimeout(() => setScreenShareWarning(""), 3000)
         return
       }
@@ -2442,16 +2533,16 @@ export default function RoomContent({
     return (
       <main className="flex min-h-screen flex-col items-center justify-center bg-gray-950 text-white">
         <p className="mb-2 text-xl font-semibold text-gray-200">
-          Connection lost
+          连接已断开
         </p>
         <p className="mb-6 text-sm text-gray-500">
-          {error || "Could not reconnect after multiple attempts."}
+          {error || "多次尝试后仍无法重新连接。"}
         </p>
         <button
           onClick={() => window.location.reload()}
           className="rounded-md bg-rose-600 px-6 py-2 text-sm font-medium text-white hover:bg-rose-500 focus:outline-none focus:ring focus:ring-yellow-400"
         >
-          Reload page
+          重新加载页面
         </button>
       </main>
     )
@@ -2481,17 +2572,17 @@ export default function RoomContent({
             {hasVerificationFailed ? (
               <>
                 <p className="text-lg font-semibold text-gray-200">
-                  Verification failed
+                  验证失败
                 </p>
                 <p className="max-w-sm text-sm text-gray-500">
                   {error ||
-                    "We couldn't verify you're human. Please try again."}
+                    "无法确认你是人类，请重试。"}
                 </p>
               </>
             ) : (
               <>
                 <div className="h-16 w-16 animate-spin rounded-full border-4 border-gray-700 border-t-green-500" />
-                <p className="text-sm text-gray-500">Verifying…</p>
+                <p className="text-sm text-gray-500">正在验证…</p>
               </>
             )}
             {hasVerificationFailed && (
@@ -2501,7 +2592,7 @@ export default function RoomContent({
                   onClick={retryVerification}
                   className="rounded-md bg-rose-600 px-6 py-2 text-sm font-medium text-white hover:bg-rose-500 focus:outline-none focus:ring focus:ring-yellow-400"
                 >
-                  Try again
+                  重试
                 </button>
                 <button
                   type="button"
@@ -2510,10 +2601,10 @@ export default function RoomContent({
                   aria-live="polite"
                 >
                   {diagnosticsCopyStatus === "copied"
-                    ? "Copied"
+                    ? "已复制"
                     : diagnosticsCopyStatus === "failed"
-                    ? "Copy failed"
-                    : "Copy diagnostics"}
+                    ? "复制失败"
+                    : "复制诊断信息"}
                 </button>
               </>
             )}
@@ -2551,7 +2642,7 @@ export default function RoomContent({
             aria-hidden="true"
             className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white"
           />
-          <span>Preparing verification…</span>
+          <span>正在准备验证…</span>
         </div>
       )}
       <div
@@ -2577,7 +2668,7 @@ export default function RoomContent({
           className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/60"
         >
           <div className="mb-4 h-10 w-10 animate-spin rounded-full border-4 border-gray-700 border-t-yellow-400" />
-          <p className="text-sm text-gray-400">Reconnecting...</p>
+          <p className="text-sm text-gray-400">正在重新连接…</p>
         </div>
       )}
       {connectionStatus === "disconnected" && (
@@ -2588,15 +2679,15 @@ export default function RoomContent({
           className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-gray-950/95 px-4 text-center"
         >
           <p className="text-xl font-semibold text-gray-200">
-            Connection interrupted
+            连接中断
           </p>
-          <p className="text-sm text-gray-400">Waiting for network…</p>
+          <p className="text-sm text-gray-400">正在等待网络…</p>
           <button
             type="button"
             onClick={retryRoomConnection}
             className="mt-2 rounded-md bg-yellow-500 px-6 py-2 text-sm font-medium text-gray-950 hover:bg-yellow-400 focus:outline-none focus:ring focus:ring-yellow-300"
           >
-            Try again
+            重试
           </button>
         </div>
       )}
@@ -2608,17 +2699,17 @@ export default function RoomContent({
           className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-gray-950/95 px-4 text-center"
         >
           <p className="text-lg font-semibold text-gray-200">
-            Verification failed
+            验证失败
           </p>
           <p className="max-w-sm text-sm text-gray-500">
-            {error || "We couldn't verify you're human. Please try again."}
+            {error || "无法确认你是人类，请重试。"}
           </p>
           <button
             type="button"
             onClick={retryVerification}
             className="rounded-md bg-rose-600 px-6 py-2 text-sm font-medium text-white hover:bg-rose-500 focus:outline-none focus:ring focus:ring-yellow-400"
           >
-            Try again
+            重试
           </button>
           <button
             type="button"
@@ -2627,10 +2718,10 @@ export default function RoomContent({
             aria-live="polite"
           >
             {diagnosticsCopyStatus === "copied"
-              ? "Copied"
+              ? "已复制"
               : diagnosticsCopyStatus === "failed"
-              ? "Copy failed"
-              : "Copy diagnostics"}
+              ? "复制失败"
+              : "复制诊断信息"}
           </button>
         </div>
       )}
@@ -2674,16 +2765,16 @@ export default function RoomContent({
             aria-label={
               mobileSheetVisible
                 ? mobileSheetReturnTask
-                  ? "Open Task chat"
-                  : "Open Room chat"
-                : "Return to people and Stage"
+                  ? "打开任务聊天"
+                  : "打开房间聊天"
+                : "返回参与者和舞台"
             }
             title={
               mobileSheetVisible
                 ? mobileSheetReturnTask
-                  ? "Open Task chat"
-                  : "Open Room chat"
-                : "Return to people and Stage"
+                  ? "打开任务聊天"
+                  : "打开房间聊天"
+                : "返回参与者和舞台"
             }
             onClick={() => {
               if (mobileSheetVisible) {
@@ -2709,9 +2800,9 @@ export default function RoomContent({
           >
             {mobileSheetVisible
               ? mobileSheetReturnTask
-                ? "Task chat →"
-                : "Room chat →"
-              : "← People & Stage"}
+                ? "任务聊天 →"
+                : "房间聊天 →"
+              : "← 参与者和舞台"}
           </button>
           <button
             type="button"
@@ -2723,7 +2814,7 @@ export default function RoomContent({
               mobileSheetVisible ? "inline-flex" : "hidden"
             } shrink-0 rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700 lg:hidden`}
           >
-            Leave
+            离开
           </button>
         </div>
         <div
@@ -2745,7 +2836,7 @@ export default function RoomContent({
               type="button"
               onClick={copyRoomLink}
               className="flex min-w-0 items-center justify-center gap-1 rounded-md border border-gray-700 bg-gray-800 px-2 py-1 text-xs text-gray-300 hover:bg-gray-700"
-              title="Copy room link"
+              title="复制房间链接"
             >
               <svg
                 xmlns="http://www.w3.org/2000/svg"
@@ -2762,7 +2853,7 @@ export default function RoomContent({
                 />
               </svg>
               <span className="truncate">
-                {roomLinkCopied ? "Copied!" : "Copy link"}
+                {roomLinkCopied ? "已复制！" : "复制链接"}
               </span>
             </button>
             <AgentInviteControl
@@ -2799,7 +2890,7 @@ export default function RoomContent({
             }}
             className="room-header-leave hidden shrink-0 rounded-md border border-gray-700 bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700 lg:inline-flex"
           >
-            Leave
+            离开
           </button>
         </div>
       </header>
@@ -2947,9 +3038,9 @@ export default function RoomContent({
             <div className="room-stage-inner relative flex flex-1 flex-col overflow-hidden">
               {showPeopleStage && (
                 <div className="room-stage-intro" aria-hidden="true">
-                  <span>01 / DEEP SPACE RELAY</span>
+                  <span>01 / 深空中继</span>
                   <span>
-                    {String(participants.length).padStart(2, "0")} ONLINE
+                    {String(participants.length).padStart(2, "0")} 人在线
                   </span>
                 </div>
               )}
@@ -2964,7 +3055,7 @@ export default function RoomContent({
                 Boolean(activeTaskGeneratedApp)) && (
                 <div
                   role="tablist"
-                  aria-label="Stage"
+                  aria-label="舞台"
                   data-testid="stage-switcher"
                   className={`scrollbar-thin z-10 flex-none gap-1 overflow-x-auto border-b border-gray-800 bg-gray-950/80 p-2 ${
                     isStageAppFullscreen ? "hidden" : "flex"
@@ -3031,7 +3122,7 @@ export default function RoomContent({
                           : "text-gray-400 hover:bg-gray-800"
                       }`}
                     >
-                      Screen
+                      屏幕
                     </button>
                   )}
                   {activeTaskLiveView && (
@@ -3048,7 +3139,7 @@ export default function RoomContent({
                           : "text-gray-400 hover:bg-gray-800"
                       }`}
                     >
-                      Live View
+                      实时视图
                     </button>
                   )}
                   {activeTaskGeneratedApp && (
@@ -3067,8 +3158,8 @@ export default function RoomContent({
                     >
                       {generatedAppLoading ===
                       activeTaskGeneratedApp.appInstanceId
-                        ? "Loading App…"
-                        : "Task App"}
+                        ? "正在加载应用…"
+                        : "任务应用"}
                     </button>
                   )}
                   {roomApps.length > 0 && (
@@ -3081,7 +3172,7 @@ export default function RoomContent({
                         data-testid="stage-apps-launcher"
                         aria-haspopup="dialog"
                         aria-expanded={roomAppsLauncherOpen}
-                        title="Search all Room Apps"
+                        title="搜索所有 Room App"
                         onClick={() => setRoomAppsLauncherOpen((open) => !open)}
                         className={`rounded px-2 py-1 text-xs ${
                           roomAppsLauncherOpen
@@ -3089,7 +3180,7 @@ export default function RoomContent({
                             : "text-gray-400 hover:bg-gray-800 hover:text-gray-200"
                         }`}
                       >
-                        Apps…
+                        应用…
                       </button>
                       {roomAppsLauncherOpen && (
                         <RoomAppLauncher
@@ -3455,7 +3546,7 @@ export default function RoomContent({
         >
           <div
             role="tablist"
-            aria-label="Room interactions"
+            aria-label="房间交互"
             data-testid="interaction-tablist"
             className="scrollbar-thin flex flex-none gap-1 overflow-x-auto border-b border-gray-800 bg-gray-950/60 px-3 py-2"
           >
@@ -3471,7 +3562,7 @@ export default function RoomContent({
                   : "text-gray-400 hover:bg-gray-800 hover:text-gray-200"
               }`}
             >
-              Room
+              房间
             </button>
             {taskProjections.map((task) => (
               <button
@@ -3483,7 +3574,7 @@ export default function RoomContent({
                 onClick={() => setActiveInteraction(task.requestId)}
                 title={
                   taskIsUnavailable(task, participants)
-                    ? `${task.title} — unavailable`
+                    ? `${task.title} — 不可用`
                     : task.title
                 }
                 className={`flex max-w-52 shrink-0 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs transition ${
@@ -3494,7 +3585,7 @@ export default function RoomContent({
               >
                 <span className="min-w-0 flex-1 truncate">{task.title}</span>
                 <span
-                  aria-label={`Status ${task.status}`}
+                  aria-label={`任务状态：${localizedTaskStatus(task.status)}`}
                   className="text-[10px] opacity-70"
                 >
                   {task.status === "Completed"
@@ -3505,7 +3596,7 @@ export default function RoomContent({
                 </span>
                 {taskIsUnavailable(task, participants) && (
                   <span
-                    aria-label="Task unavailable"
+                    aria-label="任务不可用"
                     className="text-[10px] text-amber-300"
                   >
                     !
@@ -3537,7 +3628,9 @@ export default function RoomContent({
                   return (
                     <span key={activity.agentParticipantId}>
                       {participant?.name ?? "Agent"} ·{" "}
-                      {agentActivityStatus(activity.state)}
+                      {localizedAgentActivityStatus(
+                        agentActivityStatus(activity.state)
+                      )}
                     </span>
                   )
                 })}
@@ -3557,9 +3650,13 @@ export default function RoomContent({
                           )?.name ?? "Agent"
                         } · `
                       : ""}
-                    {activeTaskExecutionLabel?.label}
+                    {localizedTaskExecutionText(
+                      activeTaskExecutionLabel?.label ?? ""
+                    )}
                     {activeTaskExecutionLabel?.detail
-                      ? ` · ${activeTaskExecutionLabel.detail}`
+                      ? ` · ${localizedTaskExecutionText(
+                          activeTaskExecutionLabel.detail
+                        )}`
                       : ""}
                   </span>
                 )}
@@ -3569,8 +3666,7 @@ export default function RoomContent({
                     data-testid="task-execution-ambiguous"
                     className="text-amber-200"
                   >
-                    Multiple Agents are running this Task; interrupt is
-                    unavailable.
+                    多个 Agent 正在运行此任务，当前无法中断。
                   </span>
                 )}
                 {/* #421 Fix G: benign control outcomes are transient LOCAL
@@ -3581,7 +3677,7 @@ export default function RoomContent({
                     data-testid="task-control-notice"
                     className="text-gray-300"
                   >
-                    {activeTaskControlNotice}
+                    {localizedTaskControlNotice(activeTaskControlNotice)}
                   </span>
                 ) : null}
                 {activeTaskLocalError ? (
@@ -3595,7 +3691,7 @@ export default function RoomContent({
                 ) : null}
                 {activeTask && activeTaskInterrupting && (
                   <span data-testid="task-interrupting" className="sr-only">
-                    Interrupting
+                    正在中断
                   </span>
                 )}
                 {activeTask && activeTaskTurn !== undefined && (
@@ -3613,11 +3709,9 @@ export default function RoomContent({
                       handleTaskInterrupt(activeTask.requestId, activeTaskTurn)
                     }
                     className="ml-auto rounded border border-gray-700 px-2 py-0.5 text-[11px] text-gray-300 hover:border-red-500/60 hover:text-red-200"
-                    aria-label={`Interrupt ${activeTask.title}`}
+                    aria-label={`中断任务：${activeTask.title}`}
                   >
-                    {taskInterruptFailed
-                      ? "Interrupt unavailable"
-                      : "Interrupt"}
+                    {taskInterruptFailed ? "无法中断" : "中断"}
                   </button>
                 )}
               </div>
@@ -3631,7 +3725,7 @@ export default function RoomContent({
               >
                 <div className="min-w-0">
                   <div className="text-xs font-medium text-blue-100">
-                    Task App
+                    任务应用
                   </div>
                   <div className="truncate text-xs text-gray-400">
                     {activeTaskGeneratedApp.title}
@@ -3643,8 +3737,8 @@ export default function RoomContent({
                   onClick={() => void openGeneratedApp(activeTaskGeneratedApp)}
                 >
                   {generatedAppLoading === activeTaskGeneratedApp.appInstanceId
-                    ? "Loading…"
-                    : "Open App"}
+                    ? "正在加载…"
+                    : "打开应用"}
                 </button>
               </div>
             )}
@@ -3728,17 +3822,17 @@ export default function RoomContent({
             <div className="mb-4 flex items-start justify-between gap-4">
               <div>
                 <h2 id="start-task-title" className="text-base font-semibold">
-                  Start task with {taskAgent.name}
+                      为 {taskAgent.name} 创建任务
                 </h2>
                 <p className="mt-1 text-xs text-gray-400">
-                  Give this Agent one thing to work on.
+                  告诉此 Agent 要完成什么任务。
                 </p>
               </div>
               <button
                 type="button"
                 onClick={closeTaskComposer}
                 className="text-gray-400 hover:text-white"
-                aria-label="Close"
+                aria-label="关闭"
               >
                 ×
               </button>
@@ -3754,11 +3848,11 @@ export default function RoomContent({
                 data-testid="task-session-mode"
               >
                 <legend className="mb-2 block text-sm text-gray-200">
-                  Session
+                  会话
                 </legend>
                 <div
                   role="radiogroup"
-                  aria-label="Session"
+                  aria-label="会话"
                   className="flex gap-2"
                 >
                   <button
@@ -3773,7 +3867,7 @@ export default function RoomContent({
                         : "border-gray-700 text-gray-300 hover:bg-gray-800"
                     }`}
                   >
-                    New session
+                    新建会话
                   </button>
                   <button
                     type="button"
@@ -3787,7 +3881,7 @@ export default function RoomContent({
                         : "border-gray-700 text-gray-300 hover:bg-gray-800"
                     }`}
                   >
-                    Continue session
+                    继续会话
                   </button>
                 </div>
                 {taskSessionMode === "continue" && (
@@ -3829,8 +3923,8 @@ export default function RoomContent({
                   className="rounded-md border border-gray-700 px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-800 disabled:opacity-50"
                 >
                   {taskSessionStatus === "idle"
-                    ? "Choose a local project"
-                    : "Refresh local projects"}
+                    ? "选择本地项目"
+                    : "刷新本地项目"}
                 </button>
                 {taskSessionStatus !== "idle" && (
                   <div className="mt-2">
@@ -3861,13 +3955,13 @@ export default function RoomContent({
                 taskSessionProjectToken !== null) && (
                 <fieldset className="mb-4 rounded-md border border-gray-800 p-3">
                   <legend className="px-1 text-xs text-gray-400">
-                    Harness-native session controls
+                    Harness 原生会话设置
                   </legend>
                   {taskSessionControls.modes.length > 0 && (
                     <label className="mb-3 block text-xs text-gray-300">
-                      Mode
+                      模式
                       <select
-                        aria-label="Harness-native mode"
+                        aria-label="Harness 原生模式"
                         value={taskSessionModeId}
                         disabled={taskStarting}
                         onChange={(event) =>
@@ -3875,7 +3969,7 @@ export default function RoomContent({
                         }
                         className="mt-1 block w-full rounded border border-gray-700 bg-gray-900 px-2 py-1.5 text-sm text-white"
                       >
-                        <option value="">Keep current mode</option>
+                        <option value="">保留当前模式</option>
                         {taskSessionControls.modes.map((mode) => (
                           <option key={mode.id} value={mode.id}>
                             {mode.name || mode.id}
@@ -3893,7 +3987,7 @@ export default function RoomContent({
                       >
                         {taskSessionConfigLabel(option, taskSessionControls)}
                         <select
-                          aria-label={`Harness-native ${taskSessionConfigLabel(
+                          aria-label={`Harness 原生 ${taskSessionConfigLabel(
                             option,
                             taskSessionControls
                           )}`}
@@ -3910,7 +4004,7 @@ export default function RoomContent({
                           }
                           className="mt-1 block w-full rounded border border-gray-700 bg-gray-900 px-2 py-1.5 text-sm text-white"
                         >
-                          <option value="">Keep current value</option>
+                          <option value="">保留当前值</option>
                           {option.options.map((value) => (
                             <option key={value.value} value={value.value}>
                               {value.name || value.value}
@@ -3925,7 +4019,7 @@ export default function RoomContent({
               htmlFor="start-task-instruction"
               className="mb-2 block text-sm text-gray-200"
             >
-              What should this Agent do?
+              你希望此 Agent 做什么？
             </label>
             <textarea
               id="start-task-instruction"
@@ -3948,8 +4042,7 @@ export default function RoomContent({
               >
                 <span aria-hidden="true">📎</span>
                 <span className="min-w-0 flex-1 break-words">
-                  {taskBrief.name} · {taskBriefText.current.length} characters
-                  attached as this task&apos;s brief
+                  {taskBrief.name} · {taskBriefText.current.length} 个字符已作为此任务的简报附件
                 </span>
                 <button
                   type="button"
@@ -3960,7 +4053,7 @@ export default function RoomContent({
                   }}
                   disabled={taskStarting}
                   className="shrink-0 text-gray-400 hover:text-white disabled:opacity-50"
-                  aria-label="Remove the attached brief"
+                  aria-label="移除已附加的简报"
                 >
                   ×
                 </button>
@@ -3982,7 +4075,7 @@ export default function RoomContent({
                 onClick={closeTaskComposer}
                 className="rounded-md border border-gray-700 px-3 py-2 text-sm text-gray-300 hover:bg-gray-800"
               >
-                Cancel
+                取消
               </button>
               <button
                 type="submit"
@@ -3999,10 +4092,10 @@ export default function RoomContent({
                 className="rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {taskStarting
-                  ? "Starting…"
+                  ? "正在启动…"
                   : taskAgentContinuation
-                  ? "Start task"
-                  : "Send"}
+                  ? "开始任务"
+                  : "发送"}
               </button>
             </div>
           </form>
