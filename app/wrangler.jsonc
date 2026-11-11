@@ -100,11 +100,11 @@
   "migrations": [
     {
       "tag": "v1",
-      "new_classes": ["BotSession"]
+      "new_sqlite_classes": ["BotSession"]
     },
     {
       "tag": "v2",
-      "new_classes": ["RoomSession"]
+      "new_sqlite_classes": ["RoomSession"]
     },
     {
       "tag": "v3",
