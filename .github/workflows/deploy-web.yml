@@ -158,7 +158,7 @@ jobs:
           fi
 
       # Keep the Worker-side bypass paired with the client build-time switch
-      # above. Origin validation and SFU admission rate limits remain active.
+      # above. SFU admission rate limits and participant authorization remain.
       - name: Deploy
         if: steps.freshness.outputs.stale != 'true'
         run: |

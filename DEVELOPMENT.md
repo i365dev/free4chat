@@ -149,9 +149,11 @@ unauthenticated by design and is guarded separately.
 
 Production deploys intentionally disable Turnstile for fresh Human sessions.
 The deployment workflow sets both `NEXT_PUBLIC_TURNSTILE_DISABLED=1` for the
-browser build and `TURNSTILE_DISABLED=true` for the Worker. Origin validation
-and SFU admission rate limiting remain enabled. The Turnstile site key and
-secret are no longer required.
+browser build and `TURNSTILE_DISABLED=true` for the Worker. `/api/sfu/*` no
+longer checks the request `Origin`; SFU admission rate limiting and
+participant/session authorization remain enabled. Separate Room and MCP
+endpoints retain their own origin policies. The Turnstile site key and secret
+are no longer required.
 
 Manual deployment (recovery only — see note below):
 

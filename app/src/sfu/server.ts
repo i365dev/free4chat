@@ -3,7 +3,6 @@ import {
   allowAdmission,
   type AdmissionRateLimiter,
 } from "../common/admissionLimit"
-import { isAllowedOrigin } from "../common/origin"
 import {
   isParticipantDirectReliableChannelForAgent,
   participantDirectReliableChannelName,
@@ -99,37 +98,6 @@ function trackObjects(value: unknown): Array<Record<string, unknown>> | null {
   if (!Array.isArray(value)) return null
   if (!value.every(isTrackObject)) return null
   return value
-}
-
-// Routes the non-browser Runtime (MediaBridge) legitimately calls with no
-// Origin header at all. Scoped deliberately narrow: "session" (initial
-// Human creation, Turnstile-gated) and "ws" keep requiring a real browser
-// Origin, since there's no demonstrated non-browser caller for them.
-const MISSING_ORIGIN_ALLOWED_ROUTES = new Set([
-  "agent-session",
-  "agent-participant-data-session",
-  "agent-participant-data-ready",
-  "agent-room-media",
-  "agent-track-active",
-  "tracks",
-  "renegotiate",
-  // The resident, subscribe-only Meeting Notes Runtime has no browser Origin
-  // but must establish its own WebRTC transport before it can pull Human
-  // tracks. The route still performs the normal token/session/grant checks.
-  "datachannels/establish",
-])
-
-// A present-but-wrong Origin is always rejected on every route (a browser
-// can't lie about its own Origin, so this stops other websites' JS from
-// calling these routes with a victim's browser). A *missing* Origin is
-// only accepted on the routes above — see MISSING_ORIGIN_ALLOWED_ROUTES —
-// matching how /mcp already treats non-browser callers (its own
-// allowedOriginHostnames). Everywhere else, a missing Origin is rejected
-// exactly like an invalid one, same as before this route-scoping existed.
-function originAllowed(request: Request, route: string): boolean {
-  const origin = request.headers.get("Origin")
-  if (origin === null) return MISSING_ORIGIN_ALLOWED_ROUTES.has(route)
-  return isAllowedOrigin(origin)
 }
 
 async function getAppCredentials(
@@ -511,9 +479,6 @@ export async function handleSfuRequest(
 ): Promise<Response> {
   const url = new URL(request.url)
   const route = url.pathname.replace(/^\/api\/sfu\/?/, "")
-
-  if (!originAllowed(request, route))
-    return json({ error: "forbidden_origin" }, 403)
 
   if (route === "ws") {
     if (request.method !== "GET")

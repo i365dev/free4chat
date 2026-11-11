@@ -464,17 +464,7 @@ describe("fresh Human Turnstile admission", () => {
     }
   })
 
-  it("does not bypass origin or Agent media authorization", async () => {
-    const invalidOrigin = await handleSfuRequest(
-      req("session", {
-        origin: "https://evil.example.com",
-        body: JSON.stringify({ room: "room-1", name: "Human" }),
-      }),
-      makeEnv({ TURNSTILE_DISABLED: "true" })
-    )
-    expect(invalidOrigin.status).toBe(403)
-    expect((await json(invalidOrigin)).error).toBe("forbidden_origin")
-
+  it("does not bypass Agent media authorization", async () => {
     const agentWithoutMediaGate = await handleSfuRequest(
       req("agent-session", { body: JSON.stringify(agentBody) }),
       makeEnv({ TURNSTILE_DISABLED: "true" })
@@ -578,84 +568,36 @@ describe("Origin policy is route-scoped, not global", () => {
     vi.unstubAllGlobals()
   })
 
-  const missingOriginAllowed = [
-    "agent-session",
-    "agent-participant-data-session",
-    "agent-participant-data-ready",
-    "agent-room-media",
-    "tracks",
-    "renegotiate",
-    "datachannels/establish",
-  ]
-  const missingOriginRejected = ["session", "publish-confirm"]
-
-  for (const route of missingOriginAllowed) {
-    it(`missing Origin is accepted on ${route} (non-browser Runtime route)`, async () => {
-      const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" })
+  it.each([undefined, "https://evil.example.com"])(
+    "admits fresh Human sessions without enforcing Origin (%s)",
+    async (origin) => {
+      const urls = stubUpstream()
+      const calls: Array<Record<string, unknown>> = []
       const res = await handleSfuRequest(
-        req(route, { body: JSON.stringify(agentBody) }),
-        env
+        req("session", {
+          ...(origin ? { origin } : {}),
+          body: JSON.stringify({ room: "room-1", name: "Human" }),
+        }),
+        makeEnv({
+          SFU_ROOM: recordingRoom(calls),
+          TURNSTILE_DISABLED: "true",
+        })
       )
-      // May still fail validation for unrelated reasons (missing fields,
-      // no SDP, etc.) — the only thing this asserts is that it was never
-      // rejected specifically for a missing Origin.
-      expect(res.status).not.toBe(403)
-      if (res.status === 403)
-        expect((await json(res)).error).not.toBe("forbidden_origin")
-    })
-  }
 
-  for (const route of missingOriginRejected) {
-    it(`missing Origin is rejected on ${route} (browser-only route)`, async () => {
-      const env = makeEnv()
-      const res = await handleSfuRequest(
-        req(route, { body: JSON.stringify({ room: "r", name: "n" }) }),
-        env
-      )
-      expect(res.status).toBe(403)
-      expect((await json(res)).error).toBe("forbidden_origin")
-    })
-  }
+      expect(res.status).toBe(200)
+      expect(urls).toEqual([REALTIME_SESSION_URL])
+      expect(calls.some((call) => call.action === "register")).toBe(true)
+    }
+  )
 
-  it("missing Origin is rejected on ws (browser-only route)", async () => {
+  it("still enforces Agent media authorization without an Origin header", async () => {
     const env = makeEnv()
     const res = await handleSfuRequest(
-      new Request(
-        "https://example.com/api/sfu/ws?room=r&participantId=p&token=t",
-        { method: "GET", headers: { Upgrade: "websocket" } }
-      ),
+      req("agent-session", { body: JSON.stringify(agentBody) }),
       env
     )
     expect(res.status).toBe(403)
-    expect((await json(res)).error).toBe("forbidden_origin")
-  })
-
-  it("a present-but-invalid Origin is always rejected, even on an agent-only route", async () => {
-    const env = makeEnv({ AGENT_MEDIA_ENABLED: "true" })
-    const res = await handleSfuRequest(
-      req("agent-session", {
-        body: JSON.stringify(agentBody),
-        origin: "https://evil.example.com",
-      }),
-      env
-    )
-    expect(res.status).toBe(403)
-    expect((await json(res)).error).toBe("forbidden_origin")
-  })
-
-  it("a valid production Origin is still accepted on a Human-only route", async () => {
-    const env = makeEnv()
-    const res = await handleSfuRequest(
-      req("session", {
-        body: JSON.stringify({ room: "r", name: "n" }),
-        origin: "https://www.free4.chat",
-      }),
-      env
-    )
-    // Rejected for other reasons (no Turnstile secret configured -> passes
-    // verifyTurnstile trivially, so this should actually reach the SFU
-    // credentials check) — the point is it must not be forbidden_origin.
-    expect(res.status).not.toBe(403)
+    expect((await json(res)).error).toBe("agent_media_disabled")
   })
 })
 
