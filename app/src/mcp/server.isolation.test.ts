@@ -3,11 +3,11 @@ import { describe, expect, it, vi } from "vitest"
 import { handleMcpRequest, type McpEnv } from "./server"
 
 function roomInfoRequest(id: number | string, roomId: string) {
-  return new Request("https://www.free4.chat/mcp", {
+  return new Request("https://zchat.bfzone.ccwu.cc/mcp", {
     method: "POST",
     headers: {
-      Origin: "https://www.free4.chat",
-      Host: "www.free4.chat",
+      Origin: "https://zchat.bfzone.ccwu.cc",
+      Host: "zchat.bfzone.ccwu.cc",
       "Content-Type": "application/json",
       Accept: "application/json",
       "Mcp-Method": "tools/call",

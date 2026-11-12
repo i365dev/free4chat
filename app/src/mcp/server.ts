@@ -144,11 +144,7 @@ const runtimeFeaturesSchema = z.object({
 })
 
 const MCP_HOSTNAMES = [
-  "free4.chat",
-  "www.free4.chat",
-  "localhost",
-  "127.0.0.1",
-  "[::1]",
+  "zchat.bfzone.ccwu.cc",
 ]
 
 export interface McpEnv {

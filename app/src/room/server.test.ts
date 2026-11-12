@@ -12,7 +12,7 @@ import {
  * ephemeral store and come back as decoded text instead of ImageContent.
  */
 
-const ORIGIN = "http://localhost:3000"
+const ORIGIN = "https://zchat.bfzone.ccwu.cc"
 
 describe("Worker Room route dispatch", () => {
   it("dispatches the Runtime permission request path to the Room handler", () => {

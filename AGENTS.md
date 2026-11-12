@@ -58,7 +58,7 @@ The `agent/` Go module is a local, self-contained runtime, not part of the Worke
 
 The browser connects directly to Cloudflare Realtime SFU. The Worker never exposes `SFU_APP_SECRET` to clients. `RoomSession` coordinates presence, chat, reactions, mute state, track metadata, DataChannel readiness, Agent targeting, committed Room-wide Live Transcript, and bounded Agent-readable attachments. It is the authorization boundary for every Agent media path: the legacy Meeting Notes compatibility grant, a Human's concrete Live Transcript Start action routed to the exact connected STT-ready Runtime Host, and per-Agent Voice Reply are separate permissions. A public `runtimeHostId`, capability advertisement, or Agent token alone is never enough to obtain Human audio; see [legacy Meeting Notes compatibility and Agent media](#legacy-meeting-notes-compatibility-and-agent-media).
 
-`/api/sfu/*` routes do not validate the request `Origin`; admission rate limits and participant/session authorization remain the enforcement mechanisms. Other Room and MCP endpoints keep their separate origin policies.
+`/api/sfu/*` routes do not validate the request `Origin`; admission rate limits and participant/session authorization remain the enforcement mechanisms. Present browser Origins on `/api/room/*` and the MCP hostname allow-lists are limited to `https://zchat.bfzone.ccwu.cc`.
 
 `buildParticipants()` in `useSfuChatRoom.ts` is the single source of truth for participant UI state. Rebuild the complete list instead of patching individual React entries.
 

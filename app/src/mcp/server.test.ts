@@ -5,11 +5,11 @@ import { RoomSession } from "../do/RoomSession"
 
 describe("public MCP tool surface", () => {
   it("does not expose Runtime provider connection or its private handle", async () => {
-    const request = new Request("https://www.free4.chat/mcp", {
+    const request = new Request("https://zchat.bfzone.ccwu.cc/mcp", {
       method: "POST",
       headers: {
-        Origin: "https://www.free4.chat",
-        Host: "www.free4.chat",
+        Origin: "https://zchat.bfzone.ccwu.cc",
+        Host: "zchat.bfzone.ccwu.cc",
         "Content-Type": "application/json",
         Accept: "application/json",
         "Mcp-Method": "tools/list",
@@ -93,11 +93,11 @@ describe("public MCP tool surface", () => {
       arguments_: Record<string, string>
     ) => {
       const response = await handleMcpRequest(
-        new Request("https://www.free4.chat/mcp", {
+        new Request("https://zchat.bfzone.ccwu.cc/mcp", {
           method: "POST",
           headers: {
-            Origin: "https://www.free4.chat",
-            Host: "www.free4.chat",
+            Origin: "https://zchat.bfzone.ccwu.cc",
+            Host: "zchat.bfzone.ccwu.cc",
             "Content-Type": "application/json",
             Accept: "application/json",
             "Mcp-Method": "tools/call",
@@ -210,11 +210,11 @@ describe("public MCP tool surface", () => {
     } as unknown as McpEnv
     try {
       const response = await handleMcpRequest(
-        new Request("https://www.free4.chat/mcp", {
+        new Request("https://zchat.bfzone.ccwu.cc/mcp", {
           method: "POST",
           headers: {
-            Origin: "https://www.free4.chat",
-            Host: "www.free4.chat",
+            Origin: "https://zchat.bfzone.ccwu.cc",
+            Host: "zchat.bfzone.ccwu.cc",
             "Content-Type": "application/json",
             Accept: "application/json",
             "Mcp-Method": "tools/call",
@@ -327,11 +327,11 @@ describe("MCP admission throttle and pre-DO Room probe guard", () => {
     } as unknown as McpEnv
     const callTool = async (name: string, args: Record<string, unknown>) => {
       const response = await handleMcpRequest(
-        new Request("https://www.free4.chat/mcp", {
+        new Request("https://zchat.bfzone.ccwu.cc/mcp", {
           method: "POST",
           headers: {
-            Origin: "https://www.free4.chat",
-            Host: "www.free4.chat",
+            Origin: "https://zchat.bfzone.ccwu.cc",
+            Host: "zchat.bfzone.ccwu.cc",
             "Content-Type": "application/json",
             Accept: "application/json",
             "Mcp-Method": "tools/call",

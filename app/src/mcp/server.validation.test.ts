@@ -96,11 +96,11 @@ function harness() {
   } as unknown as McpEnv
   const call = async (tool: string, args: Record<string, unknown>) => {
     const response = await handleMcpRequest(
-      new Request("https://www.free4.chat/mcp", {
+      new Request("https://zchat.bfzone.ccwu.cc/mcp", {
         method: "POST",
         headers: {
-          Origin: "https://www.free4.chat",
-          Host: "www.free4.chat",
+          Origin: "https://zchat.bfzone.ccwu.cc",
+          Host: "zchat.bfzone.ccwu.cc",
           "Content-Type": "application/json",
           Accept: "application/json",
           "Mcp-Method": "tools/call",

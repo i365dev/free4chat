@@ -64,7 +64,7 @@ function upload(
     new Request("https://www.free4.chat/api/room/attachments", {
       method: "POST",
       headers: {
-        Origin: "http://localhost:3000",
+        Origin: "https://zchat.bfzone.ccwu.cc",
         "Content-Type": "text/markdown",
         "Content-Length": String(body.length),
         "X-Room-Id": "test-room",
@@ -88,7 +88,7 @@ describe("Worker pre-Task attachment transport (#421)", () => {
       new Request("https://www.free4.chat/api/room/attachments/discard", {
         method: "POST",
         headers: {
-          Origin: "http://localhost:3000",
+          Origin: "https://zchat.bfzone.ccwu.cc",
           "Content-Type": "application/json",
           "X-Room-Id": "test-room",
           "X-Room-Participant-Id": "human-1",

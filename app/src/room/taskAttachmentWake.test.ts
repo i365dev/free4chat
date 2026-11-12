@@ -233,7 +233,7 @@ function harness() {
       new Request("https://www.free4.chat/api/room/attachments", {
         method: "POST",
         headers: {
-          Origin: "http://localhost:3000",
+          Origin: "https://zchat.bfzone.ccwu.cc",
           "Content-Type": "image/png",
           "Content-Length": String(bytes.length),
           "X-Room-Id": "test-room",
@@ -381,7 +381,7 @@ describe("Task composer submission wake boundary (#363 second review)", () => {
       new Request("https://www.free4.chat/api/room/attachments", {
         method: "POST",
         headers: {
-          Origin: "http://localhost:3000",
+          Origin: "https://zchat.bfzone.ccwu.cc",
           "Content-Type": "image/png",
           "Content-Length": String(bytes.length),
           "X-Room-Id": "test-room",

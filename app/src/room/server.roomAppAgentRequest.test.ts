@@ -63,7 +63,7 @@ describe("resident Room App request ingress", () => {
       new Request("https://www.free4.chat/api/room/agent-app-request", {
         method: "POST",
         headers: {
-          Origin: "https://www.free4.chat",
+          Origin: "https://zchat.bfzone.ccwu.cc",
           "Content-Type": "application/json",
           "X-Room-Id": "test-room",
           "X-Room-Participant-Id": "agent-1",

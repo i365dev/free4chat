@@ -1,7 +1,5 @@
 const ALLOWED_ORIGINS = new Set([
-  "https://free4.chat",
-  "https://www.free4.chat",
-  "http://localhost:3000",
+  "https://zchat.bfzone.ccwu.cc",
 ])
 
 export function isAllowedOrigin(origin: string | null): boolean {

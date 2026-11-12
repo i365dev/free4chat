@@ -32,7 +32,7 @@ describe("Runtime Agent activity route", () => {
       new Request("https://www.free4.chat/api/room/agent-activity", {
         method: "POST",
         headers: {
-          Origin: "http://localhost:3000",
+          Origin: "https://zchat.bfzone.ccwu.cc",
           "X-Room-Id": "room-1",
           "X-Room-Participant-Id": "agent-1",
           "X-Room-Participant-Token": "private-token",
@@ -80,7 +80,7 @@ describe("Runtime Agent activity route", () => {
       new Request("https://www.free4.chat/api/room/agent-activity", {
         method: "POST",
         headers: {
-          Origin: "http://localhost:3000",
+          Origin: "https://zchat.bfzone.ccwu.cc",
           "X-Room-Id": "room-1",
           "X-Room-Participant-Id": "agent-1",
           "X-Room-Participant-Token": "private-token",
@@ -117,7 +117,7 @@ describe("Runtime Agent activity route", () => {
     const response = await handleRoomRequest(
       new Request("https://www.free4.chat/api/room/agent-activity", {
         method: "GET",
-        headers: { Origin: "http://localhost:3000" },
+        headers: { Origin: "https://zchat.bfzone.ccwu.cc" },
       }),
       env
     )
