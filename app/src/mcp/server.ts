@@ -143,9 +143,7 @@ const runtimeFeaturesSchema = z.object({
   taskExecutionReconciliation: z.boolean().optional(),
 })
 
-const MCP_HOSTNAMES = [
-  "zchat.bfzone.ccwu.cc",
-]
+const MCP_HOSTNAMES = ["zchat.bfzone.ccwu.cc"]
 
 export interface McpEnv {
   SFU_ROOM: DurableObjectNamespace<RoomSession>
